@@ -113,6 +113,8 @@ def select(message: str, choices, *, default=None, instruction: str | None = Non
     import questionary
 
     built = [_choice(index, item) for index, item in enumerate(choices, start=1)]
+    if instruction is None:
+        instruction = "\n  Enter accepts."
     question = questionary.select(
         message,
         choices=built,

@@ -29,7 +29,7 @@ questionary is the renderer. `pve_prep/prompts.py` owns the flow. `pve_prep/ui.p
 
 On a TTY, with the vendor tree importable:
 
-- Distro, build, format, storage, and the per-VMID backup choice are arrow menus. A number highlights that row. Enter accepts it. Enter on Build accepts the template. Enter on Format accepts raw.
+- Distro, build, format, storage, and the per-VMID backup choice are arrow menus. The explanation is printed once, then a blank line, then the menu. The numbered list is not printed again above the widget. A number highlights that row. Enter accepts it. Enter on Build accepts the template. Enter on Format accepts raw.
 - The "do not back up" row is red (`class:danger`).
 - Releases are a checkbox. Space marks a release. One to three. The result is still the release strings, in menu order. Codenames are not on this path.
 - VMIDs, `DELETE`, `YES`, the image directory, bridge, memory, and cores stay typed. The template VMID field is prefilled with the free default, so Enter accepts it. `DELETE` and `YES` are not prefilled. `X` still exits.

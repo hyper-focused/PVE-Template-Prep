@@ -93,6 +93,7 @@ class VendorTest(unittest.TestCase):
         def fake_select(message, *, choices, **kwargs):
             self.assertEqual(message, "Backup")
             self.assertTrue(kwargs["use_shortcuts"])
+            self.assertTrue(str(kwargs["instruction"]).startswith("\n"))
             return _Question(choices)
 
         with mock.patch.object(questionary, "select", fake_select):
@@ -153,7 +154,7 @@ class WidgetInterviewTest(unittest.TestCase):
         read_line.use_questionary = True
 
         def select(message, choices, default=None):
-            if message == "Backup":
+            if any(len(item) > 2 and item[2] for item in choices):
                 self.assertTrue(choices[1][2])
             return selects.pop(0)
 
@@ -218,9 +219,11 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertEqual(job.memory_mb, 4096)
         self.assertEqual(job.cores, 4)
         self.assertEqual(job.storage, "dir-templates")
-        self.assertIn("Space marks a release", blob)
+        self.assertIn("Releases.", blob)
         self.assertNotIn("codename", blob)
+        self.assertNotIn("  1) ", blob)
         self.assertIn("Complete PVE VM template", blob)
+        self.assertIn("Create a VM, import the disk", blob)
         self.assertTrue(any(line.startswith("Guest prep") for line in confirms))
         self.assertTrue(any("vmbr0" in line for line in confirms))
         self.assertFalse(any(line.endswith("[Y/n]") for line in confirms))

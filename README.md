@@ -32,7 +32,7 @@ The installer creates `/opt/pve-template-prep`, pulls `pve-template-prep.py`, `p
 
 Each question says what that step does before it asks. Empty input accepts the default when the question shows one. A wrong answer asks that question again. The last line is `Type YES`. `YES` or `yes` starts the run. `X` or `no` exits.
 
-On a terminal the same questions are menus. Arrow keys move, a number highlights that row, and Enter accepts it. The "do not back up" row is red. Releases are a checkbox: space marks one, and one to three are allowed. VMIDs, `DELETE`, and `YES` are still typed. A pipe, or a `vendor/` tree that will not import, keeps the numbered lines below. A codename such as `bookworm` works on that numbered path.
+On a terminal the same questions are menus. Each step is a short explanation, a blank line, then the menu. Arrow keys move, a number highlights that row, and Enter accepts it. The "do not back up" row is red. Releases are a checkbox: space marks one, and one to three are allowed. VMIDs, `DELETE`, and `YES` are still typed. A pipe, or a `vendor/` tree that will not import, keeps the numbered lines below. A codename such as `bookworm` works on that numbered path.
 
 1. Distro, by number.
 2. Releases, by number, comma-separated, one to three. The numbers are the menu, not the version. On Debian, `2, 3` is 12 and 13. A codename still works (`bookworm`, `noble`).
