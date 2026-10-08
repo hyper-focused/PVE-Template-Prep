@@ -1,0 +1,9 @@
+# Pinned upstream tags. Packages are the importable trees only.
+# No wheels, no C extensions, no pip, no apt.
+questionary 2.1.1 https://github.com/tmbo/questionary MIT
+prompt_toolkit 3.0.52 https://github.com/prompt-toolkit/python-prompt-toolkit BSD
+wcwidth 0.9.2 https://github.com/jquast/wcwidth MIT
+# wcwidth 0.9.2 ships an optional C extension. This tree omits _wcwidth_c
+# and uses the pure-Python fallback. Do not replace these with platform wheels.
+# prompt_toolkit reads its version from importlib.metadata, so
+# prompt_toolkit-3.0.52.dist-info/METADATA is part of the vendor tree.

@@ -29,6 +29,8 @@ class Job:
     cores: int
     dry_run: bool
     destroy_vmids: frozenset[int]
+    # VMIDs whose OS disk is copied before a replace, or kept when a disk is inserted.
+    backup_vmids: frozenset[int] = frozenset()
 
 
 def published_name(distro: str, release: str, disk_format: str) -> str:

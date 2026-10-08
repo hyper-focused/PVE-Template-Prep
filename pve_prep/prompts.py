@@ -1,10 +1,16 @@
-"""Numbered plain-text interview. read_line raises EOFError on EOF."""
+"""Interview. A terminal draws questionary widgets. Anything else stays numbered.
+
+read_line raises EOFError on EOF. A reader with use_questionary set, and a
+vendored questionary that imports, takes the widget path. The questions,
+the free-VMID rule, and the DELETE gate do not move.
+"""
 
 from __future__ import annotations
 
-import re
+import sys
 from pathlib import Path
 
+from pve_prep import ui
 from pve_prep.catalog import DISTROS
 from pve_prep.job import (
     DEFAULT_CACHE,
@@ -19,10 +25,12 @@ DEFAULT_MEMORY_MB = 2048
 DEFAULT_CORES = 2
 DEFAULT_VMID = 9001
 MAX_RELEASES = 3
+_PROBE_BATCH = 32
+_PROBE_LIMIT = 256
 
 
 class PromptAbort(Exception):
-    """EOF or a non-yes at the final confirm."""
+    """EOF, or an explicit no at the final confirm."""
 
 
 def _ask(read_line, write, prompt: str) -> str:
@@ -36,6 +44,23 @@ def _ask(read_line, write, prompt: str) -> str:
     return str(line).strip()
 
 
+def _ask_text(read_line, write, prompt: str, *, default: str = "") -> str:
+    """Free text. The widget shows prompt; the plain path writes it."""
+    if ui.enabled(read_line):
+        value = ui.text(prompt.strip(), default=default)
+        if value is None:
+            raise PromptAbort("exit")
+        return value.strip()
+    return _ask(read_line, write, prompt)
+
+
+def _pick(read_line, message: str, choices, *, default=None):
+    picked = ui.select(message, choices, default=default)
+    if picked is None:
+        raise PromptAbort("exit")
+    return picked
+
+
 def _ask_choice(read_line, write, prompt: str, mapping: dict[str, str], default_key: str | None, error: str) -> str:
     while True:
         raw = _ask(read_line, write, prompt)
@@ -47,9 +72,12 @@ def _ask_choice(read_line, write, prompt: str, mapping: dict[str, str], default_
 
 
 def _ask_distro(read_line, write) -> str:
+    write("One distro per run. Guest prep later follows that family.\n")
     write("Distro:\n")
     for index, name in enumerate(DISTROS, start=1):
         write(f"  {index}) {name}\n")
+    if ui.enabled(read_line):
+        return _pick(read_line, "Distro", [(name, name) for name in DISTROS])
     mapping = {str(index): name for index, name in enumerate(DISTROS, start=1)}
     return _ask_choice(
         read_line,
@@ -61,16 +89,59 @@ def _ask_distro(read_line, write) -> str:
     )
 
 
+def _release_limit(selected) -> bool | str:
+    if not selected:
+        return "need at least one release"
+    if len(selected) > MAX_RELEASES:
+        return f"pick 1 to {MAX_RELEASES} releases"
+    return True
+
+
+def _release_title(spec) -> str:
+    label = str(getattr(spec, "label", ""))
+    eol = bool(getattr(spec, "eol", False)) and "EOL" not in label
+    flag = " EOL" if eol else ""
+    return f"{spec.release}  {label}{flag}"
+
+
 def _ask_releases(read_line, write, distro: str, releases_for, normalize_release) -> tuple[str, ...]:
+    """Menu indexes, comma-separated. A non-numeric token may be a codename.
+
+    A terminal uses a checkbox instead. The values are still the release
+    strings, in menu order. Codenames stay on the numbered path.
+    """
     write("Releases:\n")
     specs = list(releases_for(distro))
-    for spec in specs:
-        label = str(getattr(spec, "label", ""))
-        eol = bool(getattr(spec, "eol", False)) and "EOL" not in label
-        flag = " EOL" if eol else ""
-        write(f"  {spec.release}  {label}{flag}\n")
+    rows = []
+    for index, spec in enumerate(specs, start=1):
+        title = _release_title(spec)
+        rows.append((title.rstrip(), str(spec.release)))
+        write(f"  {index}) {title}\n")
+    limit = min(MAX_RELEASES, len(specs))
+    write(f"Select the releases you want ({limit} available, pick 1 to {limit}).\n")
+    if ui.enabled(read_line):
+        write("Space marks a release. Enter accepts.\n")
+        order = [str(spec.release) for spec in specs]
+        while True:
+            picked = ui.checkbox(
+                "Releases",
+                rows,
+                instruction=f"Space marks a release. Enter accepts. Pick 1 to {limit}.",
+                validate=_release_limit,
+            )
+            if picked is None:
+                raise PromptAbort("exit")
+            chosen = [release for release in order if release in set(picked)]
+            if not chosen:
+                write("need at least one release\n")
+                continue
+            if len(chosen) > MAX_RELEASES:
+                write(f"pick 1 to {MAX_RELEASES} releases\n")
+                continue
+            return tuple(chosen)
+    write("Use the menu numbers, separated by commas. A codename also works.\n")
     while True:
-        raw = _ask(read_line, write, f"Releases, comma-separated (1-{MAX_RELEASES}): ")
+        raw = _ask(read_line, write, f"Select releases, comma-separated (1-{limit}): ")
         tokens = [part.strip() for part in raw.split(",") if part.strip()]
         if not tokens:
             write("need at least one release\n")
@@ -81,12 +152,20 @@ def _ask_releases(read_line, write, distro: str, releases_for, normalize_release
         chosen: list[str] = []
         failed = False
         for token in tokens:
-            try:
-                canonical = str(normalize_release(distro, token))
-            except Exception:
-                write(f"unknown release: {token}\n")
-                failed = True
-                break
+            if token.isdigit():
+                number = int(token)
+                if not 1 <= number <= len(specs):
+                    write(f"pick a release number: {token}\n")
+                    failed = True
+                    break
+                canonical = str(specs[number - 1].release)
+            else:
+                try:
+                    canonical = str(normalize_release(distro, token))
+                except Exception:
+                    write(f"unknown release: {token}\n")
+                    failed = True
+                    break
             if canonical in chosen:
                 write(f"duplicate release: {canonical}\n")
                 failed = True
@@ -97,6 +176,60 @@ def _ask_releases(read_line, write, distro: str, releases_for, normalize_release
         return tuple(chosen)
 
 
+def _ask_build(read_line, write) -> str:
+    write("What this run produces:\n")
+    write("  1) Complete PVE VM template\n")
+    write("     Create a VM, import the disk, and convert it with qm template.\n")
+    write("  2) PVE VM disk image only\n")
+    write("     Write a file. An existing VMID keeps that VM and receives the new disk.\n")
+    write("  3) Prep a stopped VM in place\n")
+    write("     No download. Customize the disk that is already attached.\n")
+    if ui.enabled(read_line):
+        return _pick(
+            read_line,
+            "Build",
+            [
+                ("Complete PVE VM template", "template"),
+                ("PVE VM disk image only", "image"),
+                ("Prep a stopped VM in place", "existing"),
+            ],
+            default="template",
+        )
+    return _ask_choice(
+        read_line,
+        write,
+        "Select [1]: ",
+        {"1": "template", "2": "image", "3": "existing"},
+        "1",
+        "pick 1 template, 2 disk image, or 3 stopped VM",
+    )
+
+
+def _ask_format(read_line, write) -> str:
+    write("How the disk is stored before Proxmox imports it.\n")
+    write("VM disk format:\n")
+    write("  1) ZFS raw (a file-based raw image is .img and full size)\n")
+    write("  2) QEMU qcow2 (stays sparse until import)\n")
+    if ui.enabled(read_line):
+        return _pick(
+            read_line,
+            "Format",
+            [
+                ("ZFS raw (a file-based raw image is .img and full size)", "raw"),
+                ("QEMU qcow2 (stays sparse until import)", "qcow2"),
+            ],
+            default="raw",
+        )
+    return _ask_choice(
+        read_line,
+        write,
+        "Select format [1]: ",
+        {"1": "raw", "2": "qcow2"},
+        "1",
+        "pick 1 ZFS raw or 2 QEMU qcow2",
+    )
+
+
 def _ask_storage(read_line, write, list_storages) -> str:
     try:
         found = list(list_storages() or [])
@@ -104,18 +237,25 @@ def _ask_storage(read_line, write, list_storages) -> str:
         found = []
     storages = [str(item).strip() for item in found if str(item).strip()]
     if not storages:
-        write("No storages detected.\n")
+        write("No storages detected. Type the storage id that should hold the VM disk.\n")
         while True:
-            raw = _ask(read_line, write, "Storage id: ")
+            raw = _ask_text(read_line, write, "VM Disk Storage Path: ")
             if raw:
                 return raw
             write("storage id is required\n")
-    write("Storage:\n")
+    write("Proxmox storage for the VM disk. It has to accept images.\n")
+    write("VM Disk Storage Path:\n")
     for index, storage_id in enumerate(storages, start=1):
         write(f"  {index}) {storage_id}\n")
-    write("or type an id\n")
+    write("Enter a number from the list.\n")
+    if ui.enabled(read_line):
+        return _pick(
+            read_line,
+            "VM Disk Storage Path",
+            [(storage_id, storage_id) for storage_id in storages],
+        )
     while True:
-        raw = _ask(read_line, write, "Storage: ")
+        raw = _ask(read_line, write, "VM Disk Storage Path: ")
         if not raw:
             write("storage id is required\n")
             continue
@@ -123,85 +263,283 @@ def _ask_storage(read_line, write, list_storages) -> str:
             number = int(raw)
             if 1 <= number <= len(storages):
                 return storages[number - 1]
-            write(f"pick 1-{len(storages)} or type a storage id\n")
+            write(f"pick 1-{len(storages)}\n")
+            continue
+        if raw not in storages:
+            write(f"unknown storage: {raw}\n")
             continue
         return raw
 
 
 def _ask_directory(read_line, write) -> str:
+    write("Directory for the finished image file. This is a path, not a storage id.\n")
     while True:
-        raw = _ask(read_line, write, "Image directory: ")
+        raw = _ask_text(read_line, write, "Image directory: ")
         if raw:
             return raw
         write("directory is required\n")
 
 
-def _ask_vmids(read_line, write, count: int) -> tuple[int, ...]:
-    if count == 1:
-        shown = str(DEFAULT_VMID)
-    else:
-        shown = f"{DEFAULT_VMID}-{DEFAULT_VMID + count - 1}"
-    write(
-        f"Need {count} VMID(s). One number starts a sequence, "
-        "or give a comma-separated list, or an inclusive range. "
-        f"Empty uses {shown}.\n"
-    )
-    while True:
-        raw = _ask(read_line, write, f"VMIDs [{shown}]: ")
-        if not raw:
-            raw = str(DEFAULT_VMID)
-        try:
-            return parse_vmids(raw, count)
-        except ValueError as exc:
-            write(f"{exc}\n")
+def _format_ids(ids: tuple[int, ...]) -> str:
+    if not ids:
+        return ""
+    if len(ids) == 1:
+        return str(ids[0])
+    if list(ids) == list(range(ids[0], ids[0] + len(ids))):
+        return f"{ids[0]}-{ids[-1]}"
+    return ", ".join(str(vmid) for vmid in ids)
 
 
-def _parse_destroy_text(text: str, chosen: set[int]) -> tuple[int, ...]:
-    # A single retyped ID is that VM only. A range is intersected with the
-    # selected VMIDs and is never expanded.
-    raw = text.strip()
-    if not raw:
-        return ()
-    match = re.fullmatch(r"(\d+)\s*-\s*(\d+)", raw)
-    if match:
-        start = int(match.group(1))
-        end = int(match.group(2))
-        if end < start:
-            raise ValueError("range is reversed")
-        return tuple(vmid for vmid in sorted(chosen) if start <= vmid <= end)
-    parts = [part for part in re.split(r"[,\s]+", raw) if part]
+def _free_defaults(count: int, vmids_in_use) -> tuple[int, ...] | None:
+    """Next free VMIDs from 9001.
+
+    None means the probe cannot see the host. () means the window was full.
+    """
     found: list[int] = []
-    for part in parts:
-        found.extend(parse_vmids(part, 1))
-    return tuple(found)
+    start = DEFAULT_VMID
+    scanned = 0
+    while len(found) < count and scanned < _PROBE_LIMIT:
+        window = tuple(range(start, start + _PROBE_BATCH))
+        scanned += len(window)
+        start += _PROBE_BATCH
+        occupied = vmids_in_use(window)
+        if occupied is None:
+            return None
+        for vmid in window:
+            if vmid not in occupied:
+                found.append(vmid)
+            if len(found) == count:
+                return tuple(found)
+    if len(found) == count:
+        return tuple(found)
+    return ()
 
 
-def _ask_destroy(read_line, write, vmids: tuple[int, ...]) -> frozenset[int]:
-    shown = ", ".join(str(vmid) for vmid in vmids)
-    write(
-        f"In use: {shown}. Type a VMID again to replace it. "
-        "A template at that ID is destroyed. "
-        "A stopped non-template keeps the VMID and gets a new scsi0. "
-        "Empty means refuse.\n"
-    )
-    chosen = set(vmids)
+def _occupied(vmids: tuple[int, ...], vmids_in_use) -> set[int] | None:
+    found = vmids_in_use(vmids)
+    if found is None:
+        return None
+    return {vmid for vmid in vmids if vmid in set(found)}
+
+
+def _danger(text: str) -> str:
+    """Red when stdout is a terminal. Pipes and tests stay plain."""
+    if sys.stdout.isatty():
+        return f"\033[31m{text}\033[0m"
+    return text
+
+
+def _confirm_delete(read_line, write, detail: str) -> None:
+    write(detail + "\n")
     while True:
-        raw = _ask(read_line, write, "Destroy VMIDs: ")
-        try:
-            parsed = _parse_destroy_text(raw, chosen)
-        except ValueError as exc:
-            write(f"{exc}\n")
+        raw = _ask_text(read_line, write, "Type DELETE to proceed, or X to exit: ")
+        if raw == "DELETE":
+            return
+        if raw in {"X", "x"}:
+            raise PromptAbort("exit")
+        write("type DELETE to proceed, or X to exit\n")
+
+
+def _ask_each_disk(read_line, write, vmids: tuple[int, ...], vm_has_disks, *, replacing: bool) -> frozenset[int]:
+    """Per VMID: backup, or DELETE to drop the disk. Returns VMIDs to back up."""
+    if replacing:
+        write(
+            "One or more of the selected VMIDs is currently in use. "
+            "If you continue, those VMs will be permanently deleted.\n"
+        )
+    else:
+        write(
+            "One or more of the selected VMIDs is currently in use. "
+            "The VM stays. The new disk is inserted.\n"
+        )
+    backups: list[int] = []
+    for vmid in vmids:
+        present = vm_has_disks(vmid)
+        if present is False:
+            if replacing:
+                write(f"VMID {vmid} has no OS disk. The VM will still be deleted.\n")
+                _confirm_delete(read_line, write, f"All data for VMID {vmid} will be removed.")
+            else:
+                write(f"VMID {vmid} has no OS disk. The new image is inserted.\n")
             continue
-        keep: list[int] = []
-        for vmid in parsed:
-            if vmid not in chosen:
-                write(f"ignoring VMID {vmid} (not selected)\n")
+        if replacing:
+            keep = "Back up the existing template VM disk"
+            drop = "Do not back up the existing template VM disk"
+        else:
+            keep = "Back up the existing VM disk"
+            drop = "Do not back up the existing VM disk"
+        write(f"VMID {vmid}:\n")
+        write(f"  1) {keep}\n")
+        write(f"  2) {_danger(drop)}\n")
+        if ui.enabled(read_line):
+            choice = _pick(
+                read_line,
+                "Backup",
+                [(keep, "backup"), (drop, "overwrite", True)],
+            )
+        else:
+            choice = _ask_choice(
+                read_line,
+                write,
+                "Backup: ",
+                {"1": "backup", "2": "overwrite"},
+                None,
+                "pick 1 to back up, or 2 to skip the backup",
+            )
+        if choice == "backup":
+            backups.append(vmid)
+            continue
+        if replacing:
+            _confirm_delete(read_line, write, f"All data for VMID {vmid} will be removed.")
+        else:
+            _confirm_delete(
+                read_line,
+                write,
+                f"The existing disk on VMID {vmid} will be deleted. The VM stays.",
+            )
+    return frozenset(backups)
+
+
+def _parse_vmid_line(
+    read_line,
+    write,
+    count: int,
+    prompt: str,
+    *,
+    default: str = "",
+) -> tuple[int, ...] | None:
+    raw = _ask_text(read_line, write, prompt, default=default)
+    if not raw:
+        return None
+    try:
+        return parse_vmids(raw, count)
+    except ValueError as exc:
+        write(f"{exc}\n")
+        return ()
+
+
+def _ask_template_vmids(read_line, write, count: int, vmids_in_use, vm_has_disks):
+    """Return (vmids, destroy set, backup set).
+
+    Empty input uses the next free IDs from 9001. A typed ID that is already
+    in use replaces that whole VM. Each such VMID is asked about its disk.
+    """
+    defaults = _free_defaults(count, vmids_in_use)
+    unknown = defaults is None
+    if unknown:
+        defaults = tuple(DEFAULT_VMID + offset for offset in range(count))
+    shown = _format_ids(defaults) if defaults else ""
+    label = "VMID" if count == 1 else "VMIDs"
+    write(f"Select the {label} you would like to assign ({count} required).\n")
+    if unknown:
+        write(
+            "Could not check which VMIDs are free. "
+            f"Press enter to accept {shown}. An existing VM will not be replaced.\n"
+        )
+    elif not defaults:
+        write(
+            f"No {count} free VMID(s) from {DEFAULT_VMID} "
+            f"in the next {_PROBE_LIMIT} IDs.\n"
+            f"Specify {count} VMIDs separated by commas, spaces, or as a range.\n"
+        )
+    else:
+        write(
+            f"Press enter to accept the {label} below, or specify {count} "
+            "separated by commas, spaces, or as a range.\n"
+            "An ID that is already in use replaces that VM.\n"
+        )
+    while True:
+        prompt = f"VMID [{shown}]: " if shown else "VMID: "
+        parsed = _parse_vmid_line(read_line, write, count, prompt, default=shown or "")
+        if parsed is None:
+            if not defaults:
+                write("VMID list is empty\n")
                 continue
-            keep.append(vmid)
-        return frozenset(keep)
+            vmids = defaults
+        elif parsed == ():
+            continue
+        else:
+            vmids = parsed
+        occupied = _occupied(vmids, vmids_in_use)
+        if occupied is None:
+            write("Could not check those VMIDs. An existing VM will not be replaced.\n")
+            return vmids, frozenset(), frozenset()
+        free = tuple(vmid for vmid in vmids if vmid not in occupied)
+        in_use = tuple(vmid for vmid in vmids if vmid in occupied)
+        if free:
+            write(f"Not in use: {_format_ids(free)}.\n")
+        if not in_use:
+            return vmids, frozenset(), frozenset()
+        backups = _ask_each_disk(read_line, write, in_use, vm_has_disks, replacing=True)
+        return vmids, frozenset(in_use), backups
+
+
+def _ask_image_vmids(read_line, write, count: int, vmids_in_use, vm_has_disks):
+    """Return (vmids, backup set). Empty vmids publish a file and touch no VM."""
+    label = "VMID" if count == 1 else "VMIDs"
+    write(
+        f"Select the {label} to receive the disk ({count} required), "
+        "or press enter to publish a file and leave every VM alone.\n"
+        f"Specify {count} existing VMIDs separated by commas, spaces, or as a range.\n"
+    )
+    while True:
+        parsed = _parse_vmid_line(read_line, write, count, "VMID: ")
+        if parsed is None:
+            return (), frozenset()
+        if parsed == ():
+            continue
+        vmids = parsed
+        occupied = _occupied(vmids, vmids_in_use)
+        if occupied is None:
+            write("Could not check those VMIDs. The run inserts the disk if the VM exists.\n")
+            backups = _ask_each_disk(read_line, write, vmids, vm_has_disks, replacing=False)
+            return vmids, backups
+        free = tuple(vmid for vmid in vmids if vmid not in occupied)
+        if free:
+            write(
+                f"Not in use: {_format_ids(free)}. "
+                "Press enter to publish a file, or type an existing VMID.\n"
+            )
+            continue
+        backups = _ask_each_disk(read_line, write, vmids, vm_has_disks, replacing=False)
+        return vmids, backups
+
+
+def _ask_existing_vmids(read_line, write, count: int, vmids_in_use) -> tuple[int, ...]:
+    label = "VMID" if count == 1 else "VMIDs"
+    write(
+        f"Select the stopped {label} ({count} required). "
+        "The VM has to already exist.\n"
+        f"Specify {count} separated by commas, spaces, or as a range.\n"
+    )
+    while True:
+        parsed = _parse_vmid_line(read_line, write, count, "VMID: ")
+        if parsed is None:
+            write("VMID list is empty\n")
+            continue
+        if parsed == ():
+            continue
+        occupied = _occupied(parsed, vmids_in_use)
+        if occupied is None:
+            write("Could not check those VMIDs.\n")
+            return parsed
+        free = tuple(vmid for vmid in parsed if vmid not in occupied)
+        if free:
+            write(f"Not in use: {_format_ids(free)}. Type an existing VMID.\n")
+            continue
+        return parsed
 
 
 def _ask_bool(read_line, write, prompt: str, default: bool) -> bool:
+    if ui.enabled(read_line):
+        message = prompt.strip()
+        for suffix in ("[Y/n]", "[y/N]"):
+            if message.endswith(suffix):
+                message = message[: -len(suffix)].strip()
+        answer = ui.confirm(message, default=default)
+        if answer is None:
+            raise PromptAbort("exit")
+        return answer
     while True:
         raw = _ask(read_line, write, prompt).lower()
         if raw == "":
@@ -215,23 +553,36 @@ def _ask_bool(read_line, write, prompt: str, default: bool) -> bool:
 
 def _ask_positive(read_line, write, prompt: str, label: str) -> int:
     while True:
-        raw = _ask(read_line, write, prompt)
+        raw = _ask_text(read_line, write, prompt)
         if raw.isdigit() and int(raw) > 0:
             return int(raw)
         write(f"{label} must be a positive integer\n")
 
 
 def _ask_hardware(read_line, write) -> tuple[str, int, int]:
+    write("Hardware applied to each new template. Same settings for every distro.\n")
+    write(f"  Memory: {DEFAULT_MEMORY_MB} MB\n")
+    write(f"  Cores: {DEFAULT_CORES}\n")
+    write(f"  NIC: virtio on bridge {DEFAULT_BRIDGE}\n")
+    write("  SCSI controller: virtio-scsi-single\n")
+    write("  OS disk: scsi0, discard=on, ssd=1\n")
+    write("  Cloud-init drive: ide2\n")
+    write("  BIOS: SeaBIOS (Proxmox default)\n")
+    write("  Display: serial console\n")
+    write("  Guest agent: enabled\n")
+    write("  RNG: /dev/urandom\n")
+    write("  OS type: Linux 2.6+\n")
+    write("Bridge, memory, and cores can be changed here. The rest can be changed later in the web UI or with qm set.\n")
     accept = _ask_bool(
         read_line,
         write,
-        "Hardware defaults: bridge vmbr0, memory 2048 MB, cores 2. Enter accepts, n changes.\n",
+        "Press enter to keep bridge vmbr0, memory 2048 MB, cores 2. Type n to change those three.\n",
         True,
     )
     if accept:
         return DEFAULT_BRIDGE, DEFAULT_MEMORY_MB, DEFAULT_CORES
     while True:
-        bridge = _ask(read_line, write, "Bridge: ")
+        bridge = _ask_text(read_line, write, "Bridge: ")
         if bridge:
             break
         write("bridge is required\n")
@@ -249,11 +600,17 @@ def _summary_line(
     storage: str,
     vmid: int | None,
     prep: bool,
+    collision: str,
 ) -> str:
     flag = "yes" if prep else "no"
-    if mode == "image":
+    if mode == "image" and vmid is None:
         dest = Path(dest_dir) / published_name(distro, release, disk_format)
         return f"{distro} {release} -> image {disk_format} {dest} guest-prep={flag}"
+    if mode == "image":
+        return (
+            f"{distro} {release} -> insert VMID {vmid} storage {storage} "
+            f"{disk_format} disk={collision} guest-prep={flag}"
+        )
     if mode == "template":
         name = vm_name(distro, release)
         return (
@@ -261,6 +618,30 @@ def _summary_line(
             f"storage {storage} {disk_format} guest-prep={flag}"
         )
     return f"{distro} {release} -> existing VMID {vmid} storage {storage} guest-prep={flag}"
+
+
+def _collision_for(targets, backups: frozenset[int]) -> str:
+    ids = set(targets)
+    if not ids or ids <= set(backups):
+        return "backup"
+    return "overwrite"
+
+
+def _confirm(read_line, write, *, mode: str, count: int) -> None:
+    if mode == "template":
+        action = "create the template" if count == 1 else "create the templates"
+    elif mode == "image":
+        action = "write the image" if count == 1 else "write the images"
+    else:
+        action = "prep the VM" if count == 1 else "prep the VMs"
+    write(f"Nothing has been changed yet. Type YES to {action}. Type X to exit.\n")
+    while True:
+        answer = _ask_text(read_line, write, "Type YES: ")
+        if answer in {"YES", "yes"}:
+            return
+        if answer in {"X", "x", "n", "no", "NO"}:
+            raise PromptAbort("not confirmed")
+        write("type YES to proceed, or X to exit\n")
 
 
 def interview(
@@ -272,86 +653,58 @@ def interview(
     releases_for,
     normalize_release,
     vmids_in_use,
+    vm_has_disks,
 ) -> Job:
     """Walk the operator through one job.
 
     read_line() -> str, and raises EOFError on EOF. None is also EOF.
     Empty answers accept the default shown in that question, when it has one.
+    A bad answer asks the same question again. YES starts the run. X exits.
     """
     distro = _ask_distro(read_line, write)
     releases = _ask_releases(read_line, write, distro, releases_for, normalize_release)
-
-    write("Product:\n")
-    write("  1) image\n")
-    write("  2) template\n")
-    write("  3) existing\n")
-    mode = _ask_choice(
-        read_line,
-        write,
-        "Select product [2]: ",
-        {"1": "image", "2": "template", "3": "existing"},
-        "2",
-        "pick 1 image, 2 template, or 3 existing",
-    )
+    mode = _ask_build(read_line, write)
+    count = len(releases)
 
     if mode == "existing":
         disk_format = "raw"
     else:
-        write("Disk format:\n")
-        write("  1) raw\n")
-        write("  2) qcow2\n")
-        disk_format = _ask_choice(
-            read_line,
-            write,
-            "Select format [1]: ",
-            {"1": "raw", "2": "qcow2"},
-            "1",
-            "pick 1 raw or 2 qcow2",
-        )
+        disk_format = _ask_format(read_line, write)
 
-    if mode == "image":
-        dest_dir = _ask_directory(read_line, write)
-        storage = ""
+    if mode == "template":
+        vmids, destroy_vmids, backup_vmids = _ask_template_vmids(
+            read_line, write, count, vmids_in_use, vm_has_disks
+        )
+        collision = _collision_for(destroy_vmids, backup_vmids)
+        dest_dir = ""
+        storage = _ask_storage(read_line, write, list_storages)
+    elif mode == "image":
+        vmids, backup_vmids = _ask_image_vmids(
+            read_line, write, count, vmids_in_use, vm_has_disks
+        )
+        destroy_vmids = frozenset()
+        collision = _collision_for(vmids, backup_vmids)
+        if vmids:
+            dest_dir = ""
+            storage = _ask_storage(read_line, write, list_storages)
+        else:
+            dest_dir = _ask_directory(read_line, write)
+            storage = ""
     else:
+        vmids = _ask_existing_vmids(read_line, write, count, vmids_in_use)
+        destroy_vmids = frozenset()
+        backup_vmids = frozenset()
+        collision = "backup"
         dest_dir = ""
         storage = _ask_storage(read_line, write, list_storages)
 
-    if mode == "image":
-        write("If the image exists:\n")
-        write("  1) backup\n")
-        write("  2) overwrite\n")
-        write("  3) skip\n")
-        collision = _ask_choice(
-            read_line,
-            write,
-            "Collision [1]: ",
-            {"1": "backup", "2": "overwrite", "3": "skip"},
-            "1",
-            "pick 1 backup, 2 overwrite, or 3 skip",
-        )
-    else:
-        collision = "backup"
-
-    if mode == "image":
-        vmids: tuple[int, ...] = ()
-        destroy_vmids: frozenset[int] = frozenset()
-    else:
-        vmids = _ask_vmids(read_line, write, len(releases))
-        if mode == "template":
-            occupied = set(vmids_in_use(vmids))
-            in_use = tuple(vmid for vmid in vmids if vmid in occupied)
-            free = tuple(vmid for vmid in vmids if vmid not in occupied)
-            if free:
-                shown = ", ".join(str(vmid) for vmid in free)
-                write(f"Not in use: {shown}.\n")
-            if in_use:
-                destroy_vmids = _ask_destroy(read_line, write, in_use)
-            else:
-                destroy_vmids = frozenset()
-        else:
-            destroy_vmids = frozenset()
-
-    prep = _ask_bool(read_line, write, "Apply PVE 9 guest prep? [Y/n]\n", True)
+    prep = _ask_bool(
+        read_line,
+        write,
+        "Guest prep installs the agent, sets a serial console, and resets "
+        "machine-id and SSH host keys. Enter applies it. n leaves the image as published. [Y/n]\n",
+        True,
+    )
 
     if mode == "template":
         bridge, memory_mb, cores = _ask_hardware(read_line, write)
@@ -360,9 +713,8 @@ def interview(
 
     if dry_run:
         write("dry-run: commands only, no changes\n")
-    paired: list[tuple[str, int | None]]
-    if mode == "image":
-        paired = [(release, None) for release in releases]
+    if mode == "image" and not vmids:
+        paired: list[tuple[str, int | None]] = [(release, None) for release in releases]
     else:
         paired = list(zip(releases, vmids))
     for release, vmid in paired:
@@ -376,25 +728,22 @@ def interview(
                 storage,
                 vmid,
                 prep,
+                collision,
             )
             + "\n"
         )
-    if destroy_vmids:
-        ids = ", ".join(str(vmid) for vmid in sorted(destroy_vmids))
-        write(
-            f"DESTROY stopped template VMID {ids} and its disks, "
-            "if that VM exists and is a template.\n"
-        )
-        write(
-            "A stopped non-template at that VMID is kept: "
-            "the new disk is imported and scsi0 is swapped.\n"
-        )
+    for vmid in sorted(destroy_vmids):
+        if vmid in backup_vmids:
+            write(
+                f"VMID {vmid}: the existing disk is copied into the cache, "
+                "then the VM is deleted.\n"
+            )
+        else:
+            write(f"VMID {vmid}: the existing disk is not kept. The VM is deleted.\n")
     if mode == "template":
         write(f"hardware: bridge {bridge}, memory {memory_mb} MB, cores {cores}\n")
 
-    answer = _ask(read_line, write, "Type yes to run: ")
-    if answer != "yes":
-        raise PromptAbort("not confirmed")
+    _confirm(read_line, write, mode=mode, count=count)
 
     return Job(
         distro=distro,
@@ -412,4 +761,5 @@ def interview(
         cores=cores,
         dry_run=dry_run,
         destroy_vmids=destroy_vmids,
+        backup_vmids=backup_vmids,
     )

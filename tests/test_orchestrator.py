@@ -9,6 +9,7 @@ import sys
 import tempfile
 import types
 import unittest
+from dataclasses import replace
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,6 +59,8 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog) -> None:
     vm.storage_lacks_images = real_vm.storage_lacks_images
     vm.vmid_config_missing = real_vm.vmid_config_missing
     vm.existing_hw_commands = real_vm.existing_hw_commands
+    vm.config_has_os_disk = real_vm.config_has_os_disk
+    vm.insert_disk = mock.MagicMock(name="insert_disk")
 
 
 def _restore_siblings(saved: dict[str, types.ModuleType]) -> None:
@@ -146,6 +149,7 @@ def _template_job(*, destroy=frozenset({910}), dry_run=True):
         cores=2,
         dry_run=dry_run,
         destroy_vmids=destroy,
+        backup_vmids=destroy,
     )
 
 
@@ -243,6 +247,7 @@ class OrchestratorTest(unittest.TestCase):
         MOD.run_one(job, "12", 910)
         MOD.run_one(job, "13", 911)
         self.assertEqual([item["destroy_ok"] for item in recorded], [True, False])
+        self.assertEqual([item["backup_disks"] for item in recorded], [True, False])
         self.assertEqual([item["vmid"] for item in recorded], [910, 911])
         self.assertEqual(
             [item["name"] for item in recorded],
@@ -256,6 +261,24 @@ class OrchestratorTest(unittest.TestCase):
         self.assertTrue(recorded[0]["image_path"].endswith("debian-12-pve.qcow2.work"))
         MOD.publish.assert_not_called()
         MOD.fetch_verified.assert_called()
+
+    def test_image_insert_does_not_publish_or_destroy(self) -> None:
+        job = replace(
+            _image_job(releases=("12",), dry_run=True),
+            vmids=(910,),
+            storage="dir-templates",
+            collision="overwrite",
+        )
+        MOD.insert_disk = mock.MagicMock(return_value="dir-templates:vm-910-disk-0")
+        MOD.run_one(job, "12", 910)
+        MOD.insert_disk.assert_called_once()
+        kwargs = MOD.insert_disk.call_args.kwargs
+        self.assertEqual(kwargs["vmid"], 910)
+        self.assertEqual(kwargs["storage"], "dir-templates")
+        self.assertEqual(kwargs["disk_policy"], "overwrite")
+        self.assertTrue(kwargs["dry_run"])
+        MOD.publish.assert_not_called()
+        MOD.create_template.assert_not_called()
 
     def test_main_continues_after_second_release_fails(self) -> None:
         job = _image_job(dry_run=True, prep=True)
@@ -299,6 +322,7 @@ class OrchestratorTest(unittest.TestCase):
             releases_for,
             normalize_release,
             vmids_in_use,
+            vm_has_disks,
         ):
             seen["dry_run"] = dry_run
             seen["storages"] = list_storages()

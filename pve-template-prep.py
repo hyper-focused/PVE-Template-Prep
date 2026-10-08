@@ -18,11 +18,14 @@ from pve_prep.customize import argv as customize_argv
 from pve_prep.download import convert, fetch_verified, publish
 from pve_prep.job import Job, published_name, vm_name
 from pve_prep.prompts import PromptAbort, interview
+from pve_prep.ui import arm
 from pve_prep.vm import (
     VmDestroyedError,
+    config_has_os_disk,
     create_template,
     existing_hw_commands,
     existing_prep_commands,
+    insert_disk,
     is_template,
     parse_qm_status,
     vmid_config_missing,
@@ -57,8 +60,12 @@ def _checked(argv: list[str], run) -> SimpleNamespace:
     return result
 
 
-def vmids_in_use(vmids: tuple[int, ...]) -> set[int]:
-    """VMIDs that already have a config. Unknown results stay in the set."""
+def vmids_in_use(vmids: tuple[int, ...]) -> set[int] | None:
+    """VMIDs that already have a config.
+
+    None means qm could not be run, so the caller must not guess.
+    A nonzero status is "free" only when the output says the VM does not exist.
+    """
     occupied: set[int] = set()
     for vmid in vmids:
         try:
@@ -68,11 +75,29 @@ def vmids_in_use(vmids: tuple[int, ...]) -> set[int]:
                 capture_output=True,
             )
         except (OSError, subprocess.SubprocessError):
-            return set(vmids)
+            return None
         output = f"{proc.stdout}\n{proc.stderr}"
         if not vmid_config_missing(proc.returncode, output):
             occupied.add(vmid)
     return occupied
+
+
+def vm_has_disks(vmid: int) -> bool | None:
+    """True when this VM has an OS disk. None when qm cannot answer."""
+    try:
+        proc = subprocess.run(
+            ["qm", "config", str(vmid)],
+            text=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    output = f"{proc.stdout}\n{proc.stderr}"
+    if proc.returncode != 0:
+        if vmid_config_missing(proc.returncode, output):
+            return False
+        return None
+    return config_has_os_disk(proc.stdout or "")
 
 
 def list_storages() -> list[str]:
@@ -106,7 +131,7 @@ def preflight(job: Job) -> None:
         needed.append("qemu-img")
     if job.prep:
         needed.append("virt-customize")
-    if job.mode in {"template", "existing"}:
+    if job.mode in {"template", "existing"} or (job.mode == "image" and job.vmids):
         needed.extend(["qm", "pvesm"])
     for tool in needed:
         if shutil.which(tool) is None:
@@ -140,7 +165,8 @@ def _existing_plan(config_text: str, vmid: int, storage: str) -> tuple[str, list
 
 def _run_fetched(job: Job, release: str, vmid: int | None) -> None:
     spec = _spec_for(job.distro, release)
-    if job.mode != "image":
+    inserts = job.mode == "image" and vmid is not None
+    if job.mode != "image" or inserts:
         if vmid is None:
             raise RuntimeError("VMID is required")
         if _storage_rejects_images(job.storage):
@@ -151,12 +177,19 @@ def _run_fetched(job: Job, release: str, vmid: int | None) -> None:
     if job.prep:
         # apply() wants a str. shlex.join rejects a Path on dry-run.
         customize_apply(str(work), spec.family, dry_run=job.dry_run)
-    if job.mode == "image":
+    if job.mode == "image" and not inserts:
         dest = Path(job.dest_dir) / published_name(job.distro, release, job.disk_format)
-        status = publish(work, dest, job.collision, dry_run=job.dry_run)
-        # Collision "skip" left the existing file in place. That is not a failed release.
-        if status == "skipped":
-            return
+        publish(work, dest, job.collision, dry_run=job.dry_run)
+        return
+    if inserts:
+        insert_disk(
+            vmid=vmid,
+            storage=job.storage,
+            image_path=str(work),
+            disk_policy="backup" if vmid in job.backup_vmids else "overwrite",
+            dry_run=job.dry_run,
+            run=default_run,
+        )
         return
     create_template(
         vmid=vmid,
@@ -168,6 +201,8 @@ def _run_fetched(job: Job, release: str, vmid: int | None) -> None:
         image_path=str(work),
         dry_run=job.dry_run,
         destroy_ok=vmid in job.destroy_vmids,
+        backup_disks=vmid in job.backup_vmids,
+        backup_dir=job.cache_dir,
         run=default_run,
     )
 
@@ -228,7 +263,7 @@ def run_one(job: Job, release: str, vmid: int | None) -> None:
 
 
 def _pairs(job: Job) -> list[tuple[str, int | None]]:
-    if job.mode == "image":
+    if job.mode == "image" and not job.vmids:
         return [(release, None) for release in job.releases]
     if len(job.vmids) != len(job.releases):
         raise RuntimeError("VMID count does not match releases")
@@ -247,13 +282,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         job = interview(
-            input,
+            arm(_read_line),
             _write,
             dry_run=args.dry_run,
             list_storages=list_storages,
             releases_for=releases_for,
             normalize_release=normalize_release,
             vmids_in_use=vmids_in_use,
+            vm_has_disks=vm_has_disks,
         )
     except PromptAbort:
         print("aborted")
@@ -282,6 +318,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"OK {release}")
     print("done")
     return 1 if failed else 0
+
+
+def _read_line() -> str:
+    return input()
 
 
 def _write(text: str) -> None:

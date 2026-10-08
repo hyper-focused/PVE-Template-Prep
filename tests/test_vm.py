@@ -8,8 +8,10 @@ from contextlib import redirect_stdout
 
 from pve_prep.vm import (
     VmError,
+    config_has_os_disk,
     create_template,
     existing_prep_commands,
+    insert_disk,
     parse_imported_volid,
     parse_os_disk,
     parse_qm_status,
@@ -318,7 +320,7 @@ class CreateTemplateTests(unittest.TestCase):
         )
         self.assertEqual(
             printed[0],
-            "# qm destroy 910  # only if this VMID exists, is stopped, and is a template",
+            "# qm destroy 910  # only if this VMID exists and is stopped",
         )
         self.assertEqual(printed[1:], [" ".join(cmd) for cmd in expected])
 
@@ -341,7 +343,6 @@ class CreateTemplateTests(unittest.TestCase):
         run = FakeRun(
             [
                 (0, "status: stopped\n"),
-                (0, "name: old\ntemplate: 1\n"),
                 (0, ""),
                 (0, ""),
                 (0, ""),
@@ -355,13 +356,12 @@ class CreateTemplateTests(unittest.TestCase):
         result = create_template(**_create(destroy_ok=True, run=run))
         self.assertEqual(result, volid)
         self.assertEqual(run.calls[0], ["qm", "status", "910"])
-        self.assertEqual(run.calls[1], ["qm", "config", "910"])
-        self.assertEqual(run.calls[2], ["qm", "destroy", "910"])
-        self.assertEqual(run.calls[3][:3], ["qm", "create", "910"])
-        self.assertEqual(run.calls[4], ["qm", "importdisk", "910", IMAGE, STORAGE])
-        self.assertEqual(run.calls[5], ["qm", "config", "910"])
+        self.assertEqual(run.calls[1], ["qm", "destroy", "910"])
+        self.assertEqual(run.calls[2][:3], ["qm", "create", "910"])
+        self.assertEqual(run.calls[3], ["qm", "importdisk", "910", IMAGE, STORAGE])
+        self.assertEqual(run.calls[4], ["qm", "config", "910"])
         self.assertEqual(
-            run.calls[6:],
+            run.calls[5:],
             [
                 ["qm", "set", "910", "--scsi0", f"{volid},discard=on,ssd=1"],
                 ["qm", "set", "910", "--ide2", f"{STORAGE}:cloudinit"],
@@ -370,29 +370,25 @@ class CreateTemplateTests(unittest.TestCase):
             ],
         )
 
-    def test_stopped_non_template_is_not_destroyed(self) -> None:
+    def test_stopped_vm_is_replaced_even_when_not_a_template(self) -> None:
         volid = "NFS-SATA-SSD1:vm-910-disk-1"
         run = FakeRun(
             [
                 (0, "status: stopped\n"),
-                (0, "name: old\nscsi0: NFS-SATA-SSD1:vm-910-disk-0\n"),
-                (0, ""),
-                (0, f"unused0: {volid}\nscsi0: NFS-SATA-SSD1:vm-910-disk-0\n"),
                 (0, ""),
                 (0, ""),
                 (0, ""),
+                (0, f"unused0: {volid}\n"),
                 (0, ""),
                 (0, ""),
-                (0, ""),
-                (0, f"scsi0: {volid}\n"),
                 (0, ""),
                 (0, ""),
             ]
         )
         result = create_template(**_create(destroy_ok=True, run=run))
         self.assertEqual(result, volid)
-        self.assertNotIn(["qm", "destroy", "910"], run.calls)
-        self.assertEqual(run.calls[2], ["qm", "importdisk", "910", IMAGE, STORAGE])
+        self.assertEqual(run.calls[1], ["qm", "destroy", "910"])
+        self.assertEqual(run.calls[3], ["qm", "importdisk", "910", IMAGE, STORAGE])
         self.assertEqual(run.calls[-1], ["qm", "template", "910"])
 
     def test_importdisk_failure_without_volume_destroys(self) -> None:
@@ -454,6 +450,119 @@ class CreateTemplateTests(unittest.TestCase):
             create_template(**_create(run=run))
         self.assertIn("910", str(caught.exception))
         self.assertNotIn(["qm", "destroy", "910"], run.calls)
+
+    def test_backup_copies_the_disk_before_destroy(self) -> None:
+        old = "NFS-SATA-SSD1:vm-910-disk-0.raw"
+        volid = "NFS-SATA-SSD1:910/vm-910-disk-0.raw"
+        run = FakeRun(
+            [
+                (0, "status: stopped\n"),
+                (0, f"template: 1\nscsi0: {old}\n"),
+                (0, "/mnt/pve/NFS/vm-910-disk-0.raw\n"),
+                (0, ""),
+                (0, ""),
+                (0, ""),
+                (0, ""),
+                (0, f"unused0: {volid}\n"),
+                (0, ""),
+                (0, ""),
+                (0, ""),
+                (0, ""),
+            ]
+        )
+        result = create_template(
+            **_create(
+                destroy_ok=True,
+                backup_disks=True,
+                backup_dir="/var/tmp/pve-template-prep/cache",
+                run=run,
+            )
+        )
+        self.assertEqual(result, volid)
+        self.assertEqual(run.calls[1], ["qm", "config", "910"])
+        self.assertEqual(run.calls[2], ["pvesm", "path", old])
+        self.assertEqual(run.calls[3][:4], ["qemu-img", "convert", "-O", "qcow2"])
+        self.assertTrue(run.calls[3][4].endswith("vm-910-disk-0.raw"))
+        self.assertIn("vm-910-scsi0.bak.", run.calls[3][5])
+        self.assertEqual(run.calls[4], ["qm", "destroy", "910"])
+
+    def test_cloudinit_alone_is_not_an_os_disk(self) -> None:
+        text = "ide2: NFS-SATA-SSD1:9001/vm-9001-cloudinit.qcow2,media=cdrom\n"
+        self.assertFalse(config_has_os_disk(text))
+        self.assertTrue(config_has_os_disk("scsi0: NFS-SATA-SSD1:vm-910-disk-0\n"))
+
+
+class InsertDiskTests(unittest.TestCase):
+    def test_overwrite_replaces_the_boot_disk(self) -> None:
+        old = "NFS-SATA-SSD1:vm-910-disk-0"
+        new = "NFS-SATA-SSD1:vm-910-disk-1"
+        run = FakeRun(
+            [
+                (0, "status: stopped\n"),
+                (0, f"boot: order=scsi0\nscsi0: {old}\n"),
+                (0, ""),
+                (0, f"unused0: {new}\nscsi0: {old}\n"),
+                (0, ""),
+                (0, f"unused0: {old}\nscsi0: {new}\n"),
+                (0, ""),
+            ]
+        )
+        result = insert_disk(
+            vmid=910,
+            storage=STORAGE,
+            image_path=IMAGE,
+            disk_policy="overwrite",
+            dry_run=False,
+            run=run,
+        )
+        self.assertEqual(result, new)
+        self.assertEqual(run.calls[4], ["qm", "set", "910", "--scsi0", f"{new},discard=on,ssd=1"])
+        self.assertEqual(run.calls[6], ["qm", "set", "910", "--delete", "unused0"])
+        self.assertNotIn(["qm", "destroy", "910"], run.calls)
+        self.assertNotIn(["qm", "template", "910"], run.calls)
+
+    def test_backup_keeps_the_old_disk(self) -> None:
+        old = "NFS-SATA-SSD1:vm-910-disk-0"
+        new = "NFS-SATA-SSD1:vm-910-disk-1"
+        run = FakeRun(
+            [
+                (0, "status: stopped\n"),
+                (0, f"scsi0: {old}\n"),
+                (0, ""),
+                (0, f"unused0: {new}\nscsi0: {old}\n"),
+                (0, ""),
+            ]
+        )
+        result = insert_disk(
+            vmid=910,
+            storage=STORAGE,
+            image_path=IMAGE,
+            disk_policy="backup",
+            dry_run=False,
+            run=run,
+        )
+        self.assertEqual(result, new)
+        self.assertEqual(run.calls[4], ["qm", "set", "910", "--scsi1", f"{new},discard=on,ssd=1"])
+        self.assertNotIn(["qm", "destroy", "910"], run.calls)
+
+    def test_refuses_a_template(self) -> None:
+        run = FakeRun(
+            [
+                (0, "status: stopped\n"),
+                (0, "template: 1\nscsi0: NFS-SATA-SSD1:vm-910-disk-0\n"),
+            ]
+        )
+        with self.assertRaises(VmError) as caught:
+            insert_disk(
+                vmid=910,
+                storage=STORAGE,
+                image_path=IMAGE,
+                disk_policy="overwrite",
+                dry_run=False,
+                run=run,
+            )
+        self.assertIn("template", str(caught.exception))
+        self.assertEqual(run.calls, [["qm", "status", "910"], ["qm", "config", "910"]])
 
 
 if __name__ == "__main__":

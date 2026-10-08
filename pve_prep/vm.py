@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from datetime import datetime, timezone
+from pathlib import Path
 
 
 class VmError(Exception):
@@ -98,6 +100,31 @@ def parse_os_disk(config_text: str, storage: str) -> tuple[str, str] | None:
     return bus_key, volid
 
 
+def list_os_disks(config_text: str) -> list[tuple[str, str]]:
+    """Return (bus key, volid) for OS disks on any storage.
+
+    Cloud-init and cdrom volumes are not OS disks.
+    """
+    found: list[tuple[str, str]] = []
+    for raw in config_text.splitlines():
+        parsed = _key_rest(raw)
+        if parsed is None:
+            continue
+        key, rest = parsed
+        if _BUS_KEY.fullmatch(key) is None:
+            continue
+        volid = rest.split(",", 1)[0].strip()
+        if any(marker in volid or marker in rest for marker in _SKIP_MARKERS):
+            continue
+        found.append((key, volid))
+    return found
+
+
+def config_has_os_disk(config_text: str) -> bool:
+    """True when the guest config has an OS disk on any storage."""
+    return bool(list_os_disks(config_text))
+
+
 def is_template(config_text: str) -> bool:
     """True when the guest config is a Proxmox template."""
     for raw in config_text.splitlines():
@@ -126,6 +153,21 @@ def boot_devices(config_text: str) -> list[str] | None:
             if _BUS_KEY.fullmatch(bus):
                 devices.append(bus)
     return devices
+
+
+def select_boot_disk(config_text: str) -> tuple[str, str] | None:
+    """Boot OS disk on any storage. Falls back to the first OS disk."""
+    disks: dict[str, tuple[str, str]] = {}
+    for bus, volid in list_os_disks(config_text):
+        disks.setdefault(bus, (bus, volid))
+    order = boot_devices(config_text)
+    if order:
+        for bus in order:
+            if bus in disks:
+                return disks[bus]
+    if not disks:
+        return None
+    return next(iter(disks.values()))
 
 
 def select_os_disk(config_text: str, storage: str) -> tuple[str, str] | None:
@@ -380,48 +422,67 @@ def _import_volume(
     return volid
 
 
-def _reuse_commands(
-    *,
-    vmid: int,
-    name: str,
-    memory_mb: int,
-    cores: int,
-    bridge: str,
-    storage: str,
-    imported_volid: str,
-) -> list[list[str]]:
-    vid = str(vmid)
-    return [
-        [
-            "qm",
-            "set",
-            vid,
-            "--name",
-            name,
-            "--memory",
-            str(memory_mb),
-            "--cores",
-            str(cores),
-            "--net0",
-            f"virtio,bridge={bridge}",
-        ],
-        ["qm", "set", vid, "--agent", "enabled=1"],
-        ["qm", "set", vid, "--rng0", "source=/dev/urandom"],
-        ["qm", "set", vid, "--serial0", "socket", "--vga", "serial0"],
-        ["qm", "set", vid, "--scsi0", f"{imported_volid},discard=on,ssd=1"],
-        ["qm", "set", vid, "--ide2", f"{storage}:cloudinit"],
-        ["qm", "set", vid, "--boot", "order=scsi0"],
-    ]
+def _path_line(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
 
 
-def _drop_stale_unused(run: Run, *, vmid: int, keep: str, destroyed: bool) -> None:
+def _backup_dest(backup_dir: str, vmid: int, bus: str) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return str(Path(backup_dir) / f"vm-{vmid}-{bus}.bak.{stamp}.qcow2")
+
+
+def _backup_os_disks(run: Run, *, vmid: int, config_text: str, backup_dir: str) -> None:
+    """Copy each OS disk to backup_dir. The VM is left alone."""
+    disks = list_os_disks(config_text)
+    if not disks:
+        return
+    if not backup_dir:
+        raise VmError(f"VM {vmid} disk backup needs a cache directory")
+    for bus, volid in disks:
+        located = run(["pvesm", "path", volid])
+        if getattr(located, "returncode", 1) != 0:
+            raise VmError(f"VM {vmid} disk path failed for {volid}: {_detail(located)}")
+        source = _path_line(getattr(located, "stdout", "") or "")
+        if not source:
+            raise VmError(f"VM {vmid} disk path for {volid} was empty")
+        dest = _backup_dest(backup_dir, vmid, bus)
+        copied = run(["qemu-img", "convert", "-O", "qcow2", source, dest])
+        if getattr(copied, "returncode", 1) != 0:
+            raise VmError(f"VM {vmid} disk backup failed for {volid}: {_detail(copied)}")
+        print(f"backup {volid} -> {dest}")
+
+
+def next_scsi_index(config_text: str) -> int:
+    """First scsi index that is not already in the config. scsi0 through scsi30."""
+    used: set[int] = set()
+    for raw in config_text.splitlines():
+        parsed = _key_rest(raw)
+        if parsed is None:
+            continue
+        key = parsed[0]
+        if not key.startswith("scsi"):
+            continue
+        suffix = key[4:]
+        if suffix.isdigit():
+            used.add(int(suffix))
+    for index in range(31):
+        if index not in used:
+            return index
+    raise VmError("no free scsi slot")
+
+
+def _delete_unused_volid(run: Run, *, vmid: int, volid: str) -> None:
     cfg = run(["qm", "config", str(vmid)])
     if getattr(cfg, "returncode", 1) != 0:
-        raise VmError(f"VM {vmid} config failed before unused cleanup: {_detail(cfg)}")
-    for key, volid in unused_volumes(getattr(cfg, "stdout", "") or ""):
-        if volid == keep:
+        raise VmError(f"VM {vmid} config failed before disk cleanup: {_detail(cfg)}")
+    for key, found in unused_volumes(getattr(cfg, "stdout", "") or ""):
+        if found != volid:
             continue
-        _must(run, ["qm", "set", str(vmid), "--delete", key], vmid=vmid, destroyed=destroyed)
+        _must(run, ["qm", "set", str(vmid), "--delete", key], vmid=vmid, destroyed=False)
 
 
 def create_template(
@@ -436,8 +497,14 @@ def create_template(
     dry_run: bool,
     destroy_ok: bool,
     run: Run,
+    backup_disks: bool = False,
+    backup_dir: str = "",
 ) -> str:
-    """Create a cloud template via run, or print qm commands when dry_run is set."""
+    """Create a cloud template via run, or print qm commands when dry_run is set.
+
+    An existing stopped VM is destroyed first when destroy_ok is set, template
+    or not. backup_disks copies OS disks into backup_dir before that destroy.
+    """
     guessed = f"{storage}:vm-{vmid}-disk-0"
     planned = template_commands(
         vmid=vmid,
@@ -450,10 +517,13 @@ def create_template(
         imported_volid=guessed,
     )
     if dry_run:
+        if backup_disks:
+            dest = backup_dir or "."
+            print(f"# qemu-img convert -O qcow2 <os-disk> {dest}/vm-{vmid}-os.bak.qcow2")
         if destroy_ok:
             print(
                 f"# qm destroy {vmid}  "
-                "# only if this VMID exists, is stopped, and is a template"
+                "# only if this VMID exists and is stopped"
             )
         for cmd in planned:
             print(" ".join(cmd))
@@ -469,23 +539,18 @@ def create_template(
             raise VmError(f"VM {vmid} already exists")
         if state != "stopped":
             raise VmError(f"VM {vmid} status {state or 'unknown'} cannot be replaced")
-        cfg = run(["qm", "config", str(vmid)])
-        if getattr(cfg, "returncode", 1) != 0:
-            raise VmError(f"VM {vmid} config failed: {_detail(cfg)}")
-        if is_template(getattr(cfg, "stdout", "") or ""):
-            _must(run, ["qm", "destroy", str(vmid)], vmid=vmid, destroyed=False)
-            destroyed = True
-        else:
-            return _replace_existing_disk(
+        if backup_disks:
+            cfg = run(["qm", "config", str(vmid)])
+            if getattr(cfg, "returncode", 1) != 0:
+                raise VmError(f"VM {vmid} config failed: {_detail(cfg)}")
+            _backup_os_disks(
                 run,
                 vmid=vmid,
-                name=name,
-                memory_mb=memory_mb,
-                cores=cores,
-                bridge=bridge,
-                storage=storage,
-                image_path=image_path,
+                config_text=getattr(cfg, "stdout", "") or "",
+                backup_dir=backup_dir,
             )
+        _must(run, ["qm", "destroy", str(vmid)], vmid=vmid, destroyed=False)
+        destroyed = True
 
     _must(run, planned[0], vmid=vmid, destroyed=destroyed)
     volid = _import_volume(
@@ -511,18 +576,53 @@ def create_template(
     return volid
 
 
-def _replace_existing_disk(
-    run: Run,
+def insert_disk(
     *,
     vmid: int,
-    name: str,
-    memory_mb: int,
-    cores: int,
-    bridge: str,
     storage: str,
     image_path: str,
+    disk_policy: str,
+    dry_run: bool,
+    run: Run,
 ) -> str:
-    """Import a new disk onto a stopped non-template VM, then swap scsi0."""
+    """Import a disk into a stopped VM. The VM itself is not replaced.
+
+    backup leaves the current OS disk in place and attaches the new one on
+    the next scsi slot. overwrite replaces the boot disk and deletes the old
+    volume. A template is refused.
+    """
+    if disk_policy not in {"backup", "overwrite"}:
+        raise VmError(f"unknown disk policy {disk_policy}")
+    guessed = f"{storage}:vm-{vmid}-disk-0"
+    if dry_run:
+        print(" ".join(["qm", "importdisk", str(vmid), image_path, storage]))
+        if disk_policy == "backup":
+            print(
+                f"# qm set {vmid} --scsiN {guessed},discard=on,ssd=1  "
+                "# next free scsi slot; the current disk stays"
+            )
+        else:
+            print(
+                f"# qm set {vmid} --<boot-disk> {guessed},discard=on,ssd=1  "
+                "# previous disk is deleted"
+            )
+        return guessed
+
+    status = run(["qm", "status", str(vmid)])
+    if getattr(status, "returncode", 1) != 0:
+        raise VmError(f"VM {vmid} does not exist")
+    state = parse_qm_status(getattr(status, "stdout", "") or "")
+    if state == "running":
+        raise VmError(f"VM {vmid} is running")
+    if state != "stopped":
+        raise VmError(f"VM {vmid} status {state or 'unknown'} cannot take a disk")
+    cfg = run(["qm", "config", str(vmid)])
+    if getattr(cfg, "returncode", 1) != 0:
+        raise VmError(f"VM {vmid} config failed: {_detail(cfg)}")
+    config_text = getattr(cfg, "stdout", "") or ""
+    if is_template(config_text):
+        raise VmError(f"VM {vmid} is a template; insert does not replace a template")
+    current = select_boot_disk(config_text)
     volid = _import_volume(
         run,
         vmid=vmid,
@@ -531,18 +631,14 @@ def _replace_existing_disk(
         created_now=False,
         destroyed=False,
     )
-    for cmd in _reuse_commands(
-        vmid=vmid,
-        name=name,
-        memory_mb=memory_mb,
-        cores=cores,
-        bridge=bridge,
-        storage=storage,
-        imported_volid=volid,
-    ):
-        _must(run, cmd, vmid=vmid, destroyed=False)
-    _drop_stale_unused(run, vmid=vmid, keep=volid, destroyed=False)
-    _must(run, ["qm", "template", str(vmid)], vmid=vmid, destroyed=False)
+    attached = f"{volid},discard=on,ssd=1"
+    if disk_policy == "overwrite" and current is not None:
+        bus, old_volid = current
+        _must(run, ["qm", "set", str(vmid), f"--{bus}", attached], vmid=vmid, destroyed=False)
+        _delete_unused_volid(run, vmid=vmid, volid=old_volid)
+        return volid
+    slot = next_scsi_index(config_text)
+    _must(run, ["qm", "set", str(vmid), f"--scsi{slot}", attached], vmid=vmid, destroyed=False)
     return volid
 
 

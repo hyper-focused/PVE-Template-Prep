@@ -22,7 +22,7 @@ sudo bash install.sh
 sudo pve-template-prep
 ```
 
-The installer creates `/opt/pve-template-prep`, pulls `pve-template-prep.py` and `pve_prep/` from GitHub, checks that those files are root-owned and not writable by anyone else, and links the command to `/usr/local/sbin/pve-template-prep`. It also installs `libguestfs-tools` and `qemu-utils` if they are missing. Python 3, `qm`, and `pvesm` are already on PVE 9. To install somewhere else, use `DEST=/somewhere bash install.sh`, or `sudo DEST=/somewhere bash install.sh`. A clone is only useful if you want the unit tests. One downloaded script, without the `pve_prep/` directory beside it, will not start.
+The installer creates `/opt/pve-template-prep`, pulls `pve-template-prep.py`, `pve_prep/`, and `vendor/` from GitHub, checks that those files are root-owned and not writable by anyone else, and links the command to `/usr/local/sbin/pve-template-prep`. `vendor/` is questionary, prompt_toolkit, and wcwidth, pinned in `vendor/VERSIONS`. The node does not pip-install them, and it does not need `python3-venv`. It also installs `libguestfs-tools` and `qemu-utils` if they are missing. Python 3, `qm`, and `pvesm` are already on PVE 9. To install somewhere else, use `DEST=/somewhere bash install.sh`, or `sudo DEST=/somewhere bash install.sh`. A clone is only useful if you want the unit tests. One downloaded script, without the `pve_prep/` directory beside it, will not start.
 
 `sudo` only has to set the effective uid to 0. `qm`, `pvesm`, `qemu-img`, and `virt-customize` are started by that process and stay root. They do not need their own sudoers rules. A `NOEXEC` tag on the sudoers command would block them.
 
@@ -30,27 +30,33 @@ The installer creates `/opt/pve-template-prep`, pulls `pve-template-prep.py` and
 
 ## What it asks
 
-Empty input accepts the default when the question shows one. The last question is `Type yes to run:`. Only the exact answer `yes` starts work.
+Each question says what that step does before it asks. Empty input accepts the default when the question shows one. A wrong answer asks that question again. The last line is `Type YES`. `YES` or `yes` starts the run. `X` or `no` exits.
+
+On a terminal the same questions are menus. Arrow keys move, a number highlights that row, and Enter accepts it. The "do not back up" row is red. Releases are a checkbox: space marks one, and one to three are allowed. VMIDs, `DELETE`, and `YES` are still typed. A pipe, or a `vendor/` tree that will not import, keeps the numbered lines below. A codename such as `bookworm` works on that numbered path.
 
 1. Distro, by number.
-2. Releases, comma-separated, one to three. A codename works where the catalog has one (`bookworm`, `noble`).
-3. Product. `1` image, `2` template, `3` existing. Enter selects template.
-4. Disk format, unless the product is existing. `1` raw, `2` qcow2. Enter selects raw.
-5. Where it goes. Image mode asks for a directory. Template and existing modes ask for a PVE storage id. A number picks from the detected list.
-6. Image mode only: if that file already exists. `1` backup, `2` overwrite, `3` skip. Enter selects backup.
-7. Template and existing modes: VMIDs, one per release.
-   - Enter starts at 9001 and counts up. Two releases become 9001 and 9002.
-   - One number counts up from there. `910` with two releases becomes 910 and 911.
-   - A comma-separated list is used as written. `9001, 9050` stays those two IDs. The list length has to match the number of releases.
-   - An inclusive range works when its length matches. `910-912` is three IDs.
-8. Template mode only, and only for VMIDs that already exist: type a VMID again to allow replacing it. Enter refuses every replace. Free VMIDs skip this question. A range is limited to VMIDs you already chose.
-9. Guest prep. Enter means yes. `n` skips `virt-customize`. Template hardware is still applied.
-10. Template mode only: hardware. Enter accepts bridge `vmbr0`, memory 2048 MB, cores 2. `n` asks for each value.
-11. Read the summary. Type `yes`.
+2. Releases, by number, comma-separated, one to three. The numbers are the menu, not the version. On Debian, `2, 3` is 12 and 13. A codename still works (`bookworm`, `noble`).
+3. What to build. `1` complete PVE VM template, `2` PVE VM disk image only, `3` prep a stopped VM in place. Enter selects the template.
+4. VM disk format, unless the choice was the stopped VM. `1` ZFS raw (a file-based raw image is `.img`), `2` QEMU qcow2. Enter selects raw.
+5. VMIDs, one per release.
+   - Template: Enter uses the next free IDs from 9001. If 9001 and 9002 are taken, two releases default to 9003 and 9004. A hole is skipped, so a taken 9002 with two releases defaults to 9001 and 9003.
+   - One typed number counts up from there. `910` with two releases becomes 910 and 911, even if one of those is already in use.
+   - A comma-separated list is used as written. The length has to match the release count.
+   - An inclusive range works when its length matches.
+   - Disk image only: Enter publishes a file and does not touch a VM. Type an existing VMID to insert the new disk into that VM. A free ID is rejected.
+   - Stopped-VM prep: the VM has to already exist. There is no free-ID default.
+6. Where it goes. A published disk image asks for a directory. A template, an insert, or a stopped VM asks for `VM Disk Storage Path`. A number picks from the detected list. A storage id that is not in that list is asked again.
+7. Disks that are already there, asked once per VMID.
+   - Template: the VM will be deleted. `1` copies the disk into the cache first. `2` does not. `2` then requires `DELETE`. `X` exits. A VM with no OS disk skips the backup menu and still requires `DELETE`.
+   - Disk image: the VM stays. `1` keeps the old disk and attaches the new one. `2` deletes the old disk, after `DELETE`.
+   - A published file that already exists is renamed aside. That path does not ask.
+8. Guest prep. The prompt says what it changes. Enter means yes. `n` skips `virt-customize`.
+9. Template mode: the hardware that will be applied, then bridge, memory, and cores. Enter keeps `vmbr0`, 2048 MB, and 2 cores. `n` asks for those three. SCSI type, serial console, cloud-init, and the rest are listed and can be changed later with `qm set`.
+10. Read the summary. Type `YES`.
 
 ## What the three products do
 
-**Image.** Download, optionally customize, and write `<distro>-<release>-pve.img` or `.qcow2` into the directory you named. Needs `qemu-img`. Does not need `qm`. The directory is a filesystem path, not a ZFS or LVM storage id.
+**Image.** Download, optionally customize, and write `<distro>-<release>-pve.img` or `.qcow2` into the directory you named. Needs `qemu-img`. Does not need `qm` unless you typed an existing VMID. The directory is a filesystem path, not a ZFS or LVM storage id. An existing VMID keeps that VM and gets the new disk inserted. A template VM is refused.
 
 **Template.** Customize the downloaded image while it is still a file, then `qm importdisk` into the storage you named. Any storage that accepts `images` works, including ZFS and LVM. Those volumes are raw. `qcow2` stays sparse on the cache disk until import. `raw` expands there first, which is a second full copy before the import. The guest name is `<distro>-<release>-cloud`. Needs `qemu-img`, `qm`, and `pvesm`. Guest prep also needs `virt-customize`.
 
@@ -60,9 +66,13 @@ One release failing does not cancel the rest, unless a template was destroyed an
 
 ## Replacing a VMID
 
-Template mode destroys a VM only when all of these are true: you typed that VMID again, the VM exists, it is stopped, it is already a template, and the new image has been downloaded and prepped. If the replacement then fails, the run stops.
+Enter never lands on a VMID that is already in use. Replacing one means you typed that ID.
 
-A stopped VM that is not a template is kept. The new disk is imported, `scsi0` is swapped, and the previous disk is removed only after that swap. Existing mode never destroys a VM. The confirm screen lists every VMID that may be destroyed, plus bridge, memory, and cores.
+Template mode then replaces the whole VM, template or not, after the new image is downloaded and prepped. The VM has to be stopped. A running VM is left alone. Each in-use VMID is asked on its own. Backup copies that OS disk into the cache with `qemu-img convert` before `qm destroy`. Skipping the backup requires typing `DELETE`. `X` exits. If that destroy succeeds and the new template does not finish, the run stops.
+
+Disk-image mode does not destroy the VM. Backup attaches the new disk on the next free scsi slot and leaves the old disk. Overwrite replaces the boot disk and deletes the previous volume. Existing mode never destroys a VM and never inserts a downloaded image.
+
+The confirm screen lists every VMID that will be replaced, plus bridge, memory, and cores.
 
 ## Catalog
 

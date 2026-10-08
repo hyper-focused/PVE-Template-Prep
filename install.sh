@@ -18,6 +18,7 @@ MODULES=(
   download.py
   job.py
   prompts.py
+  ui.py
   vm.py
 )
 
@@ -78,12 +79,51 @@ for name in "${MODULES[@]}"; do
   fi
 done
 
+for name in questionary prompt_toolkit wcwidth; do
+  if [[ ! -f "$src/vendor/$name/__init__.py" ]]; then
+    echo "archive is missing vendor/$name" >&2
+    exit 1
+  fi
+done
+
+if [[ ! -f "$src/vendor/VERSIONS" ]]; then
+  echo "archive is missing vendor/VERSIONS" >&2
+  exit 1
+fi
+
+meta=( "$src"/vendor/prompt_toolkit-*.dist-info/METADATA )
+if [[ ! -f "${meta[0]}" ]]; then
+  echo "archive is missing prompt_toolkit package metadata" >&2
+  exit 1
+fi
+
+if find "$src/vendor" -type l -print -quit | grep -q .; then
+  echo "vendor tree contains a symlink" >&2
+  exit 1
+fi
+
+copy_tree() {
+  local from="$1"
+  local to="$2"
+  local dir file rel
+  install -d -o root -g root -m 0755 "$to"
+  while IFS= read -r -d '' dir; do
+    rel="${dir#"$from"/}"
+    install -d -o root -g root -m 0755 "$to/$rel"
+  done < <(find "$from" -mindepth 1 -type d -print0)
+  while IFS= read -r -d '' file; do
+    rel="${file#"$from"/}"
+    install -o root -g root -m 0644 "$file" "$to/$rel"
+  done < <(find "$from" -type f -print0)
+}
+
 install -d -o root -g root -m 0755 "$DEST"
 install -d -o root -g root -m 0755 "$DEST/pve_prep"
 install -o root -g root -m 0755 "$src/pve-template-prep.py" "$DEST/pve-template-prep.py"
 for name in "${MODULES[@]}"; do
   install -o root -g root -m 0644 "$src/pve_prep/$name" "$DEST/pve_prep/$name"
 done
+copy_tree "$src/vendor" "$DEST/vendor"
 
 confirm_path() {
   local path="$1"
@@ -110,6 +150,9 @@ confirm_path "$DEST/pve-template-prep.py"
 for name in "${MODULES[@]}"; do
   confirm_path "$DEST/pve_prep/$name"
 done
+while IFS= read -r -d '' path; do
+  confirm_path "$path"
+done < <(find "$DEST/vendor" -print0)
 
 if [[ ! -x "$DEST/pve-template-prep.py" ]]; then
   echo "entry script is not executable" >&2
@@ -123,12 +166,23 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 paths = [root / "pve-template-prep.py", *sorted((root / "pve_prep").glob("*.py"))]
-if len(list((root / "pve_prep").glob("*.py"))) != 7:
+if len(list((root / "pve_prep").glob("*.py"))) != 8:
     raise SystemExit("pve_prep is missing modules")
+vendor = root / "vendor"
+paths.extend(sorted(vendor.rglob("*.py")))
 for path in paths:
     ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+sys.path.insert(0, str(vendor))
 sys.path.insert(0, str(root))
 import pve_prep.catalog  # noqa: E402
+import prompt_toolkit  # noqa: E402
+import questionary  # noqa: E402
+import wcwidth  # noqa: E402
+
+if wcwidth.HAS_C_EXTENSION:
+    raise SystemExit("wcwidth C extension loaded; ship the Python fallback")
+if list((vendor / "wcwidth").glob("_wcwidth_c.*")):
+    raise SystemExit("wcwidth C extension must not be shipped")
 PY
 
 if ! command -v virt-customize >/dev/null 2>&1 || ! command -v qemu-img >/dev/null 2>&1; then
