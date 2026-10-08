@@ -2,52 +2,34 @@
 
 Interactive prep for Proxmox VE 9 cloud images. One distro per run, up to three releases. It can write a disk image, create a template VM, or prep a stopped VM that already exists.
 
-## Put it on the node
+## Install
 
-Clone the repo. The program is `pve-cloud-prep.py` plus the `pve_prep/` directory beside it. Downloading only the script fails on import. There is no pip package and nothing to type back in.
-
-On the PVE node:
+On the PVE node, download the installer, read it, then run it with sudo. It creates `/opt/pve-cloud-prep`, pulls `pve-cloud-prep.py` and `pve_prep/` from GitHub, checks that those files are root-owned and not writable by anyone else, and links the command to `/usr/local/sbin/pve-cloud-prep`. It also installs `libguestfs-tools` and `qemu-utils` if they are missing. Python 3, `qm`, and `pvesm` are already on PVE 9.
 
 ```sh
-apt-get update
-apt-get install -y git libguestfs-tools qemu-utils
-git clone https://github.com/hyper-focused/PVE-Template-Prep.git
-cd PVE-Template-Prep
+curl -fsSLO https://raw.githubusercontent.com/hyper-focused/PVE-Template-Prep/main/install.sh
+sudo bash install.sh
 ```
 
-Copying the directory from another machine is fine. Keep this layout:
-
-```text
-PVE-Template-Prep/
-  pve-cloud-prep.py
-  pve_prep/
-    __init__.py
-    catalog.py
-    customize.py
-    download.py
-    job.py
-    prompts.py
-    vm.py
-```
-
-`tests/` is not needed on the node. Python 3 is already on PVE 9. `qm` and `pvesm` come with PVE.
+`/opt/pve-cloud-prep` is the install location. Override it with `sudo DEST=/opt/pve-cloud-prep bash install.sh`. A clone is only useful if you want the unit tests. One downloaded script, without the `pve_prep/` directory beside it, will not start.
 
 ## Run
 
-A real run is root, on the PVE node, with outbound network. Downloads land in `/var/tmp/pve-cloud-prep/cache`. `virt-customize --install` also fetches packages from inside the image.
+A live run has to be root on the PVE node. `sudo` is the normal way. Do not open a root shell unless you want one.
 
 ```sh
-cd PVE-Template-Prep
-python3 pve-cloud-prep.py
+sudo pve-cloud-prep
 ```
 
-`--dry-run` asks the same questions and prints the commands. It does not need root, and it does not download or change the host. You can do that from a laptop if this directory is there.
+`sudo` sets the effective uid to 0, which is all the root check looks at. `qm`, `pvesm`, `qemu-img`, and `virt-customize` are started by that process. They stay root. They are not called through `sudo` again, and they do not need their own sudoers rules. Leave the sudoers entry able to execute child programs. A `NOEXEC` tag on that command would block `qm` and `virt-customize`.
+
+`--dry-run` asks the same questions and prints the commands. It does not need root or sudo, and it does not download or change the host.
 
 ```sh
-python3 pve-cloud-prep.py --dry-run
+pve-cloud-prep --dry-run
 ```
 
-The path to the script can be absolute. Python finds `pve_prep` next to the script, not in the current directory. There are no distro or release flags. The prompts are the interface.
+There are no distro or release flags. The prompts are the interface. Downloads land in `/var/tmp/pve-cloud-prep/cache`, mode `0700`, owned by root. `virt-customize --install` also fetches packages from inside the image. The node needs outbound network for a live run.
 
 ## What it asks
 

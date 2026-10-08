@@ -81,7 +81,7 @@ def preflight(job: Job) -> None:
     qemu-img is only required for image and template builds.
     """
     if os.geteuid() != 0:
-        raise SystemExit("run as root on the PVE host")
+        raise SystemExit("run as root on the PVE host (sudo is fine)")
     needed: list[str] = []
     if job.mode in {"image", "template"}:
         needed.append("qemu-img")

@@ -1,0 +1,149 @@
+#!/bin/bash
+# Install pve-cloud-prep into /opt and link /usr/local/sbin/pve-cloud-prep.
+# Fetch this file, read it, then: sudo bash install.sh
+# Overrides: DEST, REPO, REF, BIN_LINK.
+
+set -euo pipefail
+
+DEST="${DEST:-/opt/pve-cloud-prep}"
+REPO="${REPO:-hyper-focused/PVE-Template-Prep}"
+REF="${REF:-main}"
+BIN_LINK="${BIN_LINK:-/usr/local/sbin/pve-cloud-prep}"
+ARCHIVE_URL="https://github.com/${REPO}/archive/refs/heads/${REF}.tar.gz"
+
+MODULES=(
+  __init__.py
+  catalog.py
+  customize.py
+  download.py
+  job.py
+  prompts.py
+  vm.py
+)
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "Run this as root: sudo bash install.sh" >&2
+  exit 1
+fi
+
+for cmd in curl tar python3 install stat; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "missing ${cmd}" >&2
+    exit 1
+  fi
+done
+
+if [[ "$DEST" != /* || "$BIN_LINK" != /* ]]; then
+  echo "DEST and BIN_LINK must be absolute paths" >&2
+  exit 1
+fi
+
+case "$DEST" in
+  / | /usr | /usr/local | /usr/local/sbin | /etc | /var | /opt)
+    echo "refusing to use DEST=$DEST" >&2
+    exit 1
+    ;;
+esac
+
+if [[ -L "$DEST" ]]; then
+  echo "refusing to install through a symlink: $DEST" >&2
+  exit 1
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+echo "Downloading ${ARCHIVE_URL}"
+curl -fsSL "$ARCHIVE_URL" -o "$work/src.tar.gz"
+tar -xzf "$work/src.tar.gz" -C "$work"
+
+src=""
+for dir in "$work"/*/; do
+  if [[ -n "$src" ]]; then
+    echo "archive contained more than one directory" >&2
+    exit 1
+  fi
+  src="${dir%/}"
+done
+
+if [[ -z "$src" || ! -f "$src/pve-cloud-prep.py" || ! -d "$src/pve_prep" ]]; then
+  echo "archive is missing pve-cloud-prep.py or pve_prep/" >&2
+  exit 1
+fi
+
+for name in "${MODULES[@]}"; do
+  if [[ ! -f "$src/pve_prep/$name" ]]; then
+    echo "archive is missing pve_prep/$name" >&2
+    exit 1
+  fi
+done
+
+install -d -o root -g root -m 0755 "$DEST"
+install -d -o root -g root -m 0755 "$DEST/pve_prep"
+install -o root -g root -m 0755 "$src/pve-cloud-prep.py" "$DEST/pve-cloud-prep.py"
+for name in "${MODULES[@]}"; do
+  install -o root -g root -m 0644 "$src/pve_prep/$name" "$DEST/pve_prep/$name"
+done
+
+confirm_path() {
+  local path="$1"
+  local owner bits
+  if [[ -L "$path" ]]; then
+    echo "installed path is a symlink: $path" >&2
+    exit 1
+  fi
+  owner="$(stat -c '%u' "$path")"
+  bits="$(stat -c '%A' "$path")"
+  if [[ "$owner" != "0" ]]; then
+    echo "not owned by root: $path" >&2
+    exit 1
+  fi
+  if [[ "${bits:5:1}" == "w" || "${bits:8:1}" == "w" ]]; then
+    echo "group or world writable: $path ($bits)" >&2
+    exit 1
+  fi
+}
+
+confirm_path "$DEST"
+confirm_path "$DEST/pve_prep"
+confirm_path "$DEST/pve-cloud-prep.py"
+for name in "${MODULES[@]}"; do
+  confirm_path "$DEST/pve_prep/$name"
+done
+
+if [[ ! -x "$DEST/pve-cloud-prep.py" ]]; then
+  echo "entry script is not executable" >&2
+  exit 1
+fi
+
+python3 - "$DEST" <<'PY'
+import ast
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+paths = [root / "pve-cloud-prep.py", *sorted((root / "pve_prep").glob("*.py"))]
+if len(list((root / "pve_prep").glob("*.py"))) != 7:
+    raise SystemExit("pve_prep is missing modules")
+for path in paths:
+    ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+sys.path.insert(0, str(root))
+import pve_prep.catalog  # noqa: E402
+PY
+
+if ! command -v virt-customize >/dev/null 2>&1 || ! command -v qemu-img >/dev/null 2>&1; then
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "Install libguestfs-tools and qemu-utils, then re-run." >&2
+    exit 1
+  fi
+  echo "Installing libguestfs-tools and qemu-utils"
+  apt-get update
+  apt-get install -y libguestfs-tools qemu-utils
+fi
+
+install -d -o root -g root -m 0755 "$(dirname "$BIN_LINK")"
+ln -sfn "$DEST/pve-cloud-prep.py" "$BIN_LINK"
+
+echo "Installed ${DEST}"
+echo "Run: sudo pve-cloud-prep"
+echo "Dry run, no root: pve-cloud-prep --dry-run"

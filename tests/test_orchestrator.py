@@ -29,8 +29,10 @@ def _stub(name: str) -> types.ModuleType:
     return module
 
 
-def _install_sibling_stubs(real_customize, real_vm) -> None:
+def _install_sibling_stubs(real_customize, real_vm, real_catalog) -> None:
     catalog = _stub("pve_prep.catalog")
+    # prompts.py imports this name while the orchestrator is loading.
+    catalog.DISTROS = real_catalog.DISTROS
     catalog.releases_for = mock.MagicMock(name="releases_for")
     catalog.normalize_release = mock.MagicMock(name="normalize_release")
 
@@ -76,7 +78,7 @@ def _load_orchestrator():
         "pve_prep.vm": vm_mod,
     }
     try:
-        _install_sibling_stubs(customize_mod, vm_mod)
+        _install_sibling_stubs(customize_mod, vm_mod, catalog_mod)
         path = ROOT / "pve-cloud-prep.py"
         spec = importlib.util.spec_from_file_location("pve_cloud_prep", path)
         if spec is None or spec.loader is None:
