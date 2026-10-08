@@ -30,7 +30,7 @@ def _stub(name: str) -> types.ModuleType:
     return module
 
 
-def _install_sibling_stubs(real_customize, real_vm, real_catalog) -> None:
+def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download) -> None:
     catalog = _stub("pve_prep.catalog")
     # prompts.py imports this name while the orchestrator is loading.
     catalog.DISTROS = real_catalog.DISTROS
@@ -41,6 +41,8 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog) -> None:
     download.fetch_verified = mock.MagicMock(name="fetch_verified")
     download.convert = mock.MagicMock(name="convert")
     download.publish = mock.MagicMock(name="publish", return_value="written")
+    download.clear_cache = mock.MagicMock(name="clear_cache")
+    download.DownloadError = real_download.DownloadError
 
     customize = _stub("pve_prep.customize")
     customize.apply = mock.MagicMock(name="apply")
@@ -83,7 +85,7 @@ def _load_orchestrator():
         "pve_prep.vm": vm_mod,
     }
     try:
-        _install_sibling_stubs(customize_mod, vm_mod, catalog_mod)
+        _install_sibling_stubs(customize_mod, vm_mod, catalog_mod, download_mod)
         path = ROOT / "pve-template-prep.py"
         spec = importlib.util.spec_from_file_location("pve_template_prep", path)
         if spec is None or spec.loader is None:
@@ -150,6 +152,7 @@ def _template_job(*, destroy=frozenset({910}), dry_run=True):
         dry_run=dry_run,
         destroy_vmids=destroy,
         backup_vmids=destroy,
+        make_template=True,
     )
 
 
@@ -187,6 +190,7 @@ class OrchestratorTest(unittest.TestCase):
         MOD.existing_prep_commands = mock.MagicMock()
         MOD.parse_storage_ids = mock.MagicMock(return_value=[])
         MOD.default_run = ORIGINAL_RUN
+        MOD.clear_cache = mock.MagicMock(name="clear_cache")
 
     def test_image_order_fetch_convert_apply_publish(self) -> None:
         order: list[str] = []
@@ -258,7 +262,10 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(recorded[0]["cores"], 2)
         self.assertEqual(recorded[0]["bridge"], "vmbr0")
         self.assertTrue(recorded[0]["dry_run"])
+        self.assertTrue(recorded[0]["make_template"])
         self.assertTrue(recorded[0]["image_path"].endswith("debian-12-pve.qcow2.work"))
+        MOD.run_one(replace(job, make_template=False), "12", 910)
+        self.assertFalse(recorded[-1]["make_template"])
         MOD.publish.assert_not_called()
         MOD.fetch_verified.assert_called()
 
@@ -340,6 +347,56 @@ class OrchestratorTest(unittest.TestCase):
         self.assertTrue(seen["dry_run"])
         self.assertEqual(seen["storages"], [])
         self.assertIn("OK 12", buf.getvalue())
+        MOD.clear_cache.assert_not_called()
+
+    def test_main_deletes_the_cache_only_after_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = str(Path(tmp) / "pve-template-prep" / "cache")
+            job = replace(
+                _image_job(releases=("12",), dry_run=False),
+                clean_cache=True,
+                cache_dir=cache,
+            )
+            MOD.fetch_verified = lambda *args, **kwargs: Path("/tmp/src.qcow2")
+            buf = io.StringIO()
+            with (
+                mock.patch.object(MOD, "interview", return_value=job),
+                mock.patch.object(MOD, "preflight"),
+                redirect_stdout(buf),
+            ):
+                code = MOD.main([])
+        self.assertEqual(code, 0)
+        MOD.clear_cache.assert_called_once_with(cache)
+        self.assertIn(f"deleted the files in {cache}", buf.getvalue())
+
+    def test_main_keeps_the_cache_when_a_release_fails(self) -> None:
+        job = replace(_image_job(releases=("12",), dry_run=False), clean_cache=True)
+
+        def fetch(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        MOD.fetch_verified = fetch
+        buf = io.StringIO()
+        with (
+            mock.patch.object(MOD, "interview", return_value=job),
+            mock.patch.object(MOD, "preflight"),
+            redirect_stdout(buf),
+        ):
+            code = MOD.main([])
+        self.assertEqual(code, 1)
+        MOD.clear_cache.assert_not_called()
+        self.assertIn("cache kept:", buf.getvalue())
+        self.assertIn("a release failed", buf.getvalue())
+
+    def test_main_dry_run_does_not_delete_the_cache(self) -> None:
+        job = replace(_image_job(releases=("12",), dry_run=True), clean_cache=True)
+        MOD.fetch_verified = lambda *args, **kwargs: Path("/tmp/src.qcow2")
+        buf = io.StringIO()
+        with mock.patch.object(MOD, "interview", return_value=job), redirect_stdout(buf):
+            code = MOD.main([])
+        self.assertEqual(code, 0)
+        MOD.clear_cache.assert_not_called()
+        self.assertIn("dry-run: would delete the files in", buf.getvalue())
 
     def test_list_storages_parses_status(self) -> None:
         proc = SimpleNamespace(returncode=0, stdout="NAME STATUS\n", stderr="")

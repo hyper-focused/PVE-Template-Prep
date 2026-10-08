@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from pve_prep.catalog import normalize_release, releases_for
 from pve_prep.customize import apply as customize_apply
 from pve_prep.customize import argv as customize_argv
-from pve_prep.download import convert, fetch_verified, publish
+from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, publish
 from pve_prep.job import Job, published_name, vm_name
 from pve_prep.prompts import PromptAbort, interview
 from pve_prep.ui import arm
@@ -203,6 +203,7 @@ def _run_fetched(job: Job, release: str, vmid: int | None) -> None:
         destroy_ok=vmid in job.destroy_vmids,
         backup_disks=vmid in job.backup_vmids,
         backup_dir=job.cache_dir,
+        make_template=job.make_template,
         run=default_run,
     )
 
@@ -270,6 +271,30 @@ def _pairs(job: Job) -> list[tuple[str, int | None]]:
     return list(zip(job.releases, job.vmids, strict=True))
 
 
+def _clear_requested_cache(job: Job, failed: bool) -> bool:
+    """Delete the prep cache only after a successful live run.
+
+    Returns True when the operator asked for a delete and it did not happen.
+    """
+    if not job.clean_cache:
+        return False
+    cache = job.cache_dir
+    if job.dry_run:
+        print(f"dry-run: would delete the files in {cache}")
+        return False
+    if failed:
+        print(f"cache kept: {cache}")
+        print("a release failed, so the download and any disk backup stay")
+        return False
+    try:
+        clear_cache(cache)
+    except DownloadError as exc:
+        print(f"FAIL cache: {exc}")
+        return True
+    print(f"deleted the files in {cache}")
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Download, prep, and publish PVE cloud images or templates.",
@@ -296,13 +321,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if not job.dry_run:
         preflight(job)
+    failed = False
     try:
         pairs = _pairs(job)
     except RuntimeError as exc:
         print(f"FAIL: {exc}")
-        print("done")
-        return 1
-    failed = False
+        failed = True
+        pairs = []
     for release, vmid in pairs:
         try:
             run_one(job, release, vmid)
@@ -317,6 +342,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"OK {release}")
     print("done")
+    if _clear_requested_cache(job, failed):
+        failed = True
     return 1 if failed else 0
 
 

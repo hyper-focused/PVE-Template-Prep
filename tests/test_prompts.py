@@ -91,6 +91,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "/tmp/images",
                 "yes",
+                "",
                 "yes",
             ]
         )
@@ -113,10 +114,13 @@ class InterviewTest(unittest.TestCase):
                 cores=2,
                 dry_run=False,
                 destroy_vmids=frozenset(),
+                make_template=False,
+                clean_cache=False,
             ),
         )
         blob = "".join(script.written)
         self.assertIn("debian 12 -> image raw /tmp/images/debian-12-pve.img guest-prep=yes", blob)
+        self.assertIn("cache: keep /var/tmp/pve-template-prep/cache", blob)
         self.assertIn("debian 13 -> image raw /tmp/images/debian-13-pve.img guest-prep=yes", blob)
         self.assertIn("ZFS raw", blob)
         self.assertIn("Type YES: ", blob)
@@ -133,6 +137,8 @@ class InterviewTest(unittest.TestCase):
                 "2",
                 "DELETE",
                 "2",
+                "",
+                "",
                 "",
                 "",
                 "yes",
@@ -184,6 +190,8 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "",
                 "",
+                "",
+                "",
                 "yes",
             ]
         )
@@ -192,6 +200,8 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.vmids, (9001, 9002))
         self.assertEqual(job.destroy_vmids, frozenset())
         self.assertEqual(job.collision, "backup")
+        self.assertTrue(job.make_template)
+        self.assertFalse(job.clean_cache)
         blob = "".join(script.written)
         self.assertIn("VMID [9001-9002]: ", blob)
         self.assertIn("debian 12 -> template VMID 9001", blob)
@@ -207,6 +217,8 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "1",
+                "",
+                "",
                 "",
                 "",
                 "yes",
@@ -237,6 +249,8 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "",
                 "",
+                "",
+                "",
                 "yes",
             ]
         )
@@ -261,6 +275,8 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "",
                 "",
+                "",
+                "",
                 "yes",
             ]
         )
@@ -282,6 +298,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "/tmp/images",
                 "y",
+                "",
                 "no",
             ]
         )
@@ -298,6 +315,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "/tmp/images",
                 "y",
+                "",
                 "yess",
                 "yes",
             ]
@@ -320,6 +338,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "/tmp/x",
                 "n",
+                "",
                 "yes",
             ]
         )
@@ -409,6 +428,8 @@ class InterviewTest(unittest.TestCase):
                 "vmbr1",
                 "4096",
                 "4",
+                "",
+                "",
                 "yes",
             ]
         )
@@ -439,6 +460,8 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "",
                 "",
+                "",
+                "",
                 "yes",
             ]
         )
@@ -460,6 +483,8 @@ class InterviewTest(unittest.TestCase):
                 "9001",
                 "DELETE",
                 "1",
+                "",
+                "",
                 "",
                 "",
                 "yes",
@@ -485,6 +510,8 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "",
                 "",
+                "",
+                "",
                 "yes",
             ]
         )
@@ -502,6 +529,7 @@ class InterviewTest(unittest.TestCase):
                 "400",
                 "1",
                 "n",
+                "",
                 "yes",
             ]
         )
@@ -524,6 +552,8 @@ class InterviewTest(unittest.TestCase):
                 cores=2,
                 dry_run=False,
                 destroy_vmids=frozenset(),
+                make_template=False,
+                clean_cache=False,
             ),
         )
         blob = "".join(script.written)
@@ -542,6 +572,7 @@ class InterviewTest(unittest.TestCase):
                 "910",
                 "1",
                 "2",
+                "",
                 "",
                 "yes",
             ]
@@ -576,6 +607,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "/tmp/images",
                 "yes",
+                "",
                 "yes",
             ]
         )
@@ -613,6 +645,8 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "",
                 "",
+                "",
+                "",
                 "yes",
             ]
         )
@@ -628,6 +662,36 @@ class InterviewTest(unittest.TestCase):
         blob = "".join(script.written)
         self.assertIn("VMID 910: the existing disk is not kept.", blob)
         self.assertIn("VMID 911: the existing disk is copied into the cache", blob)
+
+    def test_template_can_stay_a_vm_and_can_drop_the_cache(self) -> None:
+        script = _Script(
+            [
+                "1",
+                "2",
+                "",
+                "",
+                "",
+                "1",
+                "",
+                "",
+                "n",
+                "y",
+                "yes",
+            ]
+        )
+        job = script.run(dry_run=False, storages=["dir-templates"], in_use=set(), disks=set())
+        self.assertEqual(job.mode, "template")
+        self.assertEqual(job.vmids, (9001,))
+        self.assertFalse(job.make_template)
+        self.assertTrue(job.clean_cache)
+        blob = "".join(script.written)
+        self.assertIn(
+            "debian 12 -> vm VMID 9001 name debian-12-cloud storage dir-templates raw guest-prep=yes",
+            blob,
+        )
+        self.assertIn("Type YES to create the VM.", blob)
+        self.assertIn("cache: delete the files in /var/tmp/pve-template-prep/cache", blob)
+        self.assertIn("Enter converts to a template.", blob)
 
 
 if __name__ == "__main__":

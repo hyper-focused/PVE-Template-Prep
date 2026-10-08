@@ -108,8 +108,14 @@ def _choice(index: int, item):
 def select(message: str, choices, *, default=None, instruction: str | None = None):
     """choices are (label, value), plus optional danger and description.
 
-    A number highlights that row. Enter accepts it. None means cancelled.
+    A number highlights that row. Enter accepts the row the pointer is on.
+    None means cancelled.
+
+    default is accepted and ignored. questionary paints that value with
+    class:selected for the whole menu, so the first row stays marked after
+    the pointer moves. The first choice is the one Enter accepts.
     """
+    del default
     import questionary
 
     built = [_choice(index, item) for index, item in enumerate(choices, start=1)]
@@ -118,7 +124,6 @@ def select(message: str, choices, *, default=None, instruction: str | None = Non
     question = questionary.select(
         message,
         choices=built,
-        default=default,
         style=_style(),
         use_shortcuts=True,
         instruction=instruction,

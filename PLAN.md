@@ -17,7 +17,9 @@ Each step says what it does before it asks. A bad answer asks that question agai
 7. Per VMID, and only when that VM has an OS disk (or the check cannot tell). `1` backs the disk up. `2` does not, and then the operator types `DELETE`. `X` exits. A template replace with no OS disk skips the backup menu and still requires `DELETE`. An image insert with no OS disk does not.
 8. Guest prep. Enter applies it. `n` leaves the image as published.
 9. Template hardware is one list for every distro: 2048 MB, 2 cores, virtio on `vmbr0`, virtio-scsi-single, scsi0 `discard=on,ssd=1`, ide2 cloud-init, SeaBIOS, serial console, guest agent, `/dev/urandom`. Enter keeps bridge, memory, and cores. `n` changes those three. The rest is changed later with `qm set`.
-10. Summary, then `YES`.
+10. Template mode only: convert the new VM with `qm template`. Enter converts. `n` leaves a normal VM. Image and existing mode do not ask.
+11. Delete the files in `/var/tmp/pve-template-prep/cache` when the run finishes. Enter keeps them. `y` deletes them after every release succeeds. A failed release keeps the cache, including a disk backup. A dry-run does not delete. This is not all of `/var/tmp`.
+12. Summary, then `YES`. A VM that was not converted is described as a VM.
 
 `Job.backup_vmids` is the set that gets a copy. Template mode copies OS disks with `qemu-img convert` before `qm destroy`. Image mode keeps the old disk and attaches the new one on the next scsi slot. Anything else replaces the boot disk. Collision on the job is derived from that set. The entry script keys the runtime off `backup_vmids`.
 
@@ -29,11 +31,11 @@ questionary is the renderer. `pve_prep/prompts.py` owns the flow. `pve_prep/ui.p
 
 On a TTY, with the vendor tree importable:
 
-- Distro, build, format, storage, and the per-VMID backup choice are arrow menus. The explanation is printed once, then a blank line, then the menu. The numbered list is not printed again above the widget. A number highlights that row. Enter accepts it. Enter on Build accepts the template. Enter on Format accepts raw.
+- Distro, build, format, storage, and the per-VMID backup choice are arrow menus. The explanation is printed once, then a blank line, then the menu. The numbered list is not printed again above the widget. A number highlights that row. Enter accepts it. The pointer is the only highlight. The Enter default is the first row, and that row is not painted as selected after the pointer moves. Enter on Build still accepts the template. Enter on Format still accepts raw.
 - The "do not back up" row is red (`class:danger`).
 - Releases are a checkbox. Space marks a release. One to three. The result is still the release strings, in menu order. Codenames are not on this path.
 - VMIDs, `DELETE`, `YES`, the image directory, bridge, memory, and cores stay typed. The template VMID field is prefilled with the free default, so Enter accepts it. `DELETE` and `YES` are not prefilled. `X` still exits.
-- Guest prep and the hardware keep/change question are yes/no. Enter accepts the default. `n` changes it.
+- Guest prep, the hardware keep/change question, template conversion, and cache cleanup are yes/no. Enter accepts the default. Conversion defaults to yes. Cache cleanup defaults to no.
 
 No TTY, a pipe, or a vendor tree that will not import: the numbered lines, including codenames. Unit tests drive that path. They do not need a virtualenv.
 

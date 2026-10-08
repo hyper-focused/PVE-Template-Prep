@@ -31,6 +31,10 @@ class Job:
     destroy_vmids: frozenset[int]
     # VMIDs whose OS disk is copied before a replace, or kept when a disk is inserted.
     backup_vmids: frozenset[int] = frozenset()
+    # Template mode only. False leaves a normal VM and skips qm template.
+    make_template: bool = False
+    # Delete the prep-cache children after every release succeeds. Never on failure.
+    clean_cache: bool = False
 
 
 def published_name(distro: str, release: str, disk_format: str) -> str:

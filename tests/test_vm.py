@@ -212,6 +212,22 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
         self.assertIn("--serial0", cmds[0])
         self.assertIn("discard=on", cmds[2][4])
 
+    def test_template_commands_can_leave_a_normal_vm(self) -> None:
+        cmds = template_commands(
+            vmid=910,
+            name="tpl-910",
+            memory_mb=2048,
+            cores=2,
+            bridge="vmbr0",
+            storage=STORAGE,
+            image_path=IMAGE,
+            imported_volid="NFS-SATA-SSD1:vm-910-disk-0",
+            make_template=False,
+        )
+        self.assertEqual(cmds[-1], ["qm", "set", "910", "--boot", "order=scsi0"])
+        self.assertEqual(len(cmds), 5)
+        self.assertNotIn(["qm", "template", "910"], cmds)
+
     def test_existing_prep_commands_sets_discard_on_os_disk(self) -> None:
         cfg = "\n".join(
             [
@@ -390,6 +406,25 @@ class CreateTemplateTests(unittest.TestCase):
         self.assertEqual(run.calls[1], ["qm", "destroy", "910"])
         self.assertEqual(run.calls[3], ["qm", "importdisk", "910", IMAGE, STORAGE])
         self.assertEqual(run.calls[-1], ["qm", "template", "910"])
+
+    def test_make_template_false_skips_qm_template(self) -> None:
+        volid = "NFS-SATA-SSD1:910/vm-910-disk-0.raw"
+        run = FakeRun(
+            [
+                (0, "status: stopped\n"),
+                (0, ""),
+                (0, ""),
+                (0, ""),
+                (0, f"unused0: {volid}\n"),
+                (0, ""),
+                (0, ""),
+                (0, ""),
+            ]
+        )
+        result = create_template(**_create(destroy_ok=True, make_template=False, run=run))
+        self.assertEqual(result, volid)
+        self.assertEqual(run.calls[-1], ["qm", "set", "910", "--boot", "order=scsi0"])
+        self.assertNotIn(["qm", "template", "910"], run.calls)
 
     def test_importdisk_failure_without_volume_destroys(self) -> None:
         run = FakeRun(

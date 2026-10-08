@@ -14,6 +14,8 @@ from unittest import mock
 from pve_prep.catalog import releases_for
 from pve_prep.download import (
     DownloadError,
+    cache_may_be_cleared,
+    clear_cache,
     convert,
     fetch_verified,
     file_digest,
@@ -292,6 +294,52 @@ class CloudLinuxFetchTests(unittest.TestCase):
                     fetch_verified(spec, cache)
             self.assertEqual(list(cache.glob("*.partial")), [])
             self.assertFalse(dest.exists())
+
+
+class ClearCacheTests(unittest.TestCase):
+    def test_roots_are_refused_before_anything_is_deleted(self) -> None:
+        for path in (Path("/"), Path("/var"), Path("/var/tmp"), Path("/tmp")):
+            self.assertFalse(cache_may_be_cleared(path))
+
+    def test_clears_children_and_does_not_follow_a_symlink(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "pve-template-prep" / "cache"
+            cache.mkdir(parents=True)
+            (cache / "image.qcow2").write_text("img")
+            nested = cache / "workdir"
+            nested.mkdir()
+            (nested / "partial").write_text("part")
+            outside = root / "keep-me.txt"
+            outside.write_text("safe")
+            (cache / "linked").symlink_to(outside)
+            clear_cache(cache)
+            self.assertTrue(cache.is_dir())
+            self.assertEqual(list(cache.iterdir()), [])
+            self.assertEqual(outside.read_text(), "safe")
+
+    def test_refuses_a_symlink_and_a_wrong_directory(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real = root / "pve-template-prep" / "cache"
+            real.mkdir(parents=True)
+            (real / "secret").write_text("keep")
+            link = root / "alias"
+            link.symlink_to(real)
+            with self.assertRaises(DownloadError):
+                clear_cache(link)
+            self.assertEqual((real / "secret").read_text(), "keep")
+
+            wrong = root / "cache"
+            wrong.mkdir()
+            (wrong / "file").write_text("stay")
+            with self.assertRaises(DownloadError):
+                clear_cache(wrong)
+            self.assertEqual((wrong / "file").read_text(), "stay")
+
+            missing = root / "pve-template-prep" / "missing-cache"
+            clear_cache(missing)
+            self.assertFalse(missing.exists())
 
 
 def subprocess_result(argv: list[str], code: int):

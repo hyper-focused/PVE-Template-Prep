@@ -94,6 +94,7 @@ class VendorTest(unittest.TestCase):
             self.assertEqual(message, "Backup")
             self.assertTrue(kwargs["use_shortcuts"])
             self.assertTrue(str(kwargs["instruction"]).startswith("\n"))
+            seen["passed_default"] = "default" in kwargs
             return _Question(choices)
 
         with mock.patch.object(questionary, "select", fake_select):
@@ -104,6 +105,33 @@ class VendorTest(unittest.TestCase):
         self.assertEqual(picked, "overwrite")
         self.assertEqual(seen["titles"][0], "keep")
         self.assertEqual(seen["titles"][1][1], ("class:danger", "drop"))
+        self.assertFalse(seen["passed_default"])
+
+    def test_select_does_not_paint_the_enter_default(self) -> None:
+        import questionary
+
+        seen = {}
+
+        class _Question:
+            def unsafe_ask(self):
+                return "qcow2"
+
+        def fake_select(message, *, choices, **kwargs):
+            seen["message"] = message
+            seen["kwargs"] = kwargs
+            seen["values"] = [choice.value for choice in choices]
+            return _Question()
+
+        with mock.patch.object(questionary, "select", fake_select):
+            picked = ui.select(
+                "Format",
+                [("ZFS raw", "raw"), ("QEMU qcow2", "qcow2")],
+                default="raw",
+            )
+        self.assertEqual(picked, "qcow2")
+        self.assertEqual(seen["message"], "Format")
+        self.assertEqual(seen["values"], ["raw", "qcow2"])
+        self.assertNotIn("default", seen["kwargs"])
 
         class _Cancel:
             def unsafe_ask(self):
@@ -209,7 +237,7 @@ class WidgetInterviewTest(unittest.TestCase):
             selects=["debian", "template", "raw", "dir-templates"],
             checks=[["13", "12"]],
             texts=["", "vmbr1", "4096", "4", "YES"],
-            confirms=[True, False],
+            confirms=[True, False, True, False],
             in_use=set(),
             disks=set(),
         )
@@ -226,7 +254,11 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertIn("Create a VM, import the disk", blob)
         self.assertTrue(any(line.startswith("Guest prep") for line in confirms))
         self.assertTrue(any("vmbr0" in line for line in confirms))
+        self.assertTrue(any("qm template" in line for line in confirms))
+        self.assertTrue(any("pve-template-prep/cache" in line for line in confirms))
         self.assertFalse(any(line.endswith("[Y/n]") for line in confirms))
+        self.assertTrue(job.make_template)
+        self.assertFalse(job.clean_cache)
 
     def test_delete_x_still_aborts(self) -> None:
         with self.assertRaises(PromptAbort):
@@ -240,7 +272,7 @@ class WidgetInterviewTest(unittest.TestCase):
             )
 
     def test_plain_reader_never_calls_a_widget(self) -> None:
-        answers = ["1", "2, 3", "2", "1", "", "/tmp/images", "", "yes"]
+        answers = ["1", "2, 3", "2", "1", "", "/tmp/images", "", "", "yes"]
 
         def read_line() -> str:
             if not answers:

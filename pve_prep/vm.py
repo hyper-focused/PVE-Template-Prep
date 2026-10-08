@@ -282,10 +282,14 @@ def template_commands(
     storage: str,
     image_path: str,
     imported_volid: str,
+    make_template: bool = True,
 ) -> list[list[str]]:
-    """Return qm argv lists that build a cloud-init template from an image."""
+    """Return qm argv lists that build a cloud-init VM from an image.
+
+    make_template appends qm template. Without it the VM stays bootable.
+    """
     vid = str(vmid)
-    return [
+    commands = [
         [
             "qm",
             "create",
@@ -315,8 +319,10 @@ def template_commands(
         ["qm", "set", vid, "--scsi0", f"{imported_volid},discard=on,ssd=1"],
         ["qm", "set", vid, "--ide2", f"{storage}:cloudinit"],
         ["qm", "set", vid, "--boot", "order=scsi0"],
-        ["qm", "template", vid],
     ]
+    if make_template:
+        commands.append(["qm", "template", vid])
+    return commands
 
 
 def existing_hw_commands(*, vmid: int, bus_key: str, disk_value: str) -> list[list[str]]:
@@ -499,11 +505,13 @@ def create_template(
     run: Run,
     backup_disks: bool = False,
     backup_dir: str = "",
+    make_template: bool = True,
 ) -> str:
-    """Create a cloud template via run, or print qm commands when dry_run is set.
+    """Create a cloud VM via run, or print qm commands when dry_run is set.
 
     An existing stopped VM is destroyed first when destroy_ok is set, template
     or not. backup_disks copies OS disks into backup_dir before that destroy.
+    make_template runs qm template after the disk is attached.
     """
     guessed = f"{storage}:vm-{vmid}-disk-0"
     planned = template_commands(
@@ -515,6 +523,7 @@ def create_template(
         storage=storage,
         image_path=image_path,
         imported_volid=guessed,
+        make_template=make_template,
     )
     if dry_run:
         if backup_disks:
@@ -570,6 +579,7 @@ def create_template(
         storage=storage,
         image_path=image_path,
         imported_volid=volid,
+        make_template=make_template,
     )
     for cmd in finished[2:]:
         _must(run, cmd, vmid=vmid, destroyed=destroyed)

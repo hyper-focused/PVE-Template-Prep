@@ -6,6 +6,7 @@ import errno
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import urllib.error
 import urllib.request
@@ -166,6 +167,37 @@ def _prepare_cache(cache_dir: Path) -> None:
     if cache_dir.is_symlink():
         raise DownloadError(f"cache dir is a symlink: {cache_dir}")
     os.chmod(cache_dir, 0o700)
+
+
+def cache_may_be_cleared(resolved: Path) -> bool:
+    """True only for a real .../pve-template-prep/cache directory."""
+    forbidden = {Path("/"), Path("/var"), Path("/var/tmp"), Path("/tmp")}
+    if resolved in forbidden:
+        return False
+    return resolved.name == "cache" and resolved.parent.name == "pve-template-prep"
+
+
+def clear_cache(cache_dir: str | Path) -> None:
+    """Delete the files inside the prep cache. Leave the directory itself.
+
+    A symlink is refused, and so is anything that does not resolve to
+    .../pve-template-prep/cache. Child symlinks are unlinked, not followed.
+    """
+    path = Path(cache_dir)
+    if path.is_symlink():
+        raise DownloadError(f"cache dir is a symlink: {path}")
+    if not path.exists():
+        return
+    if not path.is_dir():
+        raise DownloadError(f"cache dir is not a directory: {path}")
+    resolved = path.resolve()
+    if not cache_may_be_cleared(resolved):
+        raise DownloadError(f"refusing to clear {resolved}")
+    for child in resolved.iterdir():
+        if child.is_symlink() or not child.is_dir():
+            child.unlink()
+        else:
+            shutil.rmtree(child)
 
 
 def _refuse_symlink(path: Path) -> None:

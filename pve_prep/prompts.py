@@ -191,7 +191,7 @@ def _ask_build(read_line, write) -> str:
         write("What this run produces:\n")
         write("\n")
         write("  Complete PVE VM template\n")
-        write("  Create a VM, import the disk, and convert it with qm template.\n")
+        write("  Create a VM, import the disk, and ask before qm template converts it.\n")
         write("\n")
         write("  PVE VM disk image only\n")
         write("  Write a file. An existing VMID keeps that VM and receives the new disk.\n")
@@ -211,7 +211,7 @@ def _ask_build(read_line, write) -> str:
         )
     write("What this run produces:\n")
     write("  1) Complete PVE VM template\n")
-    write("     Create a VM, import the disk, and convert it with qm template.\n")
+    write("     Create a VM, import the disk, and ask before qm template converts it.\n")
     write("  2) PVE VM disk image only\n")
     write("     Write a file. An existing VMID keeps that VM and receives the new disk.\n")
     write("  3) Prep a stopped VM in place\n")
@@ -609,7 +609,7 @@ def _ask_positive(read_line, write, prompt: str, label: str) -> int:
 def _ask_hardware(read_line, write) -> tuple[str, int, int]:
     if ui.enabled(read_line):
         _blank(write)
-    write("Hardware applied to each new template. Same settings for every distro.\n")
+    write("Hardware applied to each new VM. Same settings for every distro.\n")
     write("\n")
     write(f"  Memory: {DEFAULT_MEMORY_MB} MB\n")
     write(f"  Cores: {DEFAULT_CORES}\n")
@@ -655,6 +655,7 @@ def _summary_line(
     vmid: int | None,
     prep: bool,
     collision: str,
+    make_template: bool,
 ) -> str:
     flag = "yes" if prep else "no"
     if mode == "image" and vmid is None:
@@ -667,8 +668,9 @@ def _summary_line(
         )
     if mode == "template":
         name = vm_name(distro, release)
+        kind = "template" if make_template else "vm"
         return (
-            f"{distro} {release} -> template VMID {vmid} name {name} "
+            f"{distro} {release} -> {kind} VMID {vmid} name {name} "
             f"storage {storage} {disk_format} guest-prep={flag}"
         )
     return f"{distro} {release} -> existing VMID {vmid} storage {storage} guest-prep={flag}"
@@ -681,9 +683,39 @@ def _collision_for(targets, backups: frozenset[int]) -> str:
     return "overwrite"
 
 
-def _confirm(read_line, write, *, mode: str, count: int) -> None:
-    if mode == "template":
+def _ask_make_template(read_line, write, count: int) -> bool:
+    noun = "VM" if count == 1 else "VMs"
+    return _ask_bool(
+        read_line,
+        write,
+        "Convert the new "
+        f"{noun} to a template with qm template.\n"
+        "A template is cloned, not booted. n leaves a normal VM.\n"
+        "\n"
+        "Enter converts to a template. n leaves a normal VM. [Y/n]\n",
+        True,
+    )
+
+
+def _ask_clean_cache(read_line, write) -> bool:
+    return _ask_bool(
+        read_line,
+        write,
+        "The working files are in "
+        f"{DEFAULT_CACHE}.\n"
+        "That includes the downloaded image and any disk backups from this run.\n"
+        "\n"
+        "Delete those files when the run finishes? "
+        "Enter keeps them. y deletes them. [y/N]\n",
+        False,
+    )
+
+
+def _confirm(read_line, write, *, mode: str, count: int, make_template: bool) -> None:
+    if mode == "template" and make_template:
         action = "create the template" if count == 1 else "create the templates"
+    elif mode == "template":
+        action = "create the VM" if count == 1 else "create the VMs"
     elif mode == "image":
         action = "write the image" if count == 1 else "write the images"
     else:
@@ -766,8 +798,11 @@ def interview(
 
     if mode == "template":
         bridge, memory_mb, cores = _ask_hardware(read_line, write)
+        make_template = _ask_make_template(read_line, write, count)
     else:
         bridge, memory_mb, cores = DEFAULT_BRIDGE, DEFAULT_MEMORY_MB, DEFAULT_CORES
+        make_template = False
+    clean_cache = _ask_clean_cache(read_line, write)
 
     if ui.enabled(read_line):
         _blank(write)
@@ -789,6 +824,7 @@ def interview(
                 vmid,
                 prep,
                 collision,
+                make_template,
             )
             + "\n"
         )
@@ -802,8 +838,12 @@ def interview(
             write(f"VMID {vmid}: the existing disk is not kept. The VM is deleted.\n")
     if mode == "template":
         write(f"hardware: bridge {bridge}, memory {memory_mb} MB, cores {cores}\n")
+    if clean_cache:
+        write(f"cache: delete the files in {DEFAULT_CACHE} after a successful run\n")
+    else:
+        write(f"cache: keep {DEFAULT_CACHE}\n")
 
-    _confirm(read_line, write, mode=mode, count=count)
+    _confirm(read_line, write, mode=mode, count=count, make_template=make_template)
 
     return Job(
         distro=distro,
@@ -822,4 +862,6 @@ def interview(
         dry_run=dry_run,
         destroy_vmids=destroy_vmids,
         backup_vmids=backup_vmids,
+        make_template=make_template,
+        clean_cache=clean_cache,
     )
