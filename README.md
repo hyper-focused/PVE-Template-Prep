@@ -1,37 +1,89 @@
 # pve-cloud-prep
 
-Interactive prep for Proxmox VE 9 cloud images. One distro per run, up to three of its releases, as a published image, a new template, or an in-place prep of an existing VM.
+Interactive prep for Proxmox VE 9 cloud images. One distro per run, up to three releases. It can write a disk image, create a template VM, or prep a stopped VM that already exists.
 
-Downloads are cached at `/var/tmp/pve-cloud-prep/cache`. Guest prep is sequential. One release failing does not cancel the rest. The exit status is 0 only when every selected release succeeds.
+## Put it on the node
 
-Template mode can destroy a **stopped** VM at a chosen VMID only if you type that VMID again at the confirm. Anything else is left alone. Existing mode never destroys a VM.
+Clone the repo. The program is `pve-cloud-prep.py` plus the `pve_prep/` directory beside it. Downloading only the script fails on import. There is no pip package and nothing to type back in.
 
-## Requirements
+On the PVE node:
 
-- Run the real job as root on the PVE node. `--dry-run` does not need root.
-- Python 3, already on PVE 9. Stdlib only.
-- `apt-get install libguestfs-tools qemu-utils`
-- Outbound network. `virt-customize --install` fetches packages from inside the image.
-- Template mode runs `virt-customize` on the downloaded image, then `qm importdisk` into any storage that accepts images, including ZFS and LVM. Those volumes are raw. The format prompt chooses the local file that gets customized. `qcow2` stays sparse until import. `raw` expands on the cache disk first.
-- Image mode writes a file into a directory. That path is not a ZFS or LVM storage id.
-- Existing mode customizes the OS disk in place, so `pvesm path` has to be a regular file. A zvol or an LVM volume is refused.
+```sh
+apt-get update
+apt-get install -y git libguestfs-tools qemu-utils
+git clone https://github.com/hyper-focused/PVE-Template-Prep.git
+cd PVE-Template-Prep
+```
 
-`qm` and `pvesm` come with PVE. Image mode does not need them. Existing mode does not need `qemu-img`.
+Copying the directory from another machine is fine. Keep this layout:
+
+```text
+PVE-Template-Prep/
+  pve-cloud-prep.py
+  pve_prep/
+    __init__.py
+    catalog.py
+    customize.py
+    download.py
+    job.py
+    prompts.py
+    vm.py
+```
+
+`tests/` is not needed on the node. Python 3 is already on PVE 9. `qm` and `pvesm` come with PVE.
 
 ## Run
 
+A real run is root, on the PVE node, with outbound network. Downloads land in `/var/tmp/pve-cloud-prep/cache`. `virt-customize --install` also fetches packages from inside the image.
+
 ```sh
+cd PVE-Template-Prep
 python3 pve-cloud-prep.py
+```
+
+`--dry-run` asks the same questions and prints the commands. It does not need root, and it does not download or change the host. You can do that from a laptop if this directory is there.
+
+```sh
 python3 pve-cloud-prep.py --dry-run
 ```
 
-There are no distro or release flags. The prompts are the interface. The last question is `Type yes to run:`. Only the exact answer `yes` starts work. Anything else aborts.
+The path to the script can be absolute. Python finds `pve_prep` next to the script, not in the current directory. There are no distro or release flags. The prompts are the interface.
 
-Leave the VMID question empty to start at 9001. Each extra release takes the next ID: 9002, 9003, and so on.
+## What it asks
 
-`--dry-run` walks the same prompts, prints what would run, and does not change the host. A real run has to be on the PVE node. The unit tests in this repo do not boot a guest.
+Empty input accepts the default when the question shows one. The last question is `Type yes to run:`. Only the exact answer `yes` starts work.
 
-Replacing a VMID that is already a template destroys that template, and only after the new image is downloaded and prepped. If the replacement then fails, the run stops. A stopped VM that is not a template is kept: the new disk is imported and `scsi0` is swapped, and the previous disk is removed only after that swap. Existing-mode prep refuses a template. The confirm screen lists every VMID that may be destroyed, plus bridge, memory, and cores.
+1. Distro, by number.
+2. Releases, comma-separated, one to three. A codename works where the catalog has one (`bookworm`, `noble`).
+3. Product. `1` image, `2` template, `3` existing. Enter selects template.
+4. Disk format, unless the product is existing. `1` raw, `2` qcow2. Enter selects raw.
+5. Where it goes. Image mode asks for a directory. Template and existing modes ask for a PVE storage id. A number picks from the detected list.
+6. Image mode only: if that file already exists. `1` backup, `2` overwrite, `3` skip. Enter selects backup.
+7. Template and existing modes: VMIDs, one per release.
+   - Enter starts at 9001 and counts up. Two releases become 9001 and 9002.
+   - One number counts up from there. `910` with two releases becomes 910 and 911.
+   - A comma-separated list is used as written. `9001, 9050` stays those two IDs. The list length has to match the number of releases.
+   - An inclusive range works when its length matches. `910-912` is three IDs.
+8. Template mode only: type a VMID again to allow replacing it. Enter refuses every replace. A range is limited to VMIDs you already chose.
+9. Guest prep. Enter means yes. `n` skips `virt-customize`. Template hardware is still applied.
+10. Template mode only: hardware. Enter accepts bridge `vmbr0`, memory 2048 MB, cores 2. `n` asks for each value.
+11. Read the summary. Type `yes`.
+
+## What the three products do
+
+**Image.** Download, optionally customize, and write `<distro>-<release>-pve.img` or `.qcow2` into the directory you named. Needs `qemu-img`. Does not need `qm`. The directory is a filesystem path, not a ZFS or LVM storage id.
+
+**Template.** Customize the downloaded image while it is still a file, then `qm importdisk` into the storage you named. Any storage that accepts `images` works, including ZFS and LVM. Those volumes are raw. `qcow2` stays sparse on the cache disk until import. `raw` expands there first, which is a second full copy before the import. The guest name is `<distro>-<release>-cloud`. Needs `qemu-img`, `qm`, and `pvesm`. Guest prep also needs `virt-customize`.
+
+**Existing.** Do not download. The VM must be stopped, and it must not already be a template. Prep runs on the OS disk in place, so `pvesm path` has to be a regular file. A zvol or an LVM volume is refused. Needs `qm`, `pvesm`, and, if prep is on, `virt-customize`. Does not need `qemu-img`.
+
+One release failing does not cancel the rest, unless a template was destroyed and its replacement did not finish. In that case the run stops. The exit status is 0 only when every selected release succeeds.
+
+## Replacing a VMID
+
+Template mode destroys a VM only when all of these are true: you typed that VMID again, the VM exists, it is stopped, it is already a template, and the new image has been downloaded and prepped. If the replacement then fails, the run stops.
+
+A stopped VM that is not a template is kept. The new disk is imported, `scsi0` is swapped, and the previous disk is removed only after that swap. Existing mode never destroys a VM. The confirm screen lists every VMID that may be destroyed, plus bridge, memory, and cores.
 
 ## Catalog
 
@@ -40,16 +92,14 @@ Replacing a VMID that is already a template destroys that template, and only aft
 | debian | 11, 12, 13 | 11 is EOL |
 | ubuntu | 22.04, 24.04, 26.04 | |
 | alma | 8, 9, 10 | |
-| cloudlinux | 8, 9, 10 | Minimal OpenStack qcow2. The dated filename and SHA256 come from `https://images.cloudlinux.com/catalog.json` at download. |
-| fedora | 42, 43, 44 | 42 is EOL |
+| cloudlinux | 8, 9, 10 | Minimal OpenStack qcow2. Filename and SHA256 come from `catalog.json` at download. |
+| fedora | 42, 43, 44 | 42 is EOL. The Generic qcow2 is chosen from the release index at download. |
 
-No CentOS. Do not point this at a CentOS image and hope.
-
-CloudLinux uses the same EL guest prep as Alma. The image logs in as `cloudlinux`. Packages do not update until that guest is registered with a CloudLinux license. CloudLinux 6 and 7 are older than the three current majors, so they are not listed.
+No CentOS. CloudLinux logs in as `cloudlinux`. Its packages do not update until the guest is registered with a license. CloudLinux 6 and 7 are not listed.
 
 ## Guest prep
 
-Optional, default yes. Applied to the image file before it is published or turned into a template, and to the OS disk of a stopped existing VM.
+Default yes. Image and template mode apply it to the downloaded file before publish or import. Existing mode applies it to the OS disk after the hardware settings.
 
 - Serial console
 - `net.ifnames=0` (stable `eth0` names)
@@ -60,10 +110,10 @@ Optional, default yes. Applied to the image file before it is published or turne
 
 Debian and Ubuntu: mask AppArmor, purge snapd.
 
-Alma, CloudLinux, and Fedora: SELinux permissive, firewalld disabled.
+Alma, CloudLinux, and Fedora: SELinux permissive, firewalld disabled. Same EL path.
 
-`virt-customize` is run with `LIBGUESTFS_BACKEND=direct` (set only when the variable is unset). That makes libguestfs start qemu itself instead of going through libvirt, which is the wrong backend on a PVE host.
+`virt-customize` uses `LIBGUESTFS_BACKEND=direct` when that variable is unset, so libguestfs starts qemu itself instead of libvirt.
 
 ## Not in this version
 
-Rocky, openSUSE, Arch, RHEL, and UEFI images. Later.
+Rocky, openSUSE, Arch, RHEL, and UEFI images.

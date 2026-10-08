@@ -13,9 +13,11 @@ from pve_prep.job import (
     published_name,
     vm_name,
 )
+
 DEFAULT_BRIDGE = "vmbr0"
 DEFAULT_MEMORY_MB = 2048
 DEFAULT_CORES = 2
+DEFAULT_VMID = 9001
 MAX_RELEASES = 3
 
 
@@ -135,12 +137,19 @@ def _ask_directory(read_line, write) -> str:
 
 
 def _ask_vmids(read_line, write, count: int) -> tuple[int, ...]:
+    if count == 1:
+        shown = str(DEFAULT_VMID)
+    else:
+        shown = f"{DEFAULT_VMID}-{DEFAULT_VMID + count - 1}"
     write(
         f"Need {count} VMID(s). One number starts a sequence, "
-        "or give a comma-separated list, or an inclusive range.\n"
+        "or give a comma-separated list, or an inclusive range. "
+        f"Empty uses {shown}.\n"
     )
     while True:
-        raw = _ask(read_line, write, "VMIDs: ")
+        raw = _ask(read_line, write, f"VMIDs [{shown}]: ")
+        if not raw:
+            raw = str(DEFAULT_VMID)
         try:
             return parse_vmids(raw, count)
         except ValueError as exc:

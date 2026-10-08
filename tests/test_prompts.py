@@ -140,6 +140,30 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("hardware: bridge vmbr0, memory 2048 MB, cores 2", blob)
         self.assertIn("Type yes to run: ", blob)
 
+    def test_empty_vmid_starts_at_9001_and_counts_up(self) -> None:
+        script = _Script(
+            [
+                "1",
+                "12, 13",
+                "",
+                "",
+                "1",
+                "",
+                "",
+                "",
+                "",
+                "yes",
+            ]
+        )
+        job = script.run(dry_run=False, storages=["dir-templates"])
+        self.assertEqual(job.mode, "template")
+        self.assertEqual(job.vmids, (9001, 9002))
+        self.assertEqual(job.destroy_vmids, frozenset())
+        blob = "".join(script.written)
+        self.assertIn("VMIDs [9001-9002]: ", blob)
+        self.assertIn("debian 12 -> template VMID 9001", blob)
+        self.assertIn("debian 13 -> template VMID 9002", blob)
+
     def test_confirm_no_aborts(self) -> None:
         script = _Script(
             [
