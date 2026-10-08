@@ -142,6 +142,17 @@ def select_os_disk(config_text: str, storage: str) -> tuple[str, str] | None:
     return next(iter(disks.values()))
 
 
+def storage_lacks_images(cfg_text: str, storage: str) -> bool:
+    """True when this storage id is missing, or its content tokens omit images.
+
+    The tokens belong to the storage. They are not storage ids themselves.
+    """
+    found = parse_storage_content(cfg_text)
+    if storage not in found:
+        return True
+    return "images" not in found[storage]
+
+
 def parse_storage_content(cfg_text: str) -> dict[str, set[str]]:
     """Map storage id to content tokens from storage.cfg."""
     current: str | None = None

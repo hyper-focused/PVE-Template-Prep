@@ -25,7 +25,7 @@ from pve_prep.vm import (
     existing_prep_commands,
     is_template,
     parse_qm_status,
-    parse_storage_content,
+    storage_lacks_images,
     parse_storage_ids,
 )
 
@@ -103,10 +103,7 @@ def _storage_rejects_images(storage: str) -> bool:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return False
-    content = parse_storage_content(text)
-    if storage not in content:
-        return True
-    return "images" not in content
+    return storage_lacks_images(text, storage)
 
 
 def _spec_for(distro: str, release: str):
@@ -124,6 +121,11 @@ def _existing_plan(config_text: str, vmid: int, storage: str) -> tuple[str, list
 
 def _run_fetched(job: Job, release: str, vmid: int | None) -> None:
     spec = _spec_for(job.distro, release)
+    if job.mode != "image":
+        if vmid is None:
+            raise RuntimeError("VMID is required")
+        if _storage_rejects_images(job.storage):
+            raise RuntimeError(f"storage {job.storage} does not accept images")
     src = fetch_verified(spec, Path(job.cache_dir), dry_run=job.dry_run)
     work = Path(job.cache_dir) / (published_name(job.distro, release, job.disk_format) + ".work")
     convert(src, work, job.disk_format, dry_run=job.dry_run)
@@ -137,10 +139,6 @@ def _run_fetched(job: Job, release: str, vmid: int | None) -> None:
         if status == "skipped":
             return
         return
-    if vmid is None:
-        raise RuntimeError("VMID is required")
-    if _storage_rejects_images(job.storage):
-        raise RuntimeError(f"storage {job.storage} does not accept images")
     create_template(
         vmid=vmid,
         name=vm_name(job.distro, release),

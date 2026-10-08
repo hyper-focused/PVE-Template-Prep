@@ -55,6 +55,7 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog) -> None:
     vm.VmDestroyedError = real_vm.VmDestroyedError
     vm.is_template = real_vm.is_template
     vm.parse_storage_content = real_vm.parse_storage_content
+    vm.storage_lacks_images = real_vm.storage_lacks_images
     vm.existing_hw_commands = real_vm.existing_hw_commands
 
 

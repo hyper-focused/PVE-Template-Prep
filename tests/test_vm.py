@@ -14,6 +14,7 @@ from pve_prep.vm import (
     parse_os_disk,
     parse_qm_status,
     parse_storage_content,
+    storage_lacks_images,
     parse_storage_ids,
     select_os_disk,
     template_commands,
@@ -271,6 +272,21 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
         parsed = parse_storage_content(text)
         self.assertEqual(parsed["local"], {"iso", "backup"})
         self.assertEqual(parsed["NFS-SATA-SSD1"], {"images", "rootdir"})
+
+    def test_images_token_is_not_a_storage_name(self) -> None:
+        text = "\n".join(
+            [
+                "dir: local",
+                "\tcontent iso,vztmpl,backup",
+                "nfs: NFS-SATA-SSD2",
+                "\texport /NFS-SATA-SSD2",
+                "\tpath /mnt/pve/NFS-SATA-SSD2",
+                "\tcontent iso,rootdir,vztmpl,backup,snippets,import,images",
+            ]
+        )
+        self.assertFalse(storage_lacks_images(text, "NFS-SATA-SSD2"))
+        self.assertTrue(storage_lacks_images(text, "local"))
+        self.assertTrue(storage_lacks_images(text, "missing"))
 
 
 class CreateTemplateTests(unittest.TestCase):
