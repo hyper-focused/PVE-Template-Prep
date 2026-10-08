@@ -1,14 +1,14 @@
 #!/bin/bash
-# Install pve-cloud-prep into /opt and link /usr/local/sbin/pve-cloud-prep.
+# Install pve-template-prep into /opt and link /usr/local/sbin/pve-template-prep.
 # Fetch this file, read it, then: sudo bash install.sh
 # Overrides: DEST, REPO, REF, BIN_LINK.
 
 set -euo pipefail
 
-DEST="${DEST:-/opt/pve-cloud-prep}"
+DEST="${DEST:-/opt/pve-template-prep}"
 REPO="${REPO:-hyper-focused/PVE-Template-Prep}"
 REF="${REF:-main}"
-BIN_LINK="${BIN_LINK:-/usr/local/sbin/pve-cloud-prep}"
+BIN_LINK="${BIN_LINK:-/usr/local/sbin/pve-template-prep}"
 ARCHIVE_URL="https://github.com/${REPO}/archive/refs/heads/${REF}.tar.gz"
 
 MODULES=(
@@ -66,8 +66,8 @@ for dir in "$work"/*/; do
   src="${dir%/}"
 done
 
-if [[ -z "$src" || ! -f "$src/pve-cloud-prep.py" || ! -d "$src/pve_prep" ]]; then
-  echo "archive is missing pve-cloud-prep.py or pve_prep/" >&2
+if [[ -z "$src" || ! -f "$src/pve-template-prep.py" || ! -d "$src/pve_prep" ]]; then
+  echo "archive is missing pve-template-prep.py or pve_prep/" >&2
   exit 1
 fi
 
@@ -80,7 +80,7 @@ done
 
 install -d -o root -g root -m 0755 "$DEST"
 install -d -o root -g root -m 0755 "$DEST/pve_prep"
-install -o root -g root -m 0755 "$src/pve-cloud-prep.py" "$DEST/pve-cloud-prep.py"
+install -o root -g root -m 0755 "$src/pve-template-prep.py" "$DEST/pve-template-prep.py"
 for name in "${MODULES[@]}"; do
   install -o root -g root -m 0644 "$src/pve_prep/$name" "$DEST/pve_prep/$name"
 done
@@ -106,12 +106,12 @@ confirm_path() {
 
 confirm_path "$DEST"
 confirm_path "$DEST/pve_prep"
-confirm_path "$DEST/pve-cloud-prep.py"
+confirm_path "$DEST/pve-template-prep.py"
 for name in "${MODULES[@]}"; do
   confirm_path "$DEST/pve_prep/$name"
 done
 
-if [[ ! -x "$DEST/pve-cloud-prep.py" ]]; then
+if [[ ! -x "$DEST/pve-template-prep.py" ]]; then
   echo "entry script is not executable" >&2
   exit 1
 fi
@@ -122,7 +122,7 @@ import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
-paths = [root / "pve-cloud-prep.py", *sorted((root / "pve_prep").glob("*.py"))]
+paths = [root / "pve-template-prep.py", *sorted((root / "pve_prep").glob("*.py"))]
 if len(list((root / "pve_prep").glob("*.py"))) != 7:
     raise SystemExit("pve_prep is missing modules")
 for path in paths:
@@ -142,8 +142,8 @@ if ! command -v virt-customize >/dev/null 2>&1 || ! command -v qemu-img >/dev/nu
 fi
 
 install -d -o root -g root -m 0755 "$(dirname "$BIN_LINK")"
-ln -sfn "$DEST/pve-cloud-prep.py" "$BIN_LINK"
+ln -sfn "$DEST/pve-template-prep.py" "$BIN_LINK"
 
 echo "Installed ${DEST}"
-echo "Run: sudo pve-cloud-prep"
-echo "Dry run, no root: pve-cloud-prep --dry-run"
+echo "Run: sudo pve-template-prep"
+echo "Dry run, no root: pve-template-prep --dry-run"

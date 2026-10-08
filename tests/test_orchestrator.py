@@ -79,12 +79,12 @@ def _load_orchestrator():
     }
     try:
         _install_sibling_stubs(customize_mod, vm_mod, catalog_mod)
-        path = ROOT / "pve-cloud-prep.py"
-        spec = importlib.util.spec_from_file_location("pve_cloud_prep", path)
+        path = ROOT / "pve-template-prep.py"
+        spec = importlib.util.spec_from_file_location("pve_template_prep", path)
         if spec is None or spec.loader is None:
             raise RuntimeError(f"cannot load {path}")
         module = importlib.util.module_from_spec(spec)
-        sys.modules["pve_cloud_prep"] = module
+        sys.modules["pve_template_prep"] = module
         spec.loader.exec_module(module)
         return module
     finally:
@@ -189,26 +189,26 @@ class OrchestratorTest(unittest.TestCase):
             order.append("fetch")
             self.assertEqual(spec.release, "12")
             self.assertEqual(spec.family, "deb")
-            self.assertEqual(cache, Path("/var/tmp/pve-cloud-prep/cache"))
+            self.assertEqual(cache, Path("/var/tmp/pve-template-prep/cache"))
             self.assertFalse(dry_run)
             return Path("/tmp/src.qcow2")
 
         def convert(src, work, disk_format, dry_run=False):
             order.append("convert")
             self.assertEqual(src, Path("/tmp/src.qcow2"))
-            self.assertEqual(work, Path("/var/tmp/pve-cloud-prep/cache/debian-12-pve.img.work"))
+            self.assertEqual(work, Path("/var/tmp/pve-template-prep/cache/debian-12-pve.img.work"))
             self.assertEqual(disk_format, "raw")
             self.assertFalse(dry_run)
 
         def apply(path, family, dry_run=False):
             order.append("apply")
-            self.assertEqual(path, "/var/tmp/pve-cloud-prep/cache/debian-12-pve.img.work")
+            self.assertEqual(path, "/var/tmp/pve-template-prep/cache/debian-12-pve.img.work")
             self.assertEqual(family, "deb")
             self.assertFalse(dry_run)
 
         def publish(work, dest, collision, dry_run=False):
             order.append("publish")
-            self.assertEqual(work, Path("/var/tmp/pve-cloud-prep/cache/debian-12-pve.img.work"))
+            self.assertEqual(work, Path("/var/tmp/pve-template-prep/cache/debian-12-pve.img.work"))
             self.assertEqual(dest, Path("/tmp/images/debian-12-pve.img"))
             self.assertEqual(collision, "backup")
             self.assertFalse(dry_run)

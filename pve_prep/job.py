@@ -1,11 +1,11 @@
-"""Job description for one pve-cloud-prep run. No I/O."""
+"""Job description for one pve-template-prep run. No I/O."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 
-DEFAULT_CACHE = "/var/tmp/pve-cloud-prep/cache"
+DEFAULT_CACHE = "/var/tmp/pve-template-prep/cache"
 
 _MIN_VMID = 100
 _MAX_VMID = 999_999_999
