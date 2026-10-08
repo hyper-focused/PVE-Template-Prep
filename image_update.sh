@@ -1,0 +1,419 @@
+#!/bin/bash
+#
+# Download the latest CentOS, Debian, Fedora or Ubuntu cloud image
+# Source: https://github.com/trfore/proxmox-template-scripts
+#
+# Copyright 2022 Taylor Fore
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+set -e
+
+APPEND_DATE=false
+BACKUP_IMAGES=false
+REMOVE_OLD_IMAGE=false
+STORAGE_PATH='/mnt/pve/NFS-SATA-SSD1/template'
+
+function err() {
+  echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')] ${0##*/} Error: $*" >&2
+  exit 2
+}
+
+function help() {
+  echo "
+  Usage: ${0##*/} -d <DISTRO_NAME> -r <RELEASE_NAME> [ARGS]
+  Examples:
+    ${0##*/} -d ubuntu -r 24
+    ${0##*/} -d ubuntu -r 24 --remove
+    ${0##*/} -d ubuntu -r 24 --storage /tmp
+    ${0##*/} -d debian -r 12 --remove
+
+  Arguments:
+    --help,    -h  Display this help message and exit
+    --backup,  -b  Backup the existing image before creating a new one (default: false)
+                    This flag is not compatiable with --remove flag.
+    --date         Append the date to the image name, e.g. 'ubuntu*-\$DATE.img' (default: false)
+    --distro,  -d  Specify the distribution name, e.g. 'ubuntu'.
+    --remove       Remove old images before updating (default: false)
+                    This flag is not compatiable with --backup flag.
+    --release, -r  Specify the release version, e.g. 'noble' or '24'
+    --storage, -s  Specify a storage path for the image (default: '/var/lib/vz/template/iso')
+
+
+  Alternative Usage: ${0##*/} <DISTRO_NAME>-<RELEASE_NAME> [ARGS]
+  Examples:
+    ${0##*/} ubuntu-24
+    ${0##*/} debian-12 --remove
+  "
+  exit 1
+}
+
+function usage() {
+  printf "Usage: %s -d <DISTRO_NAME> -r <RELEASE_NAME> [ARGS] \n" "${0##*/}" >&2
+  exit 1
+}
+
+#######################################
+# Backup image files.
+# Arguments:
+#   $1 - file, string.
+# Outputs:
+#   Writes files to the current directory.
+#######################################
+function backup_images() {
+  shopt -s extglob
+
+  # avoid overwriting existing backups
+  files="${1%.*}!(*.backup.*)"
+  for file in $files; do
+    echo "Backing up ${file}"
+    cp -nv "$file" "${file%.*}.backup.${file##*.}"
+  done
+
+  shopt -u extglob
+}
+
+#######################################
+# Compare the SHASUM of a local cloud image to remote image.
+# Globals:
+#   file_basename
+#   file_name
+#   remote_shasum_url
+#   shasum_algorithm
+# Returns:
+#   0 if SHASUM matches.
+#   1 if SHASUM does not match.
+#######################################
+function check_shasum() {
+  local current_shasum latest_shasum
+
+  tmpfile=$(mktemp /tmp/pve-image-shasum.XXXXXX)
+
+  # get latest shasums
+  curl -sL "${remote_shasum_url}" -o "${tmpfile}"
+  latest_shasum=$(grep "${file_name}" "${tmpfile}" | grep -oE '[a-z0-9]{64,128}' -)
+
+  # qcow2 images are expected to be converted into a raw format (*.img) on PVE
+  current_shasum=$(shasum -a "${shasum_algorithm}" "${file_basename}".img | awk '{print $1}')
+
+  echo "Current SHASUM: ${current_shasum}"
+  echo "Latest  SHASUM: ${latest_shasum}"
+
+  rm "$tmpfile"
+
+  if [[ $latest_shasum == "${current_shasum}" ]]; then
+    echo "SHASUM match, image is up-to-date."
+    return 0
+  else
+    echo "No SHASUM match, image is outdated."
+    return 1
+  fi
+}
+
+#######################################
+# Get Cloud Image Release Date
+# Arguments:
+#   $1 - url of the cloud image, string.
+#   $2 - file name of the cloud image, string.
+# Outputs:
+#   file_date, string.
+#######################################
+function get_image_date() {
+  local url file_date
+
+  url=$(dirname "${1}")
+  # get dates in YYYY-MM-DD or YYYY-MMM-DD format
+  file_date=$(curl -sL "${url}" | grep "${2}" | grep -oiEm 1 '[0-9]{4}-([0-9]{2}-[0-9]{2}|[a-z]{3}-[0-9]{2})')
+
+  echo "${file_date}"
+}
+
+#######################################
+# Set Cloud Image Values
+# Globals:
+#   DISTRO_NAME
+#   RELEASE_NAME
+# Returns:
+#   file_name, string.
+#   remote_url, string.
+#   remote_shasum_url, string.
+#   shasum_algorithm, string.
+#######################################
+function set_image_values() {
+  if [[ "${DISTRO_NAME}" == "debian" ]]; then
+    case $RELEASE_NAME in
+    buster | 10)
+      file_name="debian-10-generic-amd64.qcow2"
+      remote_url="https://cloud.debian.org/images/cloud/buster/latest/debian-10-generic-amd64.qcow2"
+      remote_shasum_url="https://cloud.debian.org/images/cloud/buster/latest/SHA512SUMS"
+      shasum_algorithm="512"
+      ;;
+    bullseye | 11)
+      file_name="debian-11-genericcloud-amd64.qcow2"
+      remote_url="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2"
+      remote_shasum_url="https://cloud.debian.org/images/cloud/bullseye/latest/SHA512SUMS"
+      shasum_algorithm="512"
+      ;;
+    bookworm | 12)
+      file_name="debian-12-genericcloud-amd64.qcow2"
+      remote_url="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+      remote_shasum_url="https://cloud.debian.org/images/cloud/bookworm/latest/SHA512SUMS"
+      shasum_algorithm="512"
+      ;;
+    trixie | 13)
+      file_name="debian-13-genericcloud-amd64.qcow2"
+      remote_url="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
+      remote_shasum_url="https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS"
+      shasum_algorithm="512"
+      ;;
+    *)
+      err "Unknown distro, only works for Debian 10-13"
+      ;;
+    esac
+  elif [[ "${DISTRO_NAME}" == "centos" ]]; then
+    case $RELEASE_NAME in
+    9)
+      file_name="CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"
+      remote_url="https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"
+      remote_shasum_url="https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2.SHA256SUM"
+      shasum_algorithm="256"
+      ;;
+    *)
+      err "Unknown distro, only works for CentOS Stream 9"
+      ;;
+    esac
+  elif [[ "${DISTRO_NAME}" == "fedora" ]]; then
+    case $RELEASE_NAME in
+    40)
+      file_name="Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2"
+      remote_url="https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-40-1.14.qcow2"
+      remote_shasum_url="https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-40-1.14-x86_64-CHECKSUM"
+      shasum_algorithm="256"
+      ;;
+    41)
+      file_name="Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2"
+      remote_url="https://download.fedoraproject.org/pub/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2"
+      remote_shasum_url="https://download.fedoraproject.org/pub/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-41-1.4-x86_64-CHECKSUM"
+      shasum_algorithm="256"
+      ;;
+    42)
+      file_name="Fedora-Cloud-Base-Generic-42-1.1.x86_64.qcow2"
+      remote_url="https://download.fedoraproject.org/pub/fedora/linux/releases/42/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-42-1.1.x86_64.qcow2"
+      remote_shasum_url="https://download.fedoraproject.org/pub/fedora/linux/releases/42/Cloud/x86_64/images/Fedora-Cloud-42-1.1-x86_64-CHECKSUM"
+      shasum_algorithm="256"
+      ;;
+    *)
+      err "Unknown distro, only works for Fedora 40+"
+      ;;
+    esac
+  elif [[ "${DISTRO_NAME}" == "alma" ]]; then
+    case $RELEASE_NAME in
+    8)
+      file_name="AlmaLinux-8-GenericCloud-ext4-latest.x86_64.qcow2"
+      remote_url="https://mirror.fmt-2.serverforge.org/alma/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-ext4-latest.x86_64.qcow2"
+      remote_shasum_url="https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/CHECKSUM"
+      shasum_algorithm="256"
+      ;;
+    9)
+      file_name="AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
+      remote_url="https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
+      remote_shasum_url="https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/CHECKSUM"
+      shasum_algorithm="256"
+      ;;
+    10)
+      file_name="AlmaLinux-10-GenericCloud-latest.x86_64.qcow2"
+      remote_url="https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-latest.x86_64.qcow2"
+      remote_shasum_url="https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/CHECKSUM"
+      shasum_algorithm="256"
+      ;;
+    *)
+      err "Unknown distro, only works for Alma 8+"
+      ;;
+    esac
+  elif [[ "${DISTRO_NAME}" == "ubuntu" ]]; then
+    case $RELEASE_NAME in
+    resolute | 26)
+      file_name="ubuntu-26.04-server-cloudimg-amd64.img"
+      remote_url="https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-amd64.img"
+      remote_shasum_url="https://cloud-images.ubuntu.com/releases/resolute/release/SHA256SUMS"
+      shasum_algorithm="256"
+      ;;
+    jammy | 22)
+      file_name="ubuntu-22.04-server-cloudimg-amd64.img"
+      remote_url="https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-amd64.img"
+      remote_shasum_url="https://cloud-images.ubuntu.com/releases/jammy/release/SHA256SUMS"
+      shasum_algorithm="256"
+      ;;
+    noble | 24)
+      file_name="ubuntu-24.04-server-cloudimg-amd64.img"
+      remote_url="https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img"
+      remote_shasum_url="https://cloud-images.ubuntu.com/releases/noble/release/SHA256SUMS"
+      shasum_algorithm="256"
+      ;;
+    *)
+      err "Unknown distro, only works for Ubuntu LTS 20+"
+      ;;
+    esac
+  else
+    err "Unsupported distro. Please specify 'centos', 'debian', 'fedora' or 'ubuntu'."
+  fi
+
+  readonly file_name remote_url remote_shasum_url shasum_algorithm
+  return 0
+}
+
+#######################################
+# Allow users to pass a single arg for distro and release
+# This is a workaround for naming systemd timers
+# Arguments:
+#   $1 - string, ex: ubuntu-24
+# Returns:
+#   DISTRO_NAME, string.
+#   RELEASE_NAME, string.
+#######################################
+function split_arg() {
+  DISTRO_NAME=${1%-*}
+  RELEASE_NAME=${1#*-}
+}
+
+function main() {
+  if [[ ($? -ne 0) || ($# -eq 0) ]]; then
+    usage
+  fi
+
+  OPTIONS=hd:r:s:b
+  LONGOPTS=help,distro:,release:,storage:,backup,date,remove
+  NOARG_OPTS=(-h --help -b --backup --date --remove)
+
+  TEMP=$(getopt -n "${0##*/}" -o $OPTIONS --long $LONGOPTS -- "${@}") || exit 2
+  eval set -- "$TEMP"
+  unset TEMP
+
+  while true; do
+    [[ ! ${NOARG_OPTS[*]} =~ ${1} ]] && [[ ${2} == -* ]] && {
+      err "Missing argument for ${1}"
+    }
+    case "${1}" in
+    -h | --help)
+      help
+      ;;
+    --backup | -b)
+      BACKUP_IMAGES=true
+      shift
+      continue
+      ;;
+    --date)
+      APPEND_DATE=true
+      shift
+      continue
+      ;;
+    --distro | -d)
+      DISTRO_NAME=${2,,}
+      shift 2
+      continue
+      ;;
+    --release | -r)
+      RELEASE_NAME=${2,,}
+      shift 2
+      continue
+      ;;
+    --remove)
+      REMOVE_OLD_IMAGE=true
+      shift
+      continue
+      ;;
+    --storage | -s)
+      STORAGE_PATH=${2}
+      shift 2
+      continue
+      ;;
+    --)
+      if [ -n "${2}" ]; then
+        split_arg "${2,,}"
+      fi
+      shift
+      break
+      ;;
+    *)
+      err "Parsing arguments in main()"
+      ;;
+    esac
+  done
+
+  readonly DISTRO_NAME RELEASE_NAME REMOVE_OLD_IMAGE STORAGE_PATH
+
+  if [ -z "${DISTRO_NAME}" ] || [ -z "${RELEASE_NAME}" ]; then
+    if [ -z "${DISTRO_NAME}" ]; then err "Missing Distribution"; fi
+    if [ -z "${RELEASE_NAME}" ]; then err "Missing Release"; fi
+    usage
+  fi
+
+  if [ ! -d "${STORAGE_PATH}" ]; then
+    err "Storage path does not exist! Value: ${STORAGE_PATH}"
+  fi
+
+  if [ ! -w "${STORAGE_PATH}" ]; then
+    err "You do not have write permission to ${STORAGE_PATH}, are you root?"
+  fi
+
+  if [ ${REMOVE_OLD_IMAGE} = true ] && [ ${BACKUP_IMAGES} = true ]; then
+    err "Cannot remove old images and backup new ones at the same time!"
+  fi
+
+  echo "Distribution:      ${DISTRO_NAME}"
+  echo "Release:           ${RELEASE_NAME}"
+  echo "Storage:           ${STORAGE_PATH}"
+  echo "Remove Old Images: ${REMOVE_OLD_IMAGE}"
+
+  set_image_values "$@"
+
+  if [ ${APPEND_DATE} = true ]; then
+    image_date=$(get_image_date "${remote_url}" "${file_name}")
+    file_basename="${file_name%.*}-${image_date}"
+  else
+    file_basename="${file_name%.*}"
+  fi
+
+  readonly file_basename
+
+  cd "${STORAGE_PATH}"
+
+  if [[ ! -e "${file_basename}.img" ]]; then
+    echo "Downloading image..."
+    curl -L "${remote_url}" -o "${file_basename}.img"
+
+    echo "Done, new image downloaded!"
+  else
+    if check_shasum "$@"; then
+      echo "Done, image is current."
+    else
+      if [ ${REMOVE_OLD_IMAGE} = true ]; then
+        echo "Removing old images..."
+        # remove original and backup images
+        rm "${file_name%.*}"*
+      elif [ ${BACKUP_IMAGES} = true ]; then
+        # backup all images with or without date
+        backup_images "${file_name}"
+      fi
+
+      echo "Downloading image..."
+      curl -L "${remote_url}" -o "${file_basename}.img"
+
+      echo "Done, new image downloaded!"
+    fi
+  fi
+
+  exit
+}
+
+main "$@"
