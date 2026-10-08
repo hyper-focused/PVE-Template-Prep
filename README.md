@@ -12,7 +12,9 @@ Template mode can destroy a **stopped** VM at a chosen VMID only if you type tha
 - Python 3, already on PVE 9. Stdlib only.
 - `apt-get install libguestfs-tools qemu-utils`
 - Outbound network. `virt-customize --install` fetches packages from inside the image.
-- File-backed storage (directory, NFS, or CIFS). Not LVM, ZFS, or RBD. `virt-customize` needs a regular file, and so does a published image.
+- Template mode runs `virt-customize` on the downloaded image, then `qm importdisk` into any storage that accepts images, including ZFS and LVM. Those volumes are raw. The format prompt chooses the local file that gets customized. `qcow2` stays sparse until import. `raw` expands on the cache disk first.
+- Image mode writes a file into a directory. That path is not a ZFS or LVM storage id.
+- Existing mode customizes the OS disk in place, so `pvesm path` has to be a regular file. A zvol or an LVM volume is refused.
 
 `qm` and `pvesm` come with PVE. Image mode does not need them. Existing mode does not need `qemu-img`.
 
@@ -24,6 +26,8 @@ python3 pve-cloud-prep.py --dry-run
 ```
 
 There are no distro or release flags. The prompts are the interface. The last question is `Type yes to run:`. Only the exact answer `yes` starts work. Anything else aborts.
+
+Leave the VMID question empty to start at 9001. Each extra release takes the next ID: 9002, 9003, and so on.
 
 `--dry-run` walks the same prompts, prints what would run, and does not change the host. A real run has to be on the PVE node. The unit tests in this repo do not boot a guest.
 
@@ -59,10 +63,6 @@ Debian and Ubuntu: mask AppArmor, purge snapd.
 Alma, CloudLinux, and Fedora: SELinux permissive, firewalld disabled.
 
 `virt-customize` is run with `LIBGUESTFS_BACKEND=direct` (set only when the variable is unset). That makes libguestfs start qemu itself instead of going through libvirt, which is the wrong backend on a PVE host.
-
-## Reference scripts
-
-`image_update.sh` and `prep-template.sh` are the inputs this tool was shaped from. They are not the interface. Use `pve-cloud-prep.py`.
 
 ## Not in this version
 

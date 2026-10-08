@@ -1,3 +1,5 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+image_update.sh
+prep-template.sh
