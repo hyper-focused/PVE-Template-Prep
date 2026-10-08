@@ -25,6 +25,7 @@ from pve_prep.vm import (
     existing_prep_commands,
     is_template,
     parse_qm_status,
+    vmid_config_missing,
     storage_lacks_images,
     parse_storage_ids,
 )
@@ -54,6 +55,24 @@ def _checked(argv: list[str], run) -> SimpleNamespace:
     if result.returncode != 0:
         raise RuntimeError(_stderr_tail(result))
     return result
+
+
+def vmids_in_use(vmids: tuple[int, ...]) -> set[int]:
+    """VMIDs that already have a config. Unknown results stay in the set."""
+    occupied: set[int] = set()
+    for vmid in vmids:
+        try:
+            proc = subprocess.run(
+                ["qm", "status", str(vmid)],
+                text=True,
+                capture_output=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return set(vmids)
+        output = f"{proc.stdout}\n{proc.stderr}"
+        if not vmid_config_missing(proc.returncode, output):
+            occupied.add(vmid)
+    return occupied
 
 
 def list_storages() -> list[str]:
@@ -234,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
             list_storages=list_storages,
             releases_for=releases_for,
             normalize_release=normalize_release,
+            vmids_in_use=vmids_in_use,
         )
     except PromptAbort:
         print("aborted")

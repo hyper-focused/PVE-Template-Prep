@@ -43,7 +43,7 @@ Empty input accepts the default when the question shows one. The last question i
    - One number counts up from there. `910` with two releases becomes 910 and 911.
    - A comma-separated list is used as written. `9001, 9050` stays those two IDs. The list length has to match the number of releases.
    - An inclusive range works when its length matches. `910-912` is three IDs.
-8. Template mode only: type a VMID again to allow replacing it. Enter refuses every replace. A range is limited to VMIDs you already chose.
+8. Template mode only, and only for VMIDs that already exist: type a VMID again to allow replacing it. Enter refuses every replace. Free VMIDs skip this question. A range is limited to VMIDs you already chose.
 9. Guest prep. Enter means yes. `n` skips `virt-customize`. Template hardware is still applied.
 10. Template mode only: hardware. Enter accepts bridge `vmbr0`, memory 2048 MB, cores 2. `n` asks for each value.
 11. Read the summary. Type `yes`.

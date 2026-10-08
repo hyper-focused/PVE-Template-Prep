@@ -177,8 +177,10 @@ def _parse_destroy_text(text: str, chosen: set[int]) -> tuple[int, ...]:
 
 
 def _ask_destroy(read_line, write, vmids: tuple[int, ...]) -> frozenset[int]:
+    shown = ", ".join(str(vmid) for vmid in vmids)
     write(
-        "Type a VMID again to replace it. A template at that ID is destroyed. "
+        f"In use: {shown}. Type a VMID again to replace it. "
+        "A template at that ID is destroyed. "
         "A stopped non-template keeps the VMID and gets a new scsi0. "
         "Empty means refuse.\n"
     )
@@ -261,7 +263,16 @@ def _summary_line(
     return f"{distro} {release} -> existing VMID {vmid} storage {storage} guest-prep={flag}"
 
 
-def interview(read_line, write, *, dry_run: bool, list_storages, releases_for, normalize_release) -> Job:
+def interview(
+    read_line,
+    write,
+    *,
+    dry_run: bool,
+    list_storages,
+    releases_for,
+    normalize_release,
+    vmids_in_use,
+) -> Job:
     """Walk the operator through one job.
 
     read_line() -> str, and raises EOFError on EOF. None is also EOF.
@@ -327,7 +338,16 @@ def interview(read_line, write, *, dry_run: bool, list_storages, releases_for, n
     else:
         vmids = _ask_vmids(read_line, write, len(releases))
         if mode == "template":
-            destroy_vmids = _ask_destroy(read_line, write, vmids)
+            occupied = set(vmids_in_use(vmids))
+            in_use = tuple(vmid for vmid in vmids if vmid in occupied)
+            free = tuple(vmid for vmid in vmids if vmid not in occupied)
+            if free:
+                shown = ", ".join(str(vmid) for vmid in free)
+                write(f"Not in use: {shown}.\n")
+            if in_use:
+                destroy_vmids = _ask_destroy(read_line, write, in_use)
+            else:
+                destroy_vmids = frozenset()
         else:
             destroy_vmids = frozenset()
 

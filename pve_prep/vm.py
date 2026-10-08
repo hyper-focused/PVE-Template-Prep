@@ -32,6 +32,13 @@ def parse_storage_ids(pvesm_status_text: str) -> list[str]:
     return names
 
 
+def vmid_config_missing(returncode: int, output: str) -> bool:
+    """True when qm status failed because this VMID has no config."""
+    if returncode == 0:
+        return False
+    return "does not exist" in output.casefold()
+
+
 def parse_qm_status(text: str) -> str:
     """Return a qm status token, or '' when text is empty or garbage."""
     if not text or not text.strip():

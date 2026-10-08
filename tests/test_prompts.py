@@ -45,11 +45,22 @@ class _Script:
     def write(self, text: str) -> None:
         self.written.append(text)
 
-    def run(self, *, dry_run: bool, storages: list[str] | None = None) -> Job:
+    def run(
+        self,
+        *,
+        dry_run: bool,
+        storages: list[str] | None = None,
+        in_use: set[int] | None = None,
+    ) -> Job:
         def list_storages() -> list[str]:
             if storages is None:
                 raise AssertionError("storage list should not be consulted")
             return list(storages)
+
+        def vmids_in_use(vmids: tuple[int, ...]) -> set[int]:
+            if in_use is None:
+                return set(vmids)
+            return set(in_use)
 
         return interview(
             self.read_line,
@@ -58,6 +69,7 @@ class _Script:
             list_storages=list_storages,
             releases_for=_specs,
             normalize_release=_normalize,
+            vmids_in_use=vmids_in_use,
         )
 
 
@@ -164,6 +176,28 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("debian 12 -> template VMID 9001", blob)
         self.assertIn("debian 13 -> template VMID 9002", blob)
 
+    def test_free_vmids_skip_the_destroy_prompt(self) -> None:
+        script = _Script(
+            [
+                "1",
+                "12, 13",
+                "",
+                "",
+                "1",
+                "",
+                "",
+                "",
+                "yes",
+            ]
+        )
+        job = script.run(dry_run=False, storages=["dir-templates"], in_use=set())
+        self.assertEqual(job.vmids, (9001, 9002))
+        self.assertEqual(job.destroy_vmids, frozenset())
+        blob = "".join(script.written)
+        self.assertIn("Not in use: 9001, 9002.", blob)
+        self.assertNotIn("Destroy VMIDs:", blob)
+        self.assertNotIn("DESTROY", blob)
+
     def test_confirm_no_aborts(self) -> None:
         script = _Script(
             [
@@ -246,6 +280,7 @@ class InterviewTest(unittest.TestCase):
                 list_storages=lambda: [],
                 releases_for=_specs,
                 normalize_release=_normalize,
+                vmids_in_use=lambda vmids: set(vmids),
             )
 
     def test_none_is_eof(self) -> None:
@@ -260,6 +295,7 @@ class InterviewTest(unittest.TestCase):
                 list_storages=lambda: [],
                 releases_for=_specs,
                 normalize_release=_normalize,
+                vmids_in_use=lambda vmids: set(vmids),
             )
 
     def test_destroy_drops_ids_outside_the_set(self) -> None:

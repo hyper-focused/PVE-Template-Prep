@@ -13,6 +13,7 @@ from pve_prep.vm import (
     parse_imported_volid,
     parse_os_disk,
     parse_qm_status,
+    vmid_config_missing,
     parse_storage_content,
     storage_lacks_images,
     parse_storage_ids,
@@ -84,6 +85,12 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
         self.assertEqual(parse_qm_status("   \n"), "")
         self.assertEqual(parse_qm_status("Configuration file does not exist\n"), "")
         self.assertEqual(parse_qm_status("status:"), "")
+
+    def test_missing_vmid_is_not_in_use(self) -> None:
+        missing = "Configuration file 'nodes/pve/qemu-server/9001.conf' does not exist\n"
+        self.assertTrue(vmid_config_missing(2, missing))
+        self.assertFalse(vmid_config_missing(0, "status: stopped\n"))
+        self.assertFalse(vmid_config_missing(255, "Permission denied\n"))
 
     def test_parse_os_disk_skips_cloudinit_cdrom_and_wrong_storage(self) -> None:
         cfg = "\n".join(

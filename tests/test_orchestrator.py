@@ -56,6 +56,7 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog) -> None:
     vm.is_template = real_vm.is_template
     vm.parse_storage_content = real_vm.parse_storage_content
     vm.storage_lacks_images = real_vm.storage_lacks_images
+    vm.vmid_config_missing = real_vm.vmid_config_missing
     vm.existing_hw_commands = real_vm.existing_hw_commands
 
 
@@ -289,7 +290,16 @@ class OrchestratorTest(unittest.TestCase):
     def test_main_dry_run_flag_and_storage_failure(self) -> None:
         seen = {}
 
-        def fake_interview(read_line, write, *, dry_run, list_storages, releases_for, normalize_release):
+        def fake_interview(
+            read_line,
+            write,
+            *,
+            dry_run,
+            list_storages,
+            releases_for,
+            normalize_release,
+            vmids_in_use,
+        ):
             seen["dry_run"] = dry_run
             seen["storages"] = list_storages()
             return _image_job(releases=("12",), dry_run=True)
