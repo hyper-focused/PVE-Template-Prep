@@ -615,6 +615,8 @@ def _ask_hardware(read_line, write) -> tuple[str, int, int]:
     write(f"  Cores: {DEFAULT_CORES}\n")
     write(f"  NIC: virtio on bridge {DEFAULT_BRIDGE}\n")
     write("\n")
+    write("  Machine: q35\n")
+    write("  CPU: x86-64-v2-AES\n")
     write("  SCSI controller: virtio-scsi-single\n")
     write("  OS disk: scsi0, discard=on, ssd=1\n")
     write("  Cloud-init drive: ide2\n")

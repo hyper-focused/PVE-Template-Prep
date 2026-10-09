@@ -51,7 +51,7 @@ On a terminal the same questions are menus. Each step is a short explanation, a 
    - Disk image: the VM stays. `1` keeps the old disk and attaches the new one. `2` deletes the old disk, after `DELETE`.
    - A published file that already exists is renamed aside. That path does not ask.
 8. Guest prep. The prompt says what it changes. Enter means yes. `n` skips `virt-customize`.
-9. Template mode: the hardware that will be applied, then bridge, memory, and cores. Enter keeps `vmbr0`, 2048 MB, and 2 cores. `n` asks for those three. SCSI type, serial console, cloud-init, and the rest are listed and can be changed later with `qm set`.
+9. Template mode: the hardware that will be applied, then bridge, memory, and cores. Enter keeps `vmbr0`, 2048 MB, and 2 cores. `n` asks for those three. Machine type is `q35`. CPU type is `x86-64-v2-AES`. SCSI type, serial console, cloud-init, and the rest are listed and can be changed later with `qm set`.
 10. Template mode: convert the new VM with `qm template`. Enter converts. `n` leaves a normal VM. A template is cloned, not booted.
 11. Delete the files in `/var/tmp/pve-template-prep/cache` when the run finishes. Enter keeps them. `y` deletes them. This is the prep cache, not all of `/var/tmp`.
 12. Read the summary. Type `YES`.

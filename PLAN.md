@@ -16,7 +16,7 @@ Each step says what it does before it asks. A bad answer asks that question agai
 6. Storage when the result is a VM disk. The id has to accept images. A published file asks for a directory, not a storage id.
 7. Per VMID, and only when that VM has an OS disk (or the check cannot tell). `1` backs the disk up. `2` does not, and then the operator types `DELETE`. `X` exits. A template replace with no OS disk skips the backup menu and still requires `DELETE`. An image insert with no OS disk does not.
 8. Guest prep. Enter applies it. `n` leaves the image as published.
-9. Template hardware is one list for every distro: 2048 MB, 2 cores, virtio on `vmbr0`, virtio-scsi-single, scsi0 `discard=on,ssd=1`, ide2 cloud-init, SeaBIOS, serial console, guest agent, `/dev/urandom`. Enter keeps bridge, memory, and cores. `n` changes those three. The rest is changed later with `qm set`.
+9. Template hardware is one list for every distro: 2048 MB, 2 cores, machine `q35`, CPU `x86-64-v2-AES`, virtio on `vmbr0`, virtio-scsi-single, scsi0 `discard=on,ssd=1`, ide2 cloud-init, SeaBIOS, serial console, guest agent, `/dev/urandom`. Enter keeps bridge, memory, and cores. `n` changes those three. The rest is changed later with `qm set`.
 10. Template mode only: convert the new VM with `qm template`. Enter converts. `n` leaves a normal VM. Image and existing mode do not ask.
 11. Delete the files in `/var/tmp/pve-template-prep/cache` when the run finishes. Enter keeps them. `y` deletes them after every release succeeds. A failed release keeps the cache, including a disk backup. A dry-run does not delete. This is not all of `/var/tmp`.
 12. Summary, then `YES`. A VM that was not converted is described as a VM.
