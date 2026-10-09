@@ -689,7 +689,12 @@ class InterviewTest(unittest.TestCase):
             blob,
         )
         self.assertIn("Type YES to create the VM.", blob)
-        self.assertIn("cache: delete the files in /var/tmp/pve-template-prep/cache", blob)
+        self.assertIn(
+            "cache: delete the working files in /var/tmp/pve-template-prep/cache "
+            "after a successful run. Disk backups stay.",
+            blob,
+        )
+        self.assertIn("A disk backup in that directory is never deleted.", blob)
         self.assertIn("Enter converts to a template.", blob)
 
 

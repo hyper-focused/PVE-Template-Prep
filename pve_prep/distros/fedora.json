@@ -9,7 +9,6 @@
     "base": "https://download.fedoraproject.org/pub/fedora/linux/releases/{release}/Cloud/x86_64/images/"
   },
   "releases": [
-    {"version": "42", "eol": true},
     {"version": "43", "eol": false},
     {"version": "44", "eol": false}
   ]

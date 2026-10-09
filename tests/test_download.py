@@ -326,6 +326,39 @@ class ClearCacheTests(unittest.TestCase):
             self.assertEqual(list(cache.iterdir()), [])
             self.assertEqual(outside.read_text(), "safe")
 
+    def test_disk_backups_are_never_deleted(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "pve-template-prep" / "cache"
+            cache.mkdir(parents=True)
+            backup = cache / "vm-910-scsi0.bak.20261009T153045Z.qcow2"
+            backup.write_text("disk")
+            other = cache / "vm-9001-nvme0.bak.20261009T153045Z.qcow2"
+            other.write_text("nvme")
+            work = cache / "debian-12-genericcloud-amd64.qcow2"
+            work.write_text("img")
+            lookalike = cache / "vm-910-scsi0.bak.not-a-stamp.qcow2"
+            lookalike.write_text("nope")
+            nested = cache / "workdir"
+            nested.mkdir()
+            (nested / "partial").write_text("part")
+            outside = root / "keep-me.txt"
+            outside.write_text("safe")
+            linked = cache / "vm-910-virtio1.bak.20261009T153045Z.qcow2"
+            linked.symlink_to(outside)
+            decoy = cache / "vm-42-ide0.bak.20261009T153045Z.qcow2"
+            decoy.mkdir()
+            (decoy / "inside").write_text("keep")
+            clear_cache(cache)
+            self.assertEqual(backup.read_text(), "disk")
+            self.assertEqual(other.read_text(), "nvme")
+            self.assertTrue(linked.is_symlink())
+            self.assertEqual(outside.read_text(), "safe")
+            self.assertEqual((decoy / "inside").read_text(), "keep")
+            self.assertFalse(work.exists())
+            self.assertFalse(lookalike.exists())
+            self.assertFalse(nested.exists())
+
     def test_refuses_a_symlink_and_a_wrong_directory(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

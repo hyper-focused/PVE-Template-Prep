@@ -337,26 +337,29 @@ def _pairs(job: Job) -> list[tuple[str, int | None]]:
 
 
 def _clear_requested_cache(job: Job, failed: bool) -> bool:
-    """Delete the prep cache only after a successful live run.
+    """Delete working files in the prep cache after a successful live run.
 
-    Returns True when the operator asked for a delete and it did not happen.
+    Disk backups are never deleted. Returns True when the operator asked
+    for a delete and it did not happen.
     """
     if not job.clean_cache:
         return False
     cache = job.cache_dir
     if job.dry_run:
-        print(f"dry-run: would delete the files in {cache}")
+        print(f"dry-run: would delete the working files in {cache}")
+        print("disk backups would stay")
         return False
     if failed:
         print(f"cache kept: {cache}")
-        print("a release failed, so the download and any disk backup stay")
+        print("a release failed, so the downloaded image stays. Disk backups are kept either way")
         return False
     try:
         clear_cache(cache)
     except DownloadError as exc:
         print(f"FAIL cache: {exc}")
         return True
-    print(f"deleted the files in {cache}")
+    print(f"deleted the working files in {cache}")
+    print("disk backups stay")
     return False
 
 

@@ -9,7 +9,7 @@ The interview rules below are the contract. questionary draws them on a terminal
 Each step says what it does before it asks. A bad answer asks that question again. `X` exits. The last answer is `YES` or `yes`. `no` exits too.
 
 1. Distro, one per run. Guest prep follows that family (`deb` or `el`).
-2. Releases, one to three. On the numbered path the numbers are the menu, not the version. Debian `1, 2` is 12 and 13. A codename still works there. Debian lists two releases. The other distros list three.
+2. Releases, one to three. On the numbered path the numbers are the menu, not the version. Debian `1, 2` is 12 and 13. Fedora `1, 2` is 43 and 44. A codename still works there. Debian and Fedora list two releases. The other distros list three.
 3. What to build. `1` complete template, `2` disk image only, `3` prep a stopped VM in place. Enter on the numbered path selects the template.
 4. Disk format, except for the stopped VM. `1` ZFS raw (a file-based raw image is `.img` and full size), `2` QEMU qcow2. Enter selects raw.
 5. VMIDs, one per release. Enter on a template uses the next free IDs from 9001 and never lands on an ID that is already in use. An occupied ID has to be typed. Image mode: Enter publishes a file. A typed in-use VMID gets the new disk inserted. Existing mode requires a VMID that is already in use.
@@ -18,7 +18,7 @@ Each step says what it does before it asks. A bad answer asks that question agai
 8. Guest prep. Enter applies it. `n` leaves the image as published.
 9. Template hardware is one list for every distro: 2048 MB, 2 cores, machine `q35`, CPU `x86-64-v2-AES`, virtio on `vmbr0`, virtio-scsi-single, scsi0 `discard=on,ssd=1`, ide2 cloud-init, SeaBIOS, serial console, guest agent, `/dev/urandom`. Enter keeps bridge, memory, and cores. `n` changes those three. The rest is changed later with `qm set`.
 10. Template mode only: convert the new VM with `qm template`. Enter converts. `n` leaves a normal VM. Image and existing mode do not ask.
-11. Delete the files in `/var/tmp/pve-template-prep/cache` when the run finishes. Enter keeps them. `y` deletes them after every release succeeds. A failed release keeps the cache, including a disk backup. A dry-run does not delete. This is not all of `/var/tmp`.
+11. Delete the working files in `/var/tmp/pve-template-prep/cache` when the run finishes. Enter keeps them. `y` deletes them after every release succeeds. A disk backup in that directory is never deleted. A failed release keeps the download as well. A dry-run does not delete. This is not all of `/var/tmp`.
 12. Summary, then `YES`. A VM that was not converted is described as a VM.
 
 `Job.backup_vmids` is the set that gets a copy. Template mode copies OS disks with `qemu-img convert` before `qm destroy`. Image mode keeps the old disk and attaches the new one on the next scsi slot. Anything else replaces the boot disk. Collision on the job is derived from that set. The entry script keys the runtime off `backup_vmids`.

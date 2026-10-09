@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 
 from . import __version__
 from .catalog import ImageSpec, finalize_index
+from .vm import is_disk_backup
 
 _TIMEOUT = 120
 _CHUNK = 1024 * 1024
@@ -189,10 +190,12 @@ def cache_may_be_cleared(resolved: Path) -> bool:
 
 
 def clear_cache(cache_dir: str | Path) -> None:
-    """Delete the files inside the prep cache. Leave the directory itself.
+    """Delete the working files inside the prep cache. Leave the directory.
 
-    A symlink is refused, and so is anything that does not resolve to
-    .../pve-template-prep/cache. Child symlinks are unlinked, not followed.
+    A disk backup (vm-<id>-<bus>.bak.<stamp>.qcow2) is never deleted, even
+    when the name is a symlink or a directory. Other child symlinks are
+    unlinked and not followed. The cache dir itself must not be a symlink,
+    and it must resolve to .../pve-template-prep/cache.
     """
     path = Path(cache_dir)
     if path.is_symlink():
@@ -205,6 +208,8 @@ def clear_cache(cache_dir: str | Path) -> None:
     if not cache_may_be_cleared(resolved):
         raise DownloadError(f"refusing to clear {resolved}")
     for child in resolved.iterdir():
+        if is_disk_backup(child.name):
+            continue
         if child.is_symlink() or not child.is_dir():
             child.unlink()
         else:

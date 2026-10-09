@@ -5,9 +5,11 @@ from __future__ import annotations
 import unittest
 from io import StringIO
 from contextlib import redirect_stdout
+from pathlib import Path
 
 from pve_prep.vm import (
     VmError,
+    is_disk_backup,
     config_has_os_disk,
     create_template,
     existing_prep_commands,
@@ -523,6 +525,7 @@ class CreateTemplateTests(unittest.TestCase):
         self.assertEqual(run.calls[3][:4], ["qemu-img", "convert", "-O", "qcow2"])
         self.assertTrue(run.calls[3][4].endswith("vm-910-disk-0.raw"))
         self.assertIn("vm-910-scsi0.bak.", run.calls[3][5])
+        self.assertTrue(is_disk_backup(Path(run.calls[3][5]).name))
         self.assertEqual(run.calls[4], ["qm", "destroy", "910"])
 
     def test_cloudinit_alone_is_not_an_os_disk(self) -> None:

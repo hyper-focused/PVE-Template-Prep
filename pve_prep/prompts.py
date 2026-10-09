@@ -747,9 +747,10 @@ def _ask_clean_cache(read_line, write) -> bool:
         write,
         "The working files are in "
         f"{DEFAULT_CACHE}.\n"
-        "That includes the downloaded image and any disk backups from this run.\n"
+        "Those are the downloaded image and the converted copy.\n"
+        "A disk backup in that directory is never deleted.\n"
         "\n"
-        "Delete those files when the run finishes? "
+        "Delete the working files when the run finishes? "
         "Enter keeps them. y deletes them. [y/N]\n",
         False,
     )
@@ -878,14 +879,17 @@ def interview(
         if vmid in backup_vmids:
             write(
                 f"VMID {vmid}: the existing disk is copied into the cache, "
-                "then the VM is deleted.\n"
+                "then the VM is deleted. Cache cleanup does not remove that copy.\n"
             )
         else:
             write(f"VMID {vmid}: the existing disk is not kept. The VM is deleted.\n")
     if mode == "template":
         write(f"hardware: bridge {bridge}, memory {memory_mb} MB, cores {cores}\n")
     if clean_cache:
-        write(f"cache: delete the files in {DEFAULT_CACHE} after a successful run\n")
+        write(
+            f"cache: delete the working files in {DEFAULT_CACHE} "
+            "after a successful run. Disk backups stay.\n"
+        )
     else:
         write(f"cache: keep {DEFAULT_CACHE}\n")
 

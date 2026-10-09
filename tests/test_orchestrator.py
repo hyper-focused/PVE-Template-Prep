@@ -360,7 +360,7 @@ class OrchestratorTest(unittest.TestCase):
                 MOD.main(["--version"])
         self.assertEqual(caught.exception.code, 0)
         self.assertEqual(buf.getvalue(), f"pve-template-prep {pve_prep.__version__}\n")
-        self.assertEqual(pve_prep.__version__, "1.0.0")
+        self.assertEqual(pve_prep.__version__, "1.0.1")
         import pve_prep.download as download
 
         self.assertEqual(download._HEADERS["User-Agent"], f"pve-prep/{pve_prep.__version__}")
@@ -429,7 +429,8 @@ class OrchestratorTest(unittest.TestCase):
             "Debian 12 disk image created at /tmp/images/debian-12-pve.img",
             buf.getvalue(),
         )
-        self.assertIn(f"deleted the files in {cache}", buf.getvalue())
+        self.assertIn(f"deleted the working files in {cache}", buf.getvalue())
+        self.assertIn("disk backups stay", buf.getvalue())
 
     def test_main_keeps_the_cache_when_a_release_fails(self) -> None:
         job = replace(_image_job(releases=("12",), dry_run=False), clean_cache=True)
@@ -449,6 +450,7 @@ class OrchestratorTest(unittest.TestCase):
         MOD.clear_cache.assert_not_called()
         self.assertIn("cache kept:", buf.getvalue())
         self.assertIn("a release failed", buf.getvalue())
+        self.assertIn("Disk backups are kept either way", buf.getvalue())
 
     def test_main_dry_run_does_not_delete_the_cache(self) -> None:
         job = replace(_image_job(releases=("12",), dry_run=True), clean_cache=True)
@@ -458,7 +460,8 @@ class OrchestratorTest(unittest.TestCase):
             code = MOD.main([])
         self.assertEqual(code, 0)
         MOD.clear_cache.assert_not_called()
-        self.assertIn("dry-run: would delete the files in", buf.getvalue())
+        self.assertIn("dry-run: would delete the working files in", buf.getvalue())
+        self.assertIn("disk backups would stay", buf.getvalue())
 
     def test_list_storages_parses_status(self) -> None:
         proc = SimpleNamespace(returncode=0, stdout="NAME STATUS\n", stderr="")

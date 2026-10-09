@@ -17,6 +17,10 @@ class VmDestroyedError(VmError):
 
 
 _BUS_KEY = re.compile(r"^(?:scsi|virtio|sata|ide|nvme)[0-9]+$")
+_DISK_BACKUP_NAME = re.compile(
+    r"^vm-[0-9]+-(?:scsi|virtio|sata|ide|nvme)[0-9]+"
+    r"\.bak\.[0-9]{8}T[0-9]{6}Z\.qcow2$"
+)
 _UNUSED_KEY = re.compile(r"^unused[0-9]+$")
 _SKIP_MARKERS = ("cloudinit", "media=cdrom")
 Run = Callable[[list[str]], object]
@@ -440,9 +444,26 @@ def _path_line(text: str) -> str:
     return ""
 
 
+def is_disk_backup(name: str) -> bool:
+    """True for a template OS-disk copy written into the prep cache.
+
+    Cache cleanup uses this so a later delete cannot remove the only copy
+    of a VM that was destroyed.
+    """
+    return _DISK_BACKUP_NAME.fullmatch(name) is not None
+
+
+def disk_backup_name(vmid: int, bus: str, stamp: str) -> str:
+    """File name of one OS-disk backup. Refuses a name cleanup would delete."""
+    name = f"vm-{vmid}-{bus}.bak.{stamp}.qcow2"
+    if not is_disk_backup(name):
+        raise VmError(f"refusing disk backup name {name}")
+    return name
+
+
 def _backup_dest(backup_dir: str, vmid: int, bus: str) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return str(Path(backup_dir) / f"vm-{vmid}-{bus}.bak.{stamp}.qcow2")
+    return str(Path(backup_dir) / disk_backup_name(vmid, bus, stamp))
 
 
 def _backup_os_disks(run: Run, *, vmid: int, config_text: str, backup_dir: str) -> None:

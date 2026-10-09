@@ -30,7 +30,7 @@ class CatalogTests(unittest.TestCase):
         self.assertNotIn("rocky", DISTROS)
         for distro in DISTROS:
             specs = releases_for(distro)
-            expected = 2 if distro == "debian" else 3
+            expected = 2 if distro in {"debian", "fedora"} else 3
             self.assertEqual(len(specs), expected)
             self.assertEqual(len({spec.release for spec in specs}), expected)
             for spec in specs:
@@ -88,9 +88,9 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(spec.label, f"CloudLinux {spec.release}")
 
         fedora = {spec.release: spec for spec in releases_for("fedora")}
-        self.assertTrue(fedora["42"].eol)
-        self.assertEqual(fedora["42"].label, "Fedora 42 (EOL)")
+        self.assertEqual(set(fedora), {"43", "44"})
         self.assertFalse(fedora["43"].eol)
+        self.assertEqual(fedora["43"].label, "Fedora 43")
         self.assertFalse(fedora["44"].eol)
         self.assertEqual(fedora["44"].filename, "")
         self.assertEqual(fedora["44"].checksum_url, "")
@@ -111,7 +111,7 @@ class CatalogTests(unittest.TestCase):
             ("alma", " 9 ", "9"),
             ("cloudlinux", "10", "10"),
             ("CloudLinux", "8", "8"),
-            ("fedora", "42", "42"),
+            ("fedora", "43", "43"),
             ("FEDORA", "44", "44"),
         )
         for distro, raw, expected in cases:
@@ -138,6 +138,8 @@ class CatalogTests(unittest.TestCase):
             normalize_release("arch", "1")
         with self.assertRaises(CatalogError):
             normalize_release("fedora", "41")
+        with self.assertRaises(CatalogError):
+            normalize_release("fedora", "42")
 
     def test_shipped_files_are_the_release_list(self) -> None:
         directory = Path(__file__).resolve().parents[1] / "pve_prep" / "distros"
