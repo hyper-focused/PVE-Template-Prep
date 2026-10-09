@@ -155,6 +155,7 @@ class VendorTest(unittest.TestCase):
         self.assertTrue(ui.tone("explanation", "body").startswith("\033[37m"))
         self.assertIn("explanation", ui.tone("explanation", "body"))
         self.assertTrue(ui.tone("Releases.", "header").startswith("\033[32m"))
+        self.assertTrue(ui.tone("Creating Debian 12 VM template", "cyan").startswith("\033[36m"))
         self.assertIn("deleted", ui.tone("deleted", "danger"))
         title = ui.choice_title("42  Fedora 42 EOL")
         self.assertEqual(title[1], ("class:danger", " EOL"))

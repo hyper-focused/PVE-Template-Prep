@@ -12,13 +12,14 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from pve_prep import __version__
 from pve_prep.catalog import normalize_release, releases_for
 from pve_prep.customize import apply as customize_apply
 from pve_prep.customize import argv as customize_argv
 from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, publish
 from pve_prep.job import Job, published_name, vm_name
 from pve_prep.prompts import PromptAbort, interview
-from pve_prep.ui import arm
+from pve_prep.ui import arm, tone
 from pve_prep.vm import (
     VmDestroyedError,
     config_has_os_disk,
@@ -163,8 +164,61 @@ def _existing_plan(config_text: str, vmid: int, storage: str) -> tuple[str, list
     return str(volid), list(commands)
 
 
-def _run_fetched(job: Job, release: str, vmid: int | None) -> None:
+def _product(spec, distro: str, release: str) -> str:
+    label = str(getattr(spec, "label", "") or "").strip()
+    return label or f"{distro} {release}"
+
+
+def _opening(label: str, job: Job, vmid: int | None) -> str:
+    if job.mode == "template":
+        kind = "VM template" if job.make_template else "VM"
+        return f"Creating {label} {kind}"
+    if job.mode == "image" and vmid is None:
+        return f"Creating {label} disk image"
+    if job.mode == "image":
+        return f"Creating {label} VM disk image"
+    return f"Preparing {label} VM"
+
+
+def _file_done(label: str, dest: Path, result) -> str:
+    place = str(dest)
+    if result.status == "skipped":
+        return f"{label} disk image left unchanged at {place}"
+    sentence = f"{label} disk image created at {place}"
+    if result.backup:
+        return f"{sentence}. Old disk image saved at {result.backup}."
+    if result.replaced:
+        return f"{sentence}. Old disk image deleted."
+    return sentence
+
+
+def _import_done(label: str, vmid: int, policy: str) -> str:
+    sentence = f"{label} VM disk image created and imported"
+    if policy == "backup":
+        return f"{sentence}. Previous disk is still attached to VM {vmid}."
+    return f"{sentence}. Previous disk deleted."
+
+
+def _template_done(label: str, job: Job, vmid: int) -> str:
+    kind = "VM template" if job.make_template else "VM"
+    sentence = f"{label} {kind} created"
+    if vmid in job.destroy_vmids:
+        sentence += ". Previous VM deleted."
+        if vmid in job.backup_vmids:
+            sentence += f" Old disk saved in {job.cache_dir}."
+    return sentence
+
+
+def _announce(text: str, role: str) -> None:
+    if sys.stdout.isatty():
+        print(tone(text, role))
+    else:
+        print(text)
+
+
+def _run_fetched(job: Job, release: str, vmid: int | None) -> str:
     spec = _spec_for(job.distro, release)
+    label = _product(spec, job.distro, release)
     inserts = job.mode == "image" and vmid is not None
     if job.mode != "image" or inserts:
         if vmid is None:
@@ -179,18 +233,18 @@ def _run_fetched(job: Job, release: str, vmid: int | None) -> None:
         customize_apply(str(work), spec.family, dry_run=job.dry_run)
     if job.mode == "image" and not inserts:
         dest = Path(job.dest_dir) / published_name(job.distro, release, job.disk_format)
-        publish(work, dest, job.collision, dry_run=job.dry_run)
-        return
+        return _file_done(label, dest, publish(work, dest, job.collision, dry_run=job.dry_run))
     if inserts:
+        policy = "backup" if vmid in job.backup_vmids else "overwrite"
         insert_disk(
             vmid=vmid,
             storage=job.storage,
             image_path=str(work),
-            disk_policy="backup" if vmid in job.backup_vmids else "overwrite",
+            disk_policy=policy,
             dry_run=job.dry_run,
             run=default_run,
         )
-        return
+        return _import_done(label, vmid, policy)
     create_template(
         vmid=vmid,
         name=vm_name(job.distro, release),
@@ -206,6 +260,7 @@ def _run_fetched(job: Job, release: str, vmid: int | None) -> None:
         make_template=job.make_template,
         run=default_run,
     )
+    return _template_done(label, job, vmid)
 
 
 def _first_path_line(text: str) -> str:
@@ -225,7 +280,9 @@ def _run_existing(job: Job, release: str, vmid: int | None) -> None:
         print(f"existing VMID {vmid} storage {job.storage} guest-prep={prep}")
         if job.prep:
             spec = _spec_for(job.distro, release)
+            print()
             print(shlex.join(customize_argv("<os-disk>", spec.family)))
+            print()
         for command in existing_hw_commands(
             vmid=vmid,
             bus_key="scsi0",
@@ -257,10 +314,18 @@ def _run_existing(job: Job, release: str, vmid: int | None) -> None:
 
 
 def run_one(job: Job, release: str, vmid: int | None) -> None:
+    spec = _spec_for(job.distro, release)
+    label = _product(spec, job.distro, release)
+    print()
+    _announce(_opening(label, job, vmid), "cyan")
+    print()
     if job.mode == "existing":
         _run_existing(job, release, vmid)
-        return
-    _run_fetched(job, release, vmid)
+        done = f"{label} VM prepared"
+    else:
+        done = _run_fetched(job, release, vmid)
+    print()
+    _announce(done, "body")
 
 
 def _pairs(job: Job) -> list[tuple[str, int | None]]:
@@ -297,7 +362,13 @@ def _clear_requested_cache(job: Job, failed: bool) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
+        prog="pve-template-prep",
         description="Download, prep, and publish PVE cloud images or templates.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "--dry-run",
@@ -305,6 +376,7 @@ def main(argv: list[str] | None = None) -> int:
         help="print actions and do not change the host",
     )
     args = parser.parse_args(argv)
+    print(f"{parser.prog} {__version__}")
     try:
         job = interview(
             arm(_read_line),
@@ -339,8 +411,6 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"FAIL {release}: {exc}")
             failed = True
-        else:
-            print(f"OK {release}")
     print("done")
     if _clear_requested_cache(job, failed):
         failed = True

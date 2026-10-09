@@ -63,6 +63,7 @@ def arm(read_line):
 # and warnings are red.
 _HEADER = "\033[32m"
 _BODY = "\033[37m"
+_CYAN = "\033[36m"
 _DANGER = "\033[31m"
 _RESET = "\033[0m"
 _INVERT = "bg:ansicyan fg:ansiblack"
@@ -91,7 +92,7 @@ def widget_style():
 
 def tone(text: str, role: str = "body") -> str:
     """Wrap text for a dark terminal. The words themselves stay intact."""
-    prefix = {"header": _HEADER, "danger": _DANGER}.get(role, _BODY)
+    prefix = {"header": _HEADER, "danger": _DANGER, "cyan": _CYAN}.get(role, _BODY)
     return f"{prefix}{text}{_RESET}"
 
 

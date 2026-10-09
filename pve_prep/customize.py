@@ -72,15 +72,20 @@ def apply(image: str, family: str, *, dry_run: bool = False, run=None) -> None:
     Nonzero raises RuntimeError including the return code. Do not use shell=True.
     """
     command = argv(image, family)
-    if dry_run:
-        print(shlex.join(command))
-        return
-    env = os.environ.copy()
-    env.setdefault("LIBGUESTFS_BACKEND", "direct")
-    runner = _run_subprocess if run is None else run
-    result = runner(command, env)
-    if result.returncode != 0:
-        raise RuntimeError(f"virt-customize failed with return code {result.returncode}")
+    # Blank lines keep the green virt-customize block off the status lines.
+    print()
+    try:
+        if dry_run:
+            print(shlex.join(command))
+            return
+        env = os.environ.copy()
+        env.setdefault("LIBGUESTFS_BACKEND", "direct")
+        runner = _run_subprocess if run is None else run
+        result = runner(command, env)
+        if result.returncode != 0:
+            raise RuntimeError(f"virt-customize failed with return code {result.returncode}")
+    finally:
+        print()
 
 
 def _plan(family: str) -> tuple[str, tuple[str, ...]]:

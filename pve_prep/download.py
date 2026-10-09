@@ -10,14 +10,16 @@ import shutil
 import subprocess
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
+from . import __version__
 from .catalog import ImageSpec, finalize_index
 
 _TIMEOUT = 120
 _CHUNK = 1024 * 1024
-_HEADERS = {"User-Agent": "pve-prep/1.0"}
+_HEADERS = {"User-Agent": f"pve-prep/{__version__}"}
 _ALG_LEN = {"256": 64, "512": 128}
 _BSD = re.compile(
     r"^SHA(?:256|512)\s+\((?P<name>[^)]+)\)\s*=\s*(?P<hex>[0-9A-Fa-f]+)\s*$",
@@ -26,6 +28,15 @@ _BSD = re.compile(
 _CORE = re.compile(r"^(?P<hex>[0-9A-Fa-f]+)\s+\*?(?P<name>\S.*?)\s*$")
 _BARE = re.compile(r"[0-9A-Fa-f]+")
 _COLLISIONS = {"backup", "overwrite", "skip"}
+
+
+@dataclass(frozen=True)
+class PublishResult:
+    """Where a disk image file landed. backup is set when the old file was kept."""
+
+    status: str
+    backup: str = ""
+    replaced: bool = False
 
 
 class DownloadError(Exception):
@@ -363,7 +374,7 @@ def _move_file(src: Path, dest: Path) -> None:
     src.unlink()
 
 
-def publish(src: Path, dest: Path, collision: str, *, dry_run: bool = False) -> str:
+def publish(src: Path, dest: Path, collision: str, *, dry_run: bool = False) -> PublishResult:
     """Place src at dest. collision is backup, overwrite, or skip."""
     if collision not in _COLLISIONS:
         raise DownloadError(f"unknown collision policy: {collision}")
@@ -371,25 +382,32 @@ def publish(src: Path, dest: Path, collision: str, *, dry_run: bool = False) -> 
     dest = Path(dest)
     if collision == "skip" and dest.exists():
         print(f"skip {dest}")
-        return "skipped"
+        return PublishResult("skipped")
     if dry_run:
-        if collision == "backup" and dest.exists():
-            print(f"backup {dest} -> {dest}.bak.<UTC>")
+        backup = ""
+        replaced = False
+        if dest.exists() and collision == "backup":
+            backup = f"{dest}.bak.<UTC>"
+            print(f"backup {dest} -> {backup}")
+        elif dest.exists() and collision == "overwrite":
+            replaced = True
         print(f"move {src} -> {dest}")
-        return "written"
+        return PublishResult("written", backup, replaced)
 
-    backup = None
+    backup_path = ""
+    replaced = collision == "overwrite" and dest.exists()
     if collision == "backup" and dest.exists():
         backup = _backup_path(dest)
         os.replace(dest, backup)
+        backup_path = str(backup)
         print(f"backup {dest} -> {backup}")
     try:
         _move_file(src, dest)
     except Exception:
-        if backup is not None and not dest.exists():
+        if backup_path and not dest.exists():
             try:
-                os.replace(backup, dest)
+                os.replace(backup_path, dest)
             except OSError:
                 pass
         raise
-    return "written"
+    return PublishResult("written", backup_path, replaced)

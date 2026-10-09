@@ -117,11 +117,14 @@ class PublishTests(unittest.TestCase):
 
             src = root / "incoming.qcow2"
             src.write_bytes(b"new")
-            self.assertEqual(publish(src, dest, "backup"), "written")
+            saved = publish(src, dest, "backup")
+            self.assertEqual(saved.status, "written")
+            self.assertFalse(saved.replaced)
             self.assertEqual(dest.read_bytes(), b"new")
             self.assertFalse(src.exists())
             backups = list(root.glob("disk.qcow2.bak.*"))
             self.assertEqual(len(backups), 1)
+            self.assertEqual(saved.backup, str(backups[0]))
             self.assertRegex(backups[0].name, r"^disk\.qcow2\.bak\.\d{8}T\d{6}Z$")
             self.assertEqual(backups[0].read_bytes(), b"old")
 
@@ -129,13 +132,16 @@ class PublishTests(unittest.TestCase):
             kept.write_bytes(b"keep-me")
             src = root / "ignored.qcow2"
             src.write_bytes(b"nope")
-            self.assertEqual(publish(src, kept, "skip"), "skipped")
+            self.assertEqual(publish(src, kept, "skip").status, "skipped")
             self.assertEqual(kept.read_bytes(), b"keep-me")
             self.assertEqual(src.read_bytes(), b"nope")
 
             src = root / "replace.qcow2"
             src.write_bytes(b"replaced")
-            self.assertEqual(publish(src, kept, "overwrite"), "written")
+            replaced = publish(src, kept, "overwrite")
+            self.assertEqual(replaced.status, "written")
+            self.assertTrue(replaced.replaced)
+            self.assertEqual(replaced.backup, "")
             self.assertEqual(kept.read_bytes(), b"replaced")
             self.assertFalse(src.exists())
             self.assertEqual(list(root.glob("kept.qcow2.bak.*")), [])
@@ -143,7 +149,9 @@ class PublishTests(unittest.TestCase):
             fresh = root / "fresh.qcow2"
             src = root / "first.qcow2"
             src.write_bytes(b"first")
-            self.assertEqual(publish(src, fresh, "skip"), "written")
+            fresh_result = publish(src, fresh, "skip")
+            self.assertEqual(fresh_result.status, "written")
+            self.assertFalse(fresh_result.replaced)
             self.assertEqual(fresh.read_bytes(), b"first")
 
     def test_unknown_collision_and_dry_run(self) -> None:
@@ -156,7 +164,7 @@ class PublishTests(unittest.TestCase):
             with self.assertRaises(DownloadError):
                 publish(src, dest, "merge")
             with redirect_stdout(StringIO()):
-                self.assertEqual(publish(src, dest, "skip", dry_run=True), "skipped")
+                self.assertEqual(publish(src, dest, "skip", dry_run=True).status, "skipped")
             self.assertEqual(dest.read_bytes(), b"old")
             self.assertTrue(src.exists())
 

@@ -79,10 +79,13 @@ class ApplyTests(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             apply("disk.img", "deb", dry_run=True, run=fake_run)
-        line = buf.getvalue().rstrip("\n")
-        self.assertIn("virt-customize", line)
-        self.assertIn("disk.img", line)
-        self.assertNotIn("\n", line)
+        body = buf.getvalue()
+        lines = body.splitlines()
+        self.assertEqual(lines[0], "")
+        self.assertIn("virt-customize", lines[1])
+        self.assertIn("disk.img", lines[1])
+        self.assertEqual(lines[2], "")
+        self.assertTrue(body.endswith("\n"))
 
     def test_success_uses_direct_when_unset(self) -> None:
         calls: list[tuple[list[str], dict[str, str]]] = []

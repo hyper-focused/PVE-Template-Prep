@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import pve_prep  # noqa: E402,F401  real package must win over a stub
+from pve_prep.download import PublishResult  # noqa: E402
 
 
 def _stub(name: str) -> types.ModuleType:
@@ -105,8 +106,8 @@ ORIGINAL_RUN = MOD.default_run
 
 def _specs(_distro: str):
     return [
-        SimpleNamespace(release="12", label="bookworm", eol=False, family="deb"),
-        SimpleNamespace(release="13", label="trixie", eol=False, family="deb"),
+        SimpleNamespace(release="12", label="Debian 12", eol=False, family="deb"),
+        SimpleNamespace(release="13", label="Debian 13", eol=False, family="deb"),
     ]
 
 
@@ -182,7 +183,7 @@ class OrchestratorTest(unittest.TestCase):
     def setUp(self) -> None:
         MOD.fetch_verified = mock.MagicMock(return_value=Path("/tmp/src.qcow2"))
         MOD.convert = mock.MagicMock()
-        MOD.publish = mock.MagicMock(return_value="written")
+        MOD.publish = mock.MagicMock(return_value=PublishResult("written"))
         MOD.customize_apply = mock.MagicMock()
         MOD.create_template = mock.MagicMock()
         MOD.releases_for = mock.MagicMock(side_effect=_specs)
@@ -222,7 +223,7 @@ class OrchestratorTest(unittest.TestCase):
             self.assertEqual(dest, Path("/tmp/images/debian-12-pve.img"))
             self.assertEqual(collision, "backup")
             self.assertFalse(dry_run)
-            return "skipped"
+            return PublishResult("skipped")
 
         MOD.fetch_verified = fetch
         MOD.convert = convert
@@ -287,6 +288,43 @@ class OrchestratorTest(unittest.TestCase):
         MOD.publish.assert_not_called()
         MOD.create_template.assert_not_called()
 
+    def test_release_lines_name_the_outcome(self) -> None:
+        from pve_prep.job import DEFAULT_CACHE
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            MOD.run_one(_template_job(), "12", 910)
+        text = buf.getvalue()
+        self.assertIn("\nCreating Debian 12 VM template\n\n", text)
+        self.assertIn(
+            f"\n\nDebian 12 VM template created. Previous VM deleted. "
+            f"Old disk saved in {DEFAULT_CACHE}.\n",
+            text,
+        )
+        buf = io.StringIO()
+        kept = replace(
+            _image_job(releases=("12",), dry_run=True),
+            vmids=(910,),
+            storage="dir-templates",
+            backup_vmids=frozenset({910}),
+        )
+        MOD.insert_disk = mock.MagicMock(return_value="dir-templates:vm-910-disk-0")
+        with redirect_stdout(buf):
+            MOD.run_one(kept, "12", 910)
+        self.assertIn(
+            "\n\nDebian 12 VM disk image created and imported. "
+            "Previous disk is still attached to VM 910.\n",
+            buf.getvalue(),
+        )
+        replaced = replace(kept, backup_vmids=frozenset())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            MOD.run_one(replaced, "12", 910)
+        self.assertIn(
+            "\n\nDebian 12 VM disk image created and imported. Previous disk deleted.\n",
+            buf.getvalue(),
+        )
+
     def test_main_continues_after_second_release_fails(self) -> None:
         job = _image_job(dry_run=True, prep=True)
         calls = {"n": 0}
@@ -304,10 +342,28 @@ class OrchestratorTest(unittest.TestCase):
         text = buf.getvalue()
         self.assertEqual(code, 1)
         self.assertEqual(calls["n"], 2)
-        self.assertIn("OK 12", text)
+        self.assertIn("\nCreating Debian 12 disk image\n\n", text)
+        self.assertIn(
+            "\n\nDebian 12 disk image created at /tmp/images/debian-12-pve.img\n",
+            text,
+        )
+        self.assertIn("\nCreating Debian 13 disk image\n\n", text)
+        self.assertNotIn("OK 12", text)
         self.assertIn("FAIL 13: boom", text)
         self.assertIn("done", text)
         MOD.convert.assert_called_once()
+
+    def test_version_flag_and_startup_line(self) -> None:
+        buf = io.StringIO()
+        with mock.patch.object(MOD, "interview", side_effect=AssertionError("asked")):
+            with redirect_stdout(buf), self.assertRaises(SystemExit) as caught:
+                MOD.main(["--version"])
+        self.assertEqual(caught.exception.code, 0)
+        self.assertEqual(buf.getvalue(), f"pve-template-prep {pve_prep.__version__}\n")
+        self.assertEqual(pve_prep.__version__, "1.0.0")
+        import pve_prep.download as download
+
+        self.assertEqual(download._HEADERS["User-Agent"], f"pve-prep/{pve_prep.__version__}")
 
     def test_main_abort(self) -> None:
         with mock.patch.object(MOD, "interview", side_effect=MOD.PromptAbort("no")):
@@ -315,7 +371,9 @@ class OrchestratorTest(unittest.TestCase):
             with redirect_stdout(buf):
                 code = MOD.main([])
         self.assertEqual(code, 1)
-        self.assertIn("aborted", buf.getvalue())
+        text = buf.getvalue()
+        self.assertTrue(text.startswith(f"pve-template-prep {pve_prep.__version__}\n"))
+        self.assertIn("aborted", text)
 
     def test_main_dry_run_flag_and_storage_failure(self) -> None:
         seen = {}
@@ -346,7 +404,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(seen["dry_run"])
         self.assertEqual(seen["storages"], [])
-        self.assertIn("OK 12", buf.getvalue())
+        self.assertIn("Debian 12 disk image created at /tmp/images/debian-12-pve.img", buf.getvalue())
         MOD.clear_cache.assert_not_called()
 
     def test_main_deletes_the_cache_only_after_success(self) -> None:
@@ -367,6 +425,10 @@ class OrchestratorTest(unittest.TestCase):
                 code = MOD.main([])
         self.assertEqual(code, 0)
         MOD.clear_cache.assert_called_once_with(cache)
+        self.assertIn(
+            "Debian 12 disk image created at /tmp/images/debian-12-pve.img",
+            buf.getvalue(),
+        )
         self.assertIn(f"deleted the files in {cache}", buf.getvalue())
 
     def test_main_keeps_the_cache_when_a_release_fails(self) -> None:
