@@ -1,0 +1,18 @@
+{
+  "id": "alma",
+  "name": "AlmaLinux",
+  "family": "el",
+  "order": 30,
+  "checksum_alg": "256",
+  "source": {
+    "type": "pattern",
+    "base": "https://repo.almalinux.org/almalinux/{release}/cloud/x86_64/images/",
+    "filename": "AlmaLinux-{release}-GenericCloud-latest.x86_64.qcow2",
+    "checksum": "CHECKSUM"
+  },
+  "releases": [
+    {"version": "8", "eol": false},
+    {"version": "9", "eol": false},
+    {"version": "10", "eol": false}
+  ]
+}

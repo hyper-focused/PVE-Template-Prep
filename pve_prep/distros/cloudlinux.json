@@ -1,0 +1,16 @@
+{
+  "id": "cloudlinux",
+  "name": "CloudLinux",
+  "family": "el",
+  "order": 40,
+  "checksum_alg": "256",
+  "source": {
+    "type": "cloudlinux-catalog",
+    "url": "https://images.cloudlinux.com/catalog.json"
+  },
+  "releases": [
+    {"version": "8", "eol": false},
+    {"version": "9", "eol": false},
+    {"version": "10", "eol": false}
+  ]
+}

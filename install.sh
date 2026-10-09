@@ -79,6 +79,20 @@ for name in "${MODULES[@]}"; do
   fi
 done
 
+shopt -s nullglob
+distro_files=( "$src"/pve_prep/distros/*.json )
+shopt -u nullglob
+if [[ ${#distro_files[@]} -eq 0 ]]; then
+  echo "archive is missing pve_prep/distros/*.json" >&2
+  exit 1
+fi
+for file in "${distro_files[@]}"; do
+  if [[ -L "$file" ]]; then
+    echo "distro config is a symlink: $file" >&2
+    exit 1
+  fi
+done
+
 for name in questionary prompt_toolkit wcwidth; do
   if [[ ! -f "$src/vendor/$name/__init__.py" ]]; then
     echo "archive is missing vendor/$name" >&2
@@ -123,6 +137,10 @@ install -o root -g root -m 0755 "$src/pve-template-prep.py" "$DEST/pve-template-
 for name in "${MODULES[@]}"; do
   install -o root -g root -m 0644 "$src/pve_prep/$name" "$DEST/pve_prep/$name"
 done
+install -d -o root -g root -m 0755 "$DEST/pve_prep/distros"
+for file in "${distro_files[@]}"; do
+  install -o root -g root -m 0644 "$file" "$DEST/pve_prep/distros/${file##*/}"
+done
 copy_tree "$src/vendor" "$DEST/vendor"
 
 confirm_path() {
@@ -149,6 +167,10 @@ confirm_path "$DEST/pve_prep"
 confirm_path "$DEST/pve-template-prep.py"
 for name in "${MODULES[@]}"; do
   confirm_path "$DEST/pve_prep/$name"
+done
+confirm_path "$DEST/pve_prep/distros"
+for file in "$DEST"/pve_prep/distros/*.json; do
+  confirm_path "$file"
 done
 while IFS= read -r -d '' path; do
   confirm_path "$path"

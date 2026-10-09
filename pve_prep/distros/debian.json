@@ -1,0 +1,17 @@
+{
+  "id": "debian",
+  "name": "Debian",
+  "family": "deb",
+  "order": 10,
+  "checksum_alg": "512",
+  "source": {
+    "type": "pattern",
+    "base": "https://cloud.debian.org/images/cloud/{codename}/latest/",
+    "filename": "debian-{release}-genericcloud-amd64.qcow2",
+    "checksum": "SHA512SUMS"
+  },
+  "releases": [
+    {"version": "12", "codename": "bookworm", "eol": false},
+    {"version": "13", "codename": "trixie", "eol": false}
+  ]
+}

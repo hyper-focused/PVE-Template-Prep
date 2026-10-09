@@ -215,7 +215,7 @@ def _checksum_for(text: str, filename: str, alg: str, url: str) -> str:
 def _dry_name(spec: ImageSpec) -> str:
     if spec.filename:
         return spec.filename
-    if spec.distro == "cloudlinux":
+    if spec.source == "cloudlinux-catalog":
         return f"cloudlinux-{spec.release}-openstack.qcow2"
     return f"Fedora-Cloud-Base-Generic-{spec.release}.qcow2"
 
@@ -244,7 +244,7 @@ def fetch_verified(spec: ImageSpec, cache_dir: Path, *, dry_run: bool = False) -
     cache_dir = Path(cache_dir)
     if dry_run:
         dest = cache_dir / _dry_name(spec)
-        if not spec.filename and spec.distro == "cloudlinux":
+        if not spec.filename and spec.source == "cloudlinux-catalog":
             print(
                 f"resolve {spec.url} -> cloudlinux {spec.release} "
                 "minimal openstack qcow2"

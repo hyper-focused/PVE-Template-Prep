@@ -9,6 +9,7 @@ from pathlib import Path
 from pve_prep.catalog import (
     DISTROS,
     CatalogError,
+    compile_distro,
     finalize_cloudlinux,
     finalize_fedora,
     normalize_release,
@@ -21,7 +22,7 @@ _FORBIDDEN = ("serverforge", "centos", "stream")
 
 
 class CatalogTests(unittest.TestCase):
-    def test_three_ga_releases_each(self) -> None:
+    def test_ga_release_counts(self) -> None:
         self.assertEqual(
             DISTROS, ("debian", "ubuntu", "alma", "cloudlinux", "fedora")
         )
@@ -29,8 +30,9 @@ class CatalogTests(unittest.TestCase):
         self.assertNotIn("rocky", DISTROS)
         for distro in DISTROS:
             specs = releases_for(distro)
-            self.assertEqual(len(specs), 3)
-            self.assertEqual(len({spec.release for spec in specs}), 3)
+            expected = 2 if distro == "debian" else 3
+            self.assertEqual(len(specs), expected)
+            self.assertEqual(len({spec.release for spec in specs}), expected)
             for spec in specs:
                 self.assertEqual(spec.distro, distro)
                 self.assertEqual(spec.checksum, "")
@@ -48,8 +50,7 @@ class CatalogTests(unittest.TestCase):
 
     def test_eol_flags_and_known_urls(self) -> None:
         debian = {spec.release: spec for spec in releases_for("debian")}
-        self.assertTrue(debian["11"].eol)
-        self.assertEqual(debian["11"].label, "Debian 11 (EOL)")
+        self.assertEqual(set(debian), {"12", "13"})
         self.assertFalse(debian["12"].eol)
         self.assertFalse(debian["13"].eol)
         self.assertEqual(
@@ -98,7 +99,6 @@ class CatalogTests(unittest.TestCase):
 
     def test_normalize_aliases(self) -> None:
         cases = (
-            ("debian", " Bullseye ", "11"),
             ("debian", "bookworm", "12"),
             ("Debian", "TRIXIE", "13"),
             ("ubuntu", "jammy", "22.04"),
@@ -127,6 +127,10 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(CatalogError):
             releases_for("stream")
         with self.assertRaises(CatalogError):
+            normalize_release("debian", "11")
+        with self.assertRaises(CatalogError):
+            normalize_release("debian", "bullseye")
+        with self.assertRaises(CatalogError):
             normalize_release("debian", "sid")
         with self.assertRaises(CatalogError):
             normalize_release("ubuntu", "25.04")
@@ -134,6 +138,46 @@ class CatalogTests(unittest.TestCase):
             normalize_release("arch", "1")
         with self.assertRaises(CatalogError):
             normalize_release("fedora", "41")
+
+    def test_shipped_files_are_the_release_list(self) -> None:
+        directory = Path(__file__).resolve().parents[1] / "pve_prep" / "distros"
+        seen = []
+        for path in sorted(directory.glob("*.json")):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            specs = releases_for(payload["id"])
+            versions = [row["version"] for row in payload["releases"]]
+            self.assertEqual([spec.release for spec in specs], versions)
+            self.assertEqual(specs[0].source, payload["source"]["type"])
+            seen.append(payload["id"])
+        self.assertEqual(set(seen), set(DISTROS))
+
+    def test_bad_distro_file_names_the_file(self) -> None:
+        payload = {
+            "id": "example",
+            "name": "Example",
+            "family": "deb",
+            "order": 1,
+            "checksum_alg": "256",
+            "source": {
+                "type": "pattern",
+                "base": "https://example.com/{release}/",
+                "filename": "img-{release}.qcow2",
+                "checksum": "SHA256SUMS",
+            },
+            "releases": [
+                {"version": "1", "aliases": ["old"], "eol": False},
+                {"version": "2", "aliases": ["old"], "eol": False},
+            ],
+        }
+        with self.assertRaises(CatalogError) as caught:
+            compile_distro(payload, filename="example.json")
+        self.assertIn("example.json", str(caught.exception))
+        self.assertIn("duplicate alias", str(caught.exception))
+        payload["source"]["type"] = "mirror"
+        payload["releases"] = [{"version": "1", "eol": False}]
+        with self.assertRaises(CatalogError) as caught:
+            compile_distro(payload, filename="example.json")
+        self.assertIn("unknown source type", str(caught.exception))
 
     def test_finalize_fedora_picks_generic_not_uefi(self) -> None:
         spec = next(item for item in releases_for("fedora") if item.release == "44")

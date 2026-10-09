@@ -35,7 +35,7 @@ Each question says what that step does before it asks. Empty input accepts the d
 On a terminal the same questions are menus, colored for a dark background with the 16 ANSI colors. A header is green, the explanation under it is white, then a green line, then the choices in cyan. The current row is a cyan background with black text. The question label is bright black, and `(Y/n)` is white. Arrow keys move, a number highlights that row, and Enter accepts it. Moving onto QEMU qcow2 does not leave ZFS painted as the selection. Red is only the "do not back up" row and a sentence that says a VM will be deleted. Releases are a checkbox: space marks one, and one to three are allowed. VMIDs, `DELETE`, and `YES` are still typed. A pipe, or a `vendor/` tree that will not import, keeps the numbered lines below. A codename such as `bookworm` works on that numbered path.
 
 1. Distro, by number.
-2. Releases, by number, comma-separated, one to three. The numbers are the menu, not the version. On Debian, `2, 3` is 12 and 13. A codename still works (`bookworm`, `noble`).
+2. Releases, by number, comma-separated, one to three. The numbers are the menu, not the version. On Debian, `1, 2` is 12 and 13. A codename still works (`bookworm`, `noble`).
 3. What to build. `1` complete PVE VM template, `2` PVE VM disk image only, `3` prep a stopped VM in place. Enter selects the template.
 4. VM disk format, unless the choice was the stopped VM. `1` ZFS raw (a file-based raw image is `.img`), `2` QEMU qcow2. Enter selects raw.
 5. VMIDs, one per release.
@@ -78,9 +78,11 @@ The confirm screen lists every VMID that will be replaced, plus bridge, memory, 
 
 ## Catalog
 
+Each distro is one file, `pve_prep/distros/<distro>.json`. A release is a row in that file: version, codename, aliases, and whether it is EOL. The image URL is a pattern on the same file. Adding or dropping a release does not require a code change. Fedora's directory index and CloudLinux's `catalog.json` picker stay in `catalog.py`, because those are parsers, not version numbers. Guest prep is still one path per family (`deb` or `el`) in `customize.py`.
+
 | Distro | Releases | Notes |
 | --- | --- | --- |
-| debian | 11, 12, 13 | 11 is EOL |
+| debian | 12, 13 | |
 | ubuntu | 22.04, 24.04, 26.04 | |
 | alma | 8, 9, 10 | |
 | cloudlinux | 8, 9, 10 | Minimal OpenStack qcow2. Filename and SHA256 come from `catalog.json` at download. |

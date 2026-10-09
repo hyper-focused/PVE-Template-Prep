@@ -22,14 +22,13 @@ def _specs(distro: str):
     if distro != "debian":
         raise AssertionError(distro)
     return [
-        SimpleNamespace(release="11", label="bullseye", eol=True),
         SimpleNamespace(release="12", label="bookworm", eol=False),
         SimpleNamespace(release="13", label="trixie", eol=False),
     ]
 
 
 def _normalize(distro: str, raw: str) -> str:
-    known = {"11": "11", "12": "12", "13": "13", "bookworm": "12"}
+    known = {"12": "12", "13": "13", "bookworm": "12"}
     if distro != "debian" or raw not in known:
         raise RuntimeError(f"unknown release {raw}")
     return known[raw]
@@ -157,9 +156,9 @@ class VendorTest(unittest.TestCase):
         self.assertIn("explanation", ui.tone("explanation", "body"))
         self.assertTrue(ui.tone("Releases.", "header").startswith("\033[32m"))
         self.assertIn("deleted", ui.tone("deleted", "danger"))
-        title = ui.choice_title("11  bullseye EOL")
+        title = ui.choice_title("42  Fedora 42 EOL")
         self.assertEqual(title[1], ("class:danger", " EOL"))
-        self.assertIn("bullseye", title[0][1])
+        self.assertIn("Fedora 42", title[0][1])
 
 
 class ArmTest(unittest.TestCase):
@@ -293,7 +292,7 @@ class WidgetInterviewTest(unittest.TestCase):
             )
 
     def test_plain_reader_never_calls_a_widget(self) -> None:
-        answers = ["1", "2, 3", "2", "1", "", "/tmp/images", "", "", "yes"]
+        answers = ["1", "1, 2", "2", "1", "", "/tmp/images", "", "", "yes"]
 
         def read_line() -> str:
             if not answers:

@@ -19,14 +19,13 @@ def _specs(distro: str):
     if distro != "debian":
         raise AssertionError(distro)
     return [
-        SimpleNamespace(release="11", label="bullseye", eol=True),
         SimpleNamespace(release="12", label="bookworm", eol=False),
         SimpleNamespace(release="13", label="trixie", eol=False),
     ]
 
 
 def _normalize(distro: str, raw: str) -> str:
-    known = {"11": "11", "12": "12", "13": "13", "bookworm": "12", "trixie": "13"}
+    known = {"12": "12", "13": "13", "bookworm": "12", "trixie": "13"}
     if distro != "debian" or raw not in known:
         raise RuntimeError(f"unknown release {raw}")
     return known[raw]
@@ -85,7 +84,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2, 3",
+                "1, 2",
                 "2",
                 "1",
                 "",
@@ -130,7 +129,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2, 3",
+                "1, 2",
                 "",
                 "",
                 "910",
@@ -183,7 +182,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2, 3",
+                "1, 2",
                 "",
                 "",
                 "",
@@ -212,7 +211,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2, 3",
+                "1, 2",
                 "",
                 "",
                 "",
@@ -242,7 +241,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2, 3",
+                "1, 2",
                 "",
                 "",
                 "",
@@ -268,7 +267,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2, 3",
+                "1, 2",
                 "",
                 "",
                 "",
@@ -292,7 +291,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2",
+                "1",
                 "2",
                 "1",
                 "",
@@ -309,7 +308,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2",
+                "1",
                 "2",
                 "1",
                 "",
@@ -332,7 +331,7 @@ class InterviewTest(unittest.TestCase):
                 "nope",
                 "",
                 "12",
-                "2",
+                "1",
                 "2",
                 "",
                 "",
@@ -358,7 +357,7 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("pick a distro number", blob)
 
     def test_duplicate_canonical_release_reasks(self) -> None:
-        answers = ["2, bookworm", "3"]
+        answers = ["1, bookworm", "2"]
         written: list[str] = []
 
         def read_line() -> str:
@@ -417,7 +416,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2, 3",
+                "1, 2",
                 "",
                 "2",
                 "910",
@@ -450,7 +449,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2, 3",
+                "1, 2",
                 "",
                 "",
                 "910",
@@ -477,7 +476,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2",
+                "1",
                 "",
                 "",
                 "9001",
@@ -502,7 +501,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2",
+                "1",
                 "",
                 "",
                 "",
@@ -524,7 +523,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2",
+                "1",
                 "3",
                 "400",
                 "1",
@@ -566,7 +565,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2",
+                "1",
                 "2",
                 "",
                 "910",
@@ -600,7 +599,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2",
+                "1",
                 "2",
                 "",
                 "9001",
@@ -620,7 +619,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2",
+                "1",
                 "",
                 "",
                 "9001",
@@ -635,7 +634,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2, 3",
+                "1, 2",
                 "",
                 "",
                 "910",
@@ -667,7 +666,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(
             [
                 "1",
-                "2",
+                "1",
                 "",
                 "",
                 "",

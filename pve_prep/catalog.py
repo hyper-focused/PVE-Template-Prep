@@ -1,4 +1,4 @@
-"""Cloud-image catalog. One table, no network."""
+"""Cloud-image catalog. Release rows live in distros/*.json. No network."""
 
 from __future__ import annotations
 
@@ -6,10 +6,11 @@ import json
 import re
 from dataclasses import dataclass, replace
 from html import unescape
+from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 class CatalogError(Exception):
-    """Unknown distro/release, or an index with no usable image."""
+    """Unknown distro/release, a bad distro file, or an index with no usable image."""
 
 
 @dataclass(frozen=True)
@@ -25,50 +26,21 @@ class ImageSpec:
     checksum_alg: str
     eol: bool
     checksum: str = ""
+    source: str = "pattern"
 
 
-DISTROS = ("debian", "ubuntu", "alma", "cloudlinux", "fedora")
-
-_DEBIAN = (
-    ("11", "bullseye", True),
-    ("12", "bookworm", False),
-    ("13", "trixie", False),
-)
-_UBUNTU = (
-    ("22.04", "jammy"),
-    ("24.04", "noble"),
-    ("26.04", "resolute"),
-)
-_EL = ("8", "9", "10")
-_FEDORA = (("42", True), ("43", False), ("44", False))
-
-_ALIASES: dict[str, dict[str, str]] = {
-    "debian": {
-        "11": "11",
-        "bullseye": "11",
-        "12": "12",
-        "bookworm": "12",
-        "13": "13",
-        "trixie": "13",
-    },
-    "ubuntu": {
-        "22.04": "22.04",
-        "22": "22.04",
-        "jammy": "22.04",
-        "24.04": "24.04",
-        "24": "24.04",
-        "noble": "24.04",
-        "26.04": "26.04",
-        "26": "26.04",
-        "resolute": "26.04",
-    },
-    "alma": {ver: ver for ver in _EL},
-    "cloudlinux": {ver: ver for ver in _EL},
-    "fedora": {ver: ver for ver in ("42", "43", "44")},
+_DISTRO_DIR = Path(__file__).resolve().parent / "distros"
+_ID = re.compile(r"[a-z][a-z0-9]*\Z")
+_TOKEN = re.compile(r"\{([A-Za-z0-9_]+)\}")
+_FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*\Z")
+_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*\Z")
+_DISTRO_KEYS = {"id", "name", "family", "order", "checksum_alg", "source", "releases"}
+_RELEASE_KEYS = {"version", "eol", "codename", "aliases"}
+_SOURCE_KEYS = {
+    "pattern": {"type", "base", "filename", "checksum"},
+    "fedora-index": {"type", "base"},
+    "cloudlinux-catalog": {"type", "url"},
 }
-
-_CL_ORIGIN = "https://images.cloudlinux.com"
-_CL_CATALOG = _CL_ORIGIN + "/catalog.json"
 _CL_NAME = re.compile(
     r"cloudlinux-[0-9][0-9.]*-x86_64-openstack-[0-9]{8}\.qcow2\Z"
 )
@@ -81,11 +53,60 @@ _INDEX_TOKEN = re.compile(
 )
 
 
-def fedora_index_url(release: str) -> str:
-    return (
-        "https://download.fedoraproject.org/pub/fedora/linux/releases/"
-        f"{release}/Cloud/x86_64/images/"
-    )
+def _bad(filename: str, message: str) -> CatalogError:
+    return CatalogError(f"{filename}: {message}")
+
+
+def _text(value: object, filename: str, where: str) -> str:
+    if not isinstance(value, str) or value.strip() == "" or value != value.strip():
+        raise _bad(filename, f"{where} must be a non-empty string")
+    if any(char in value for char in "\r\n\t "):
+        raise _bad(filename, f"{where} must be a single token")
+    return value
+
+
+def _keys(value: object, filename: str, where: str, allowed: set[str], required: set[str]) -> dict:
+    if not isinstance(value, dict):
+        raise _bad(filename, f"{where} is not an object")
+    found = set(value)
+    missing = required - found
+    extra = found - allowed
+    if missing:
+        raise _bad(filename, f"{where} is missing {', '.join(sorted(missing))}")
+    if extra:
+        raise _bad(filename, f"{where} has unknown {', '.join(sorted(extra))}")
+    return value
+
+
+def _https(url: str, filename: str, where: str) -> str:
+    parts = urlsplit(url)
+    if (
+        parts.scheme != "https"
+        or not parts.hostname
+        or parts.username
+        or parts.password
+        or parts.query
+        or parts.fragment
+        or "\\" in url
+    ):
+        raise _bad(filename, f"{where} is not a plain https url")
+    return url
+
+
+def _fill(template: str, fields: dict[str, str | None], filename: str, where: str) -> str:
+    def replace_token(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key not in fields:
+            raise _bad(filename, f"{where} has an unknown placeholder {{{key}}}")
+        value = fields[key]
+        if not value:
+            raise _bad(filename, f"{where} uses {{{key}}} but this release has no {key}")
+        return value
+
+    filled = _TOKEN.sub(replace_token, template)
+    if "{" in filled or "}" in filled:
+        raise _bad(filename, f"{where} has a broken placeholder")
+    return filled
 
 
 def _label(name: str, release: str, eol: bool) -> str:
@@ -93,124 +114,236 @@ def _label(name: str, release: str, eol: bool) -> str:
     return f"{name} {release}{suffix}"
 
 
-def _debian_specs() -> tuple[ImageSpec, ...]:
-    specs = []
-    for release, codename, eol in _DEBIAN:
-        base = f"https://cloud.debian.org/images/cloud/{codename}/latest/"
-        filename = f"debian-{release}-genericcloud-amd64.qcow2"
-        specs.append(
-            ImageSpec(
-                distro="debian",
-                release=release,
-                label=_label("Debian", release, eol),
-                family="deb",
-                filename=filename,
-                url=base + filename,
-                alt_url=None,
-                checksum_url=base + "SHA512SUMS",
-                checksum_alg="512",
-                eol=eol,
-            )
+def _release_row(row: object, filename: str) -> tuple[str, str, bool, tuple[str, ...]]:
+    item = _keys(row, filename, "release", _RELEASE_KEYS, {"version", "eol"})
+    version = _text(item["version"], filename, "release version")
+    if _VERSION.fullmatch(version) is None:
+        raise _bad(filename, f"release version {version!r} has illegal characters")
+    eol = item["eol"]
+    if not isinstance(eol, bool):
+        raise _bad(filename, f"release {version} eol must be true or false")
+    codename = ""
+    if "codename" in item:
+        codename = _text(item["codename"], filename, f"release {version} codename")
+        if _VERSION.fullmatch(codename) is None:
+            raise _bad(filename, f"release {version} codename has illegal characters")
+    aliases: list[str] = []
+    if "aliases" in item:
+        raw = item["aliases"]
+        if not isinstance(raw, list) or not raw:
+            raise _bad(filename, f"release {version} aliases must be a non-empty list")
+        for alias in raw:
+            token = _text(alias, filename, f"release {version} alias")
+            if _VERSION.fullmatch(token) is None:
+                raise _bad(filename, f"release {version} alias {token!r} has illegal characters")
+            aliases.append(token)
+    return version, codename, eol, tuple(aliases)
+
+
+def _pattern_spec(
+    distro: str,
+    name: str,
+    family: str,
+    alg: str,
+    source: dict,
+    version: str,
+    codename: str,
+    eol: bool,
+    filename: str,
+) -> ImageSpec:
+    fields: dict[str, str | None] = {
+        "release": version,
+        "codename": codename or None,
+    }
+    base = _fill(_text(source["base"], filename, "source base"), fields, filename, "source base")
+    if not base.endswith("/"):
+        raise _bad(filename, f"source base for {version} must end with /")
+    _https(base, filename, f"source base for {version}")
+    image = _fill(
+        _text(source["filename"], filename, "source filename"),
+        fields,
+        filename,
+        "source filename",
+    )
+    if _FILE_NAME.fullmatch(image) is None:
+        raise _bad(filename, f"image name for {version} is not a single file name")
+    checksum = _text(source["checksum"], filename, "source checksum")
+    if _FILE_NAME.fullmatch(checksum) is None:
+        raise _bad(filename, "source checksum is not a single file name")
+    return ImageSpec(
+        distro=distro,
+        release=version,
+        label=_label(name, version, eol),
+        family=family,
+        filename=image,
+        url=base + image,
+        alt_url=None,
+        checksum_url=base + checksum,
+        checksum_alg=alg,
+        eol=eol,
+        source="pattern",
+    )
+
+
+def _index_spec(
+    distro: str,
+    name: str,
+    family: str,
+    alg: str,
+    source: dict,
+    version: str,
+    codename: str,
+    eol: bool,
+    filename: str,
+    source_type: str,
+) -> ImageSpec:
+    if source_type == "fedora-index":
+        fields: dict[str, str | None] = {
+            "release": version,
+            "codename": codename or None,
+        }
+        base = _fill(
+            _text(source["base"], filename, "source base"),
+            fields,
+            filename,
+            "source base",
         )
-    return tuple(specs)
+        if not base.endswith("/"):
+            raise _bad(filename, f"source base for {version} must end with /")
+        url = _https(base, filename, f"source base for {version}")
+    else:
+        url = _https(_text(source["url"], filename, "source url"), filename, "source url")
+    return ImageSpec(
+        distro=distro,
+        release=version,
+        label=_label(name, version, eol),
+        family=family,
+        filename="",
+        url=url,
+        alt_url=None,
+        checksum_url="",
+        checksum_alg=alg,
+        eol=eol,
+        source=source_type,
+    )
 
 
-def _ubuntu_specs() -> tuple[ImageSpec, ...]:
-    specs = []
-    for release, codename in _UBUNTU:
-        base = f"https://cloud-images.ubuntu.com/releases/{codename}/release/"
-        filename = f"ubuntu-{release}-server-cloudimg-amd64.img"
-        specs.append(
-            ImageSpec(
-                distro="ubuntu",
-                release=release,
-                label=_label("Ubuntu", release, False),
-                family="deb",
-                filename=filename,
-                url=base + filename,
-                alt_url=None,
-                checksum_url=base + "SHA256SUMS",
-                checksum_alg="256",
-                eol=False,
+def compile_distro(payload: object, *, filename: str) -> tuple[tuple[ImageSpec, ...], dict[str, str]]:
+    """One distro file. Specs stay in file order. The map is alias to version."""
+    item = _keys(payload, filename, "distro", _DISTRO_KEYS, _DISTRO_KEYS)
+    distro = _text(item["id"], filename, "id")
+    if _ID.fullmatch(distro) is None:
+        raise _bad(filename, "id must be a lowercase word")
+    if Path(filename).name != f"{distro}.json":
+        raise _bad(filename, f"file name must be {distro}.json")
+    name = item["name"]
+    if not isinstance(name, str) or name.strip() == "" or name != name.strip():
+        raise _bad(filename, "name must be a non-empty string")
+    if any(char in name for char in "\r\n\t"):
+        raise _bad(filename, "name must be one line")
+    family = item["family"]
+    if family not in ("deb", "el"):
+        raise _bad(filename, "family must be deb or el")
+    order = item["order"]
+    if isinstance(order, bool) or not isinstance(order, int) or order < 1:
+        raise _bad(filename, "order must be a positive integer")
+    alg = item["checksum_alg"]
+    if alg not in ("256", "512"):
+        raise _bad(filename, "checksum_alg must be 256 or 512")
+    source = item["source"]
+    if not isinstance(source, dict) or not isinstance(source.get("type"), str):
+        raise _bad(filename, "source type is missing")
+    source_type = source["type"]
+    allowed = _SOURCE_KEYS.get(source_type)
+    if allowed is None:
+        raise _bad(filename, f"unknown source type {source_type}")
+    _keys(source, filename, "source", allowed, allowed)
+    rows = item["releases"]
+    if not isinstance(rows, list) or not rows:
+        raise _bad(filename, "releases must be a non-empty list")
+
+    specs: list[ImageSpec] = []
+    aliases: dict[str, str] = {}
+    seen: set[str] = set()
+    for row in rows:
+        version, codename, eol, extra = _release_row(row, filename)
+        if version in seen:
+            raise _bad(filename, f"duplicate release {version}")
+        seen.add(version)
+        tokens = [version]
+        if codename:
+            tokens.append(codename)
+        tokens.extend(extra)
+        for token in tokens:
+            key = token.casefold()
+            if key in aliases:
+                raise _bad(filename, f"duplicate alias {token}")
+            aliases[key] = version
+        if source_type == "pattern":
+            specs.append(
+                _pattern_spec(distro, name, family, alg, source, version, codename, eol, filename)
             )
-        )
-    return tuple(specs)
-
-
-def _alma_specs() -> tuple[ImageSpec, ...]:
-    specs = []
-    for release in _EL:
-        base = f"https://repo.almalinux.org/almalinux/{release}/cloud/x86_64/images/"
-        filename = f"AlmaLinux-{release}-GenericCloud-latest.x86_64.qcow2"
-        specs.append(
-            ImageSpec(
-                distro="alma",
-                release=release,
-                label=_label("AlmaLinux", release, False),
-                family="el",
-                filename=filename,
-                url=base + filename,
-                alt_url=None,
-                checksum_url=base + "CHECKSUM",
-                checksum_alg="256",
-                eol=False,
+        else:
+            specs.append(
+                _index_spec(
+                    distro,
+                    name,
+                    family,
+                    alg,
+                    source,
+                    version,
+                    codename,
+                    eol,
+                    filename,
+                    source_type,
+                )
             )
-        )
-    return tuple(specs)
+    return tuple(specs), aliases
 
 
-def _cloudlinux_specs() -> tuple[ImageSpec, ...]:
-    """Majors only. The dated qcow2 is chosen from catalog.json at download."""
-    specs = []
-    for release in _EL:
-        specs.append(
-            ImageSpec(
-                distro="cloudlinux",
-                release=release,
-                label=_label("CloudLinux", release, False),
-                family="el",
-                filename="",
-                url=_CL_CATALOG,
-                alt_url=None,
-                checksum_url="",
-                checksum_alg="256",
-                eol=False,
+def load_distros(
+    directory: Path,
+) -> tuple[tuple[str, ...], dict[str, tuple[ImageSpec, ...]], dict[str, dict[str, str]]]:
+    """Read every distro file. Menu order is the order field, not the file name."""
+    if not directory.is_dir():
+        raise CatalogError(f"distro config directory is missing: {directory}")
+    paths = sorted(path for path in directory.glob("*.json") if path.is_file())
+    if not paths:
+        raise CatalogError(f"no distro config in {directory}")
+    ranked: list[tuple[int, str, tuple[ImageSpec, ...], dict[str, str]]] = []
+    seen_ids: set[str] = set()
+    seen_order: dict[int, str] = {}
+    for path in paths:
+        if path.is_symlink():
+            raise CatalogError(f"{path.name}: distro config is a symlink")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise CatalogError(f"{path.name}: {exc}") from exc
+        specs, aliases = compile_distro(payload, filename=path.name)
+        distro = specs[0].distro
+        if distro in seen_ids:
+            raise CatalogError(f"{path.name}: duplicate distro {distro}")
+        seen_ids.add(distro)
+        order = payload["order"]
+        if order in seen_order:
+            raise CatalogError(
+                f"{path.name}: order {order} is already used by {seen_order[order]}"
             )
-        )
-    return tuple(specs)
+        seen_order[order] = path.name
+        ranked.append((order, distro, specs, aliases))
+    ranked.sort(key=lambda item: item[0])
+    names = tuple(item[1] for item in ranked)
+    catalog = {item[1]: item[2] for item in ranked}
+    alias_map = {item[1]: item[3] for item in ranked}
+    return names, catalog, alias_map
 
 
-def _fedora_specs() -> tuple[ImageSpec, ...]:
-    specs = []
-    for release, eol in _FEDORA:
-        specs.append(
-            ImageSpec(
-                distro="fedora",
-                release=release,
-                label=_label("Fedora", release, eol),
-                family="el",
-                filename="",
-                url=fedora_index_url(release),
-                alt_url=None,
-                checksum_url="",
-                checksum_alg="256",
-                eol=eol,
-            )
-        )
-    return tuple(specs)
-
-
-_CATALOG = {
-    "debian": _debian_specs(),
-    "ubuntu": _ubuntu_specs(),
-    "alma": _alma_specs(),
-    "cloudlinux": _cloudlinux_specs(),
-    "fedora": _fedora_specs(),
-}
+DISTROS, _CATALOG, _ALIASES = load_distros(_DISTRO_DIR)
 
 
 def releases_for(distro: str) -> tuple[ImageSpec, ...]:
-    """Three GA releases for a known distro."""
+    """Releases from that distro's config file, in file order."""
     key = distro.strip().casefold()
     try:
         return _CATALOG[key]
@@ -276,22 +409,29 @@ def _directory(url: str) -> str:
     return url if url.endswith("/") else url + "/"
 
 
-def _cloudlinux_url(href: str) -> str | None:
+def _catalog_origin(url: str) -> tuple[str, str]:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}", parts.netloc.casefold()
+
+
+def _cloudlinux_url(href: str, origin: str, host: str) -> str | None:
     if "\\" in href or href.startswith("//"):
         return None
     parts = urlsplit(href)
     if parts.scheme == "" and parts.netloc == "":
         if not href.startswith("/") or parts.query or parts.fragment:
             return None
-        return _CL_ORIGIN + href
-    if parts.scheme != "https" or parts.netloc.casefold() != "images.cloudlinux.com":
+        return origin + href
+    if parts.scheme != "https" or parts.netloc.casefold() != host:
         return None
     if parts.query or parts.fragment:
         return None
     return href
 
 
-def _cloudlinux_row(row: object, release: str) -> tuple[str, str, str] | None:
+def _cloudlinux_row(
+    row: object, release: str, origin: str, host: str
+) -> tuple[str, str, str] | None:
     """One minimal OpenStack qcow2, or None when the row is a different product."""
     if not isinstance(row, dict):
         return None
@@ -305,7 +445,7 @@ def _cloudlinux_row(row: object, release: str) -> tuple[str, str, str] | None:
     href = action.get("href")
     if not isinstance(href, str):
         return None
-    url = _cloudlinux_url(href)
+    url = _cloudlinux_url(href, origin, host)
     if url is None:
         return None
     path = unquote(urlsplit(url).path)
@@ -336,12 +476,13 @@ def finalize_cloudlinux(spec: ImageSpec, catalog_text: str) -> ImageSpec:
     versions = payload.get("productVersions")
     if not isinstance(versions, list):
         raise CatalogError("cloudlinux catalog has no productVersions")
+    origin, host = _catalog_origin(spec.url)
 
     matches: list[tuple[str, str, str]] = []
     for version in versions:
         if not isinstance(version, dict):
             continue
-        if str(version.get("systemName", "")).casefold() != "cloudlinux":
+        if str(version.get("systemName", "")).casefold() != spec.distro:
             continue
         if str(version.get("major", "")) != spec.release:
             continue
@@ -357,7 +498,7 @@ def finalize_cloudlinux(spec: ImageSpec, catalog_text: str) -> ImageSpec:
             if not isinstance(rows, list):
                 continue
             for row in rows:
-                picked = _cloudlinux_row(row, spec.release)
+                picked = _cloudlinux_row(row, spec.release, origin, host)
                 if picked is not None:
                     matches.append(picked)
     if len(matches) != 1:
@@ -377,9 +518,9 @@ def finalize_cloudlinux(spec: ImageSpec, catalog_text: str) -> ImageSpec:
 
 def finalize_index(spec: ImageSpec, index_text: str) -> ImageSpec:
     """Resolve a catalog row whose filename is filled in at download time."""
-    if spec.distro == "fedora":
+    if spec.source == "fedora-index":
         return finalize_fedora(spec, index_text)
-    if spec.distro == "cloudlinux":
+    if spec.source == "cloudlinux-catalog":
         return finalize_cloudlinux(spec, index_text)
     raise CatalogError(f"{spec.distro} {spec.release} has no image filename")
 

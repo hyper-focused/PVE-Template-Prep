@@ -9,7 +9,7 @@ The interview rules below are the contract. questionary draws them on a terminal
 Each step says what it does before it asks. A bad answer asks that question again. `X` exits. The last answer is `YES` or `yes`. `no` exits too.
 
 1. Distro, one per run. Guest prep follows that family (`deb` or `el`).
-2. Releases, one to three. On the numbered path the numbers are the menu, not the version. Debian `2, 3` is 12 and 13. A codename still works there.
+2. Releases, one to three. On the numbered path the numbers are the menu, not the version. Debian `1, 2` is 12 and 13. A codename still works there. Debian lists two releases. The other distros list three.
 3. What to build. `1` complete template, `2` disk image only, `3` prep a stopped VM in place. Enter on the numbered path selects the template.
 4. Disk format, except for the stopped VM. `1` ZFS raw (a file-based raw image is `.img` and full size), `2` QEMU qcow2. Enter selects raw.
 5. VMIDs, one per release. Enter on a template uses the next free IDs from 9001 and never lands on an ID that is already in use. An occupied ID has to be typed. Image mode: Enter publishes a file. A typed in-use VMID gets the new disk inserted. Existing mode requires a VMID that is already in use.
@@ -59,7 +59,7 @@ wcwidth 0.9.2 can build a C extension. This tree omits `_wcwidth_c` and uses the
 
 ## Install
 
-`/opt/pve-template-prep`, link `/usr/local/sbin/pve-template-prep`. Root-owned, not a symlink, not group or world writable. That check covers `vendor/` too. `pve_prep/` is eight modules, including `ui.py`.
+`/opt/pve-template-prep`, link `/usr/local/sbin/pve-template-prep`. Root-owned, not a symlink, not group or world writable. That check covers `vendor/` too. `pve_prep/` is eight modules, including `ui.py`. Release rows are `pve_prep/distros/*.json`, installed beside those modules. A new release is a row in the distro's file. A new distro with a pattern URL is a new file. Fedora's index parser and CloudLinux's catalog parser stay in `catalog.py`. Guest prep stays one path per family.
 
 A Mac venv is not relocatable onto the node. Do not commit one, and do not path-edit one.
 

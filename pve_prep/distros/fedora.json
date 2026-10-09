@@ -1,0 +1,16 @@
+{
+  "id": "fedora",
+  "name": "Fedora",
+  "family": "el",
+  "order": 50,
+  "checksum_alg": "256",
+  "source": {
+    "type": "fedora-index",
+    "base": "https://download.fedoraproject.org/pub/fedora/linux/releases/{release}/Cloud/x86_64/images/"
+  },
+  "releases": [
+    {"version": "42", "eol": true},
+    {"version": "43", "eol": false},
+    {"version": "44", "eol": false}
+  ]
+}

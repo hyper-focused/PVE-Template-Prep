@@ -1,0 +1,18 @@
+{
+  "id": "ubuntu",
+  "name": "Ubuntu",
+  "family": "deb",
+  "order": 20,
+  "checksum_alg": "256",
+  "source": {
+    "type": "pattern",
+    "base": "https://cloud-images.ubuntu.com/releases/{codename}/release/",
+    "filename": "ubuntu-{release}-server-cloudimg-amd64.img",
+    "checksum": "SHA256SUMS"
+  },
+  "releases": [
+    {"version": "22.04", "codename": "jammy", "aliases": ["22"], "eol": false},
+    {"version": "24.04", "codename": "noble", "aliases": ["24"], "eol": false},
+    {"version": "26.04", "codename": "resolute", "aliases": ["26"], "eol": false}
+  ]
+}
