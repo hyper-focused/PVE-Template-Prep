@@ -140,6 +140,27 @@ class VendorTest(unittest.TestCase):
         with mock.patch.object(questionary, "select", lambda *args, **kwargs: _Cancel()):
             self.assertIsNone(ui.select("Distro", [("debian", "debian")]))
 
+    def test_dark_background_keeps_yes_no_readable(self) -> None:
+        self.assertTrue(ui.available())
+        rules = dict(ui.widget_style().style_rules)
+        self.assertIn("ansigreen", rules["separator"])
+        self.assertEqual(rules["text"], "fg:ansicyan")
+        self.assertEqual(rules["highlighted"], "bg:ansicyan fg:ansiblack")
+        self.assertEqual(rules["selected"], rules["highlighted"])
+        self.assertEqual(rules["pointer"], rules["highlighted"])
+        self.assertIn("ansibrightblack", rules["question"])
+        self.assertEqual(rules["instruction"], "fg:ansiwhite")
+        self.assertEqual(rules["answer"], "fg:ansiwhite")
+        self.assertNotIn("#", " ".join(rules.values()))
+        self.assertIn("ansired", rules["danger"])
+        self.assertTrue(ui.tone("explanation", "body").startswith("\033[37m"))
+        self.assertIn("explanation", ui.tone("explanation", "body"))
+        self.assertTrue(ui.tone("Releases.", "header").startswith("\033[32m"))
+        self.assertIn("deleted", ui.tone("deleted", "danger"))
+        title = ui.choice_title("11  bullseye EOL")
+        self.assertEqual(title[1], ("class:danger", " EOL"))
+        self.assertIn("bullseye", title[0][1])
+
 
 class ArmTest(unittest.TestCase):
     def test_flag_follows_the_tty(self) -> None:

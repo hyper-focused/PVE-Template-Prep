@@ -57,23 +57,57 @@ def arm(read_line):
     return read_line
 
 
-def _style():
+# Dark terminal, 16-color ANSI only. No hex and no 24-bit color.
+# Headers are green, body and (Y/n) are white, options are cyan,
+# the current row is cyan with black text, questions are bright black,
+# and warnings are red.
+_HEADER = "\033[32m"
+_BODY = "\033[37m"
+_DANGER = "\033[31m"
+_RESET = "\033[0m"
+_INVERT = "bg:ansicyan fg:ansiblack"
+
+
+def widget_style():
+    """prompt_toolkit style for the menus. Built for a dark background."""
     from prompt_toolkit.styles import Style
 
     return Style(
         [
-            ("qmark", "fg:ansicyan bold"),
-            ("question", "bold"),
-            ("answer", "fg:ansicyan"),
-            ("pointer", "fg:ansicyan bold"),
-            ("highlighted", "fg:ansicyan bold"),
-            ("selected", "fg:ansigreen"),
-            ("instruction", "fg:ansibrightblack"),
+            ("qmark", "fg:ansibrightblack"),
+            ("question", "fg:ansibrightblack"),
+            ("answer", "fg:ansiwhite"),
+            ("pointer", _INVERT),
+            ("highlighted", _INVERT),
+            ("selected", _INVERT),
+            ("instruction", "fg:ansiwhite"),
             ("danger", "fg:ansired bold"),
-            ("text", ""),
-            ("disabled", "fg:ansibrightblack italic"),
+            ("text", "fg:ansicyan"),
+            ("disabled", "fg:ansicyan"),
+            ("separator", "fg:ansigreen"),
         ]
     )
+
+
+def tone(text: str, role: str = "body") -> str:
+    """Wrap text for a dark terminal. The words themselves stay intact."""
+    prefix = {"header": _HEADER, "danger": _DANGER}.get(role, _BODY)
+    return f"{prefix}{text}{_RESET}"
+
+
+def rule() -> str:
+    """Green, same as a header, between the explanation and the menu."""
+    return f"{_HEADER}  ------------------------------------------{_RESET}"
+
+
+def choice_title(label: str):
+    """EOL stays on the row and is drawn as a warning."""
+    if label.endswith(" EOL"):
+        return [
+            ("class:text", label[: -len(" EOL")]),
+            ("class:danger", " EOL"),
+        ]
+    return str(label)
 
 
 def _run(question) -> Any:
@@ -124,7 +158,7 @@ def select(message: str, choices, *, default=None, instruction: str | None = Non
     question = questionary.select(
         message,
         choices=built,
-        style=_style(),
+        style=widget_style(),
         use_shortcuts=True,
         instruction=instruction,
     )
@@ -135,14 +169,16 @@ def checkbox(message: str, choices, *, instruction: str | None = None, validate=
     """choices are (label, value). None means cancelled."""
     import questionary
 
-    built = [questionary.Choice(title=str(label), value=value) for label, value in choices]
+    built = [
+        questionary.Choice(title=choice_title(str(label)), value=value) for label, value in choices
+    ]
     kwargs = {}
     if validate is not None:
         kwargs["validate"] = validate
     question = questionary.checkbox(
         message,
         choices=built,
-        style=_style(),
+        style=widget_style(),
         instruction=instruction,
         **kwargs,
     )
@@ -156,7 +192,7 @@ def text(message: str, *, default: str = "", instruction: str | None = None):
     question = questionary.text(
         message,
         default=default,
-        style=_style(),
+        style=widget_style(),
         instruction=instruction,
     )
     return _run(question)
@@ -169,7 +205,7 @@ def confirm(message: str, *, default: bool = True) -> bool | None:
     question = questionary.confirm(
         message,
         default=default,
-        style=_style(),
+        style=widget_style(),
         auto_enter=True,
     )
     result = _run(question)

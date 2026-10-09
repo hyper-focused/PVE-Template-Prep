@@ -32,7 +32,7 @@ questionary is the renderer. `pve_prep/prompts.py` owns the flow. `pve_prep/ui.p
 On a TTY, with the vendor tree importable:
 
 - Distro, build, format, storage, and the per-VMID backup choice are arrow menus. The explanation is printed once, then a blank line, then the menu. The numbered list is not printed again above the widget. A number highlights that row. Enter accepts it. The pointer is the only highlight. The Enter default is the first row, and that row is not painted as selected after the pointer moves. Enter on Build still accepts the template. Enter on Format still accepts raw.
-- The "do not back up" row is red (`class:danger`).
+- Colors assume a dark background and use the 16 ANSI colors only. Headers and the line above a menu are green. Explanations and `(Y/n)` are white. Menu rows are cyan. The current row is a cyan background with black text. The question label is bright black. Red is a destructive row, an EOL release, and a sentence that says a VM will be deleted.
 - Releases are a checkbox. Space marks a release. One to three. The result is still the release strings, in menu order. Codenames are not on this path.
 - VMIDs, `DELETE`, `YES`, the image directory, bridge, memory, and cores stay typed. The template VMID field is prefilled with the free default, so Enter accepts it. `DELETE` and `YES` are not prefilled. `X` still exits.
 - Guest prep, the hardware keep/change question, template conversion, and cache cleanup are yes/no. Enter accepts the default. Conversion defaults to yes. Cache cleanup defaults to no.
