@@ -32,6 +32,7 @@ from pve_prep.vm import (
     vmid_config_missing,
     storage_lacks_images,
     parse_storage_ids,
+    parse_storage_kinds,
 )
 
 _APT_HINT = "apt-get install libguestfs-tools qemu-utils"
@@ -101,8 +102,7 @@ def vm_has_disks(vmid: int) -> bool | None:
     return config_has_os_disk(proc.stdout or "")
 
 
-def list_storages() -> list[str]:
-    """Storage IDs from `pvesm status`. Empty when the host has no pvesm."""
+def _pvesm_status() -> str:
     try:
         proc = subprocess.run(
             ["pvesm", "status"],
@@ -110,13 +110,26 @@ def list_storages() -> list[str]:
             capture_output=True,
         )
     except (OSError, subprocess.SubprocessError):
-        return []
+        return ""
     if proc.returncode != 0:
-        return []
+        return ""
+    return proc.stdout or ""
+
+
+def list_storages() -> list[str]:
+    """Storage IDs from `pvesm status`. Empty when the host has no pvesm."""
     try:
-        return [str(item) for item in parse_storage_ids(proc.stdout)]
+        return [str(item) for item in parse_storage_ids(_pvesm_status())]
     except Exception:
         return []
+
+
+def storage_kinds() -> dict[str, str]:
+    """Active storage id to pvesm type. Empty when status cannot be read."""
+    try:
+        return {str(key): str(value) for key, value in parse_storage_kinds(_pvesm_status()).items()}
+    except Exception:
+        return {}
 
 
 def preflight(job: Job) -> None:
@@ -265,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
             _write,
             dry_run=args.dry_run,
             list_storages=list_storages,
+            storage_kinds=storage_kinds,
             releases_for=releases_for,
             normalize_release=normalize_release,
             vmids_in_use=vmids_in_use,

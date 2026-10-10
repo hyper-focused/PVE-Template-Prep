@@ -58,10 +58,10 @@ def _finish_template(label: str, job, vmid: int) -> str:
     return sentence
 
 
-def _prepare(job, spec, tools) -> Path:
+def _prepare(job, spec, tools, *, cache_format: str) -> Path:
     src = tools.fetch_verified(spec, Path(job.cache_dir), dry_run=job.dry_run)
-    work = Path(job.cache_dir) / (published_name(job.distro, spec.release, job.disk_format) + ".work")
-    tools.convert(src, work, job.disk_format, dry_run=job.dry_run)
+    work = Path(job.cache_dir) / (published_name(job.distro, spec.release, cache_format) + ".work")
+    tools.convert(src, work, cache_format, dry_run=job.dry_run)
     if job.prep:
         # apply() wants a str. shlex.join rejects a Path on dry-run.
         tools.customize_apply(str(work), spec.family, dry_run=job.dry_run)
@@ -69,13 +69,14 @@ def _prepare(job, spec, tools) -> Path:
 
 
 def publish_file(job, spec, label: str, tools) -> str:
-    work = _prepare(job, spec, tools)
+    work = _prepare(job, spec, tools, cache_format=job.disk_format)
     dest = Path(job.dest_dir) / published_name(job.distro, spec.release, job.disk_format)
     return _finish_file(label, dest, tools.publish(work, dest, job.collision, dry_run=job.dry_run))
 
 
 def insert_image(job, spec, vmid: int, label: str, tools) -> str:
-    work = _prepare(job, spec, tools)
+    # The cache copy stays qcow2. importdisk allocates the volume format.
+    work = _prepare(job, spec, tools, cache_format="qcow2")
     policy = "backup" if vmid in job.backup_vmids else "overwrite"
     inserted = tools.insert_disk(
         vmid=vmid,
@@ -84,13 +85,15 @@ def insert_image(job, spec, vmid: int, label: str, tools) -> str:
         disk_policy=policy,
         dry_run=job.dry_run,
         backup_dir=job.cache_dir,
+        volume_format=job.disk_format,
         run=tools.run,
     )
     return _finish_insert(label, vmid, policy, inserted)
 
 
 def create_guest(job, spec, vmid: int, label: str, tools) -> str:
-    work = _prepare(job, spec, tools)
+    # The cache copy stays qcow2. A raw ZFS or LVM volume is allocated at import.
+    work = _prepare(job, spec, tools, cache_format="qcow2")
     tools.create_template(
         vmid=vmid,
         name=vm_name(job.distro, spec.release),
@@ -104,6 +107,7 @@ def create_guest(job, spec, vmid: int, label: str, tools) -> str:
         backup_disks=vmid in job.backup_vmids,
         backup_dir=job.cache_dir,
         make_template=converts_to_template(job, vmid),
+        volume_format=job.disk_format,
         run=tools.run,
     )
     return _finish_template(label, job, vmid)

@@ -124,7 +124,7 @@ class VendorTest(unittest.TestCase):
         with mock.patch.object(questionary, "select", fake_select):
             picked = ui.select(
                 "Format",
-                [("ZFS raw", "raw"), ("QEMU qcow2", "qcow2")],
+                [("raw (.img, full size)", "raw"), ("QEMU qcow2 (sparse)", "qcow2")],
                 default="raw",
             )
         self.assertEqual(picked, "qcow2")
@@ -255,7 +255,7 @@ class WidgetInterviewTest(unittest.TestCase):
 
     def test_checkbox_order_and_hardware_change(self) -> None:
         job, blob, confirms = self._run(
-            selects=["debian", "template", "raw", "dir-templates"],
+            selects=["debian", "template", "dir-templates", "qcow2"],
             checks=[["13", "12"]],
             texts=["", "", "vmbr1", "4096", "4", "YES"],
             confirms=[True, False, True, False],
@@ -268,6 +268,7 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertEqual(job.memory_mb, 4096)
         self.assertEqual(job.cores, 4)
         self.assertEqual(job.storage, "dir-templates")
+        self.assertEqual(job.disk_format, "qcow2")
         self.assertIn("Releases.", blob)
         self.assertNotIn("codename", blob)
         self.assertNotIn("  1) ", blob)
@@ -284,7 +285,7 @@ class WidgetInterviewTest(unittest.TestCase):
     def test_delete_x_still_aborts(self) -> None:
         with self.assertRaises(PromptAbort):
             self._run(
-                selects=["debian", "template", "raw", "overwrite"],
+                selects=["debian", "template", "overwrite"],
                 checks=[["12"]],
                 texts=["910", "X"],
                 confirms=[],
@@ -293,7 +294,7 @@ class WidgetInterviewTest(unittest.TestCase):
             )
 
     def test_plain_reader_never_calls_a_widget(self) -> None:
-        answers = ["1", "1, 2", "2", "1", "", "/tmp/images", "", "", "yes"]
+        answers = ["1", "1, 2", "2", "", "1", "/tmp/images", "", "", "yes"]
 
         def read_line() -> str:
             if not answers:

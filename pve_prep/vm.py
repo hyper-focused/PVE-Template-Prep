@@ -28,16 +28,41 @@ _SKIP_MARKERS = ("cloudinit", "media=cdrom")
 Run = Callable[[list[str]], object]
 
 
+# File plugins allocate qcow2 or raw. CIFS is one of them: a share, not a block device.
+# Block plugins allocate raw only. There is no block-mode CIFS type.
+_FILE_STORAGE_TYPES = frozenset({"dir", "nfs", "cifs", "btrfs", "cephfs", "glusterfs"})
+_BLOCK_STORAGE_TYPES = frozenset(
+    {"zfspool", "zfs", "lvm", "lvmthin", "rbd", "iscsi", "iscsidirect"}
+)
+
+
+def volume_formats(storage_type: str) -> tuple[str, ...]:
+    """Image formats this Proxmox storage type can allocate.
+
+    qcow2 is first on file storage so Enter selects it. Block storage is raw.
+    An unknown type offers both, and importdisk is given an explicit format.
+    """
+    kind = (storage_type or "").strip().casefold()
+    if kind in _BLOCK_STORAGE_TYPES:
+        return ("raw",)
+    return ("qcow2", "raw")
+
+
 def parse_storage_ids(pvesm_status_text: str) -> list[str]:
     """Return storage names whose pvesm status is active."""
-    names: list[str] = []
+    return list(parse_storage_kinds(pvesm_status_text))
+
+
+def parse_storage_kinds(pvesm_status_text: str) -> dict[str, str]:
+    """Active storage id to its pvesm type. Header and inactive rows are skipped."""
+    found: dict[str, str] = {}
     for raw in pvesm_status_text.splitlines():
         fields = raw.split()
         if len(fields) < 3 or fields[0] == "Name":
             continue
         if fields[2] == "active":
-            names.append(fields[0])
-    return names
+            found[fields[0]] = fields[1]
+    return found
 
 
 def vmid_config_missing(returncode: int, output: str) -> bool:
@@ -161,9 +186,22 @@ class InsertResult:
     backup_dir: str = ""
 
 
-def _base_token(template_vmid: int) -> re.Pattern[str]:
-    # base-9014- matches. base-90140- does not.
-    return re.compile(rf"base-{template_vmid}-(?!\d)")
+def _linked_child(template_vmid: int) -> re.Pattern[str]:
+    """Child of this template's base volume. The template disk itself does not match.
+
+    Directory: NFS:9001/base-9001-disk-0.raw/122/vm-122-disk-0.qcow2
+    ZFS: vm-data:base-910-disk-0/vm-201-disk-0
+    The template disk stops at the base name: NFS:9001/base-9001-disk-0.raw
+    base-901-disk does not match base-9010-disk.
+    """
+    return re.compile(rf"base-{int(template_vmid)}-disk-\d+(?:\.[A-Za-z0-9]+)?/")
+
+
+def _is_linked_child(volid: str, template_vmid: int) -> bool:
+    return _linked_child(template_vmid).search(volid) is not None
+
+
+_LIST_ROW = re.compile(r"^(\S+)\s+\S+\s+\S+\s+~?\d+(?:\s+(\d+))?\s*$")
 
 
 def _storage_of(volid: str) -> str:
@@ -174,9 +212,16 @@ def _storage_of(volid: str) -> str:
 
 
 def _config_volids(config_text: str) -> list[str]:
-    """Volume ids named in the guest config. Cloud-init and cdrom are skipped."""
+    """Live volume ids. Snapshot sections, cloud-init, and cdrom are skipped."""
     found: list[str] = []
+    in_section = False
     for raw in config_text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = True
+            continue
+        if in_section:
+            continue
         parsed = _key_rest(raw)
         if parsed is None:
             continue
@@ -201,19 +246,18 @@ def _config_storages(config_text: str) -> list[str]:
     return storages
 
 
-def parse_linked_clone_owners(
-    list_json: str,
-    *,
-    template_vmid: int,
-    parent_volids: set[str],
-) -> list[str]:
-    """Guests, other than this template, whose volumes are cloned from it.
+def _owner_label(owner: object, volid: str, template_vmid: int) -> str | None:
+    """None when this volume belongs to the template. Snapshots use its VMID."""
+    if owner is not None and str(owner).strip() != "":
+        if str(owner) == str(template_vmid):
+            return None
+        return f"VM {owner} ({volid})"
+    return volid
 
-    pvesm list JSON on shared storage includes volumes owned by guests on
-    other cluster nodes. A same-VMID parent is a snapshot of the template.
-    """
+
+def _owners_from_json(list_json: str, template_vmid: int) -> list[str]:
     try:
-        payload = json.loads(list_json or "[]")
+        payload = json.loads(list_json)
     except json.JSONDecodeError as exc:
         raise VmError(
             f"VM {template_vmid} linked-clone list was not json; "
@@ -226,40 +270,64 @@ def parse_linked_clone_owners(
             f"VM {template_vmid} linked-clone list was not a list; "
             "the template was not changed"
         )
-    token = _base_token(template_vmid)
     found: list[str] = []
     for item in payload:
         if not isinstance(item, dict):
             continue
-        parent = str(item.get("parent") or "")
-        if not parent:
+        volid = str(item.get("volid") or "")
+        if not _is_linked_child(volid, template_vmid):
             continue
-        owned = parent in parent_volids or token.search(parent) is not None
-        if not owned:
+        label = _owner_label(item.get("vmid"), volid, template_vmid)
+        if label:
+            found.append(label)
+    return found
+
+
+def parse_linked_clone_owners(list_text: str, *, template_vmid: int) -> list[str]:
+    """Guests, other than this template, whose volumes are linked clones of it.
+
+    A hit is a child volid: the base disk is a path component and the clone
+    disk follows it. A parent field alone is not a hit. Full clones are
+    vm-<id>-disk-N and do not match. pvesm list on PVE 9.2 prints a table.
+    JSON is accepted when a caller already has it. A same-VMID volume is a
+    snapshot of the template.
+    """
+    stripped = (list_text or "").strip()
+    if not stripped:
+        return []
+    if stripped[0] in "[{":
+        return _owners_from_json(stripped, template_vmid)
+    if not stripped.startswith("Volid"):
+        raise VmError(
+            f"VM {template_vmid} linked-clone list was not readable; "
+            "the template was not changed"
+        )
+    found: list[str] = []
+    for raw in stripped.splitlines():
+        match = _LIST_ROW.match(raw.strip())
+        if match is None:
             continue
-        owner = item.get("vmid")
-        if owner is not None and str(owner) == str(template_vmid):
+        volid, owner = match.group(1), match.group(2)
+        if not _is_linked_child(volid, template_vmid):
             continue
-        volid = str(item.get("volid") or parent)
-        if owner is None or str(owner).strip() == "":
-            found.append(volid)
-        else:
-            found.append(f"VM {owner} ({volid})")
+        label = _owner_label(owner, volid, template_vmid)
+        if label:
+            found.append(label)
     return found
 
 
 def cluster_config_links(nodes_root: Path, template_vmid: int) -> list[str]:
-    """Other guests in the cluster whose config names this template's base volume.
+    """Other guests whose live disk is a linked clone of this template.
 
-    Configs under /etc/pve/nodes are replicated to every node, so a linked
-    clone that lives on another cluster member is visible here.
+    Configs under /etc/pve/nodes are replicated, so a linked clone on another
+    node is visible here. A full clone is not. A snapshot section that still
+    names the old base volume is not.
     """
     if not nodes_root.is_dir():
         raise VmError(
             f"VM {template_vmid} linked-clone check cannot read {nodes_root}; "
             "the template was not changed"
         )
-    token = _base_token(template_vmid)
     found: list[str] = []
     for conf in sorted(nodes_root.glob("*/qemu-server/*.conf")):
         if conf.is_symlink() or not conf.is_file():
@@ -273,7 +341,7 @@ def cluster_config_links(nodes_root: Path, template_vmid: int) -> list[str]:
                 f"VM {template_vmid} linked-clone check cannot read {conf}; "
                 "the template was not changed"
             ) from exc
-        if token.search(text) is None:
+        if not any(_is_linked_child(volid, template_vmid) for volid in _config_volids(text)):
             continue
         node = conf.parent.parent.name
         found.append(f"VM {conf.stem} on {node}")
@@ -284,6 +352,21 @@ def _nodes_root(nodes_root: Path | None) -> Path:
     if nodes_root is None:
         return _CLUSTER_NODES
     return Path(nodes_root)
+
+
+def _storage_listing(run: Run, storage: str) -> object:
+    """Volume list for one storage.
+
+    PVE 9.2 pvesm list rejects --output-format. The table still has the volid.
+    Any other failure is returned as-is so the caller can refuse the change.
+    """
+    listed = run(["pvesm", "list", storage, "--output-format", "json"])
+    if getattr(listed, "returncode", 1) == 0:
+        return listed
+    detail = _detail(listed).casefold()
+    if "output-format" in detail or "unable to parse option" in detail:
+        return run(["pvesm", "list", storage])
+    return listed
 
 
 def _refuse_linked_clones(
@@ -297,9 +380,8 @@ def _refuse_linked_clones(
     if hits:
         shown = ", ".join(dict.fromkeys(hits))
         raise VmError(f"VM {vmid} has linked clones ({shown}); the template was not changed")
-    parent_volids = set(_config_volids(config_text))
     for storage in _config_storages(config_text):
-        listed = run(["pvesm", "list", storage, "--output-format", "json"])
+        listed = _storage_listing(run, storage)
         if getattr(listed, "returncode", 1) != 0:
             raise VmError(
                 f"VM {vmid} linked-clone check failed for {storage}; "
@@ -309,7 +391,6 @@ def _refuse_linked_clones(
             parse_linked_clone_owners(
                 getattr(listed, "stdout", "") or "",
                 template_vmid=vmid,
-                parent_volids=parent_volids,
             )
         )
     if not hits:
@@ -454,6 +535,18 @@ def parse_imported_volid(config_text: str) -> str | None:
     return None
 
 
+def importdisk_command(
+    vmid: int,
+    image_path: str,
+    storage: str,
+    volume_format: str,
+) -> list[str]:
+    """qm importdisk with the format the storage should allocate."""
+    if volume_format not in {"raw", "qcow2"}:
+        raise VmError(f"unsupported volume format: {volume_format}")
+    return ["qm", "importdisk", str(vmid), image_path, storage, "--format", volume_format]
+
+
 def template_commands(
     *,
     vmid: int,
@@ -465,6 +558,7 @@ def template_commands(
     image_path: str,
     imported_volid: str,
     make_template: bool = True,
+    volume_format: str = "raw",
 ) -> list[list[str]]:
     """Return qm argv lists that build a cloud-init VM from an image.
 
@@ -501,7 +595,7 @@ def template_commands(
             "--rng0",
             "source=/dev/urandom",
         ],
-        ["qm", "importdisk", vid, image_path, storage],
+        importdisk_command(vmid, image_path, storage, volume_format),
         ["qm", "set", vid, "--scsi0", f"{imported_volid},discard=on,ssd=1"],
         ["qm", "set", vid, "--ide2", f"{storage}:cloudinit"],
         ["qm", "set", vid, "--boot", "order=scsi0"],
@@ -594,10 +688,11 @@ def _import_volume(
     vmid: int,
     image_path: str,
     storage: str,
+    volume_format: str,
     created_now: bool,
     destroyed: bool,
 ) -> str:
-    imported = run(["qm", "importdisk", str(vmid), image_path, storage])
+    imported = run(importdisk_command(vmid, image_path, storage, volume_format))
     cfg = run(["qm", "config", str(vmid)])
     config_text = getattr(cfg, "stdout", "") or ""
     volid = parse_imported_volid(config_text)
@@ -710,6 +805,7 @@ def create_template(
     backup_dir: str = "",
     make_template: bool = True,
     nodes_root: Path | None = None,
+    volume_format: str = "raw",
 ) -> str:
     """Create a cloud VM via run, or print qm commands when dry_run is set.
 
@@ -729,6 +825,7 @@ def create_template(
         image_path=image_path,
         imported_volid=guessed,
         make_template=make_template,
+        volume_format=volume_format,
     )
     if dry_run:
         if backup_disks:
@@ -776,6 +873,7 @@ def create_template(
         vmid=vmid,
         image_path=image_path,
         storage=storage,
+        volume_format=volume_format,
         created_now=True,
         destroyed=destroyed,
     )
@@ -789,6 +887,7 @@ def create_template(
         image_path=image_path,
         imported_volid=volid,
         make_template=make_template,
+        volume_format=volume_format,
     )
     for cmd in finished[2:]:
         _must(run, cmd, vmid=vmid, destroyed=destroyed)
@@ -802,6 +901,7 @@ def _overwrite_boot_disk(
     storage: str,
     image_path: str,
     config_text: str,
+    volume_format: str,
 ) -> str:
     """Import image_path and point the boot disk at it. The old volume is deleted."""
     current = select_boot_disk(config_text)
@@ -810,6 +910,7 @@ def _overwrite_boot_disk(
         vmid=vmid,
         image_path=image_path,
         storage=storage,
+        volume_format=volume_format,
         created_now=False,
         destroyed=False,
     )
@@ -833,6 +934,7 @@ def _replace_template_disk(
     disk_policy: str,
     config_text: str,
     backup_dir: str,
+    volume_format: str,
 ) -> InsertResult:
     """Swap the boot disk and leave the guest a template.
 
@@ -859,6 +961,7 @@ def _replace_template_disk(
             storage=storage,
             image_path=image_path,
             config_text=config_text,
+            volume_format=volume_format,
         )
     except VmError as exc:
         restored = run(["qm", "template", str(vmid)])
@@ -882,6 +985,7 @@ def insert_disk(
     run: Run,
     backup_dir: str = "",
     nodes_root: Path | None = None,
+    volume_format: str = "raw",
 ) -> InsertResult:
     """Import a disk into a stopped guest. The guest config is not replaced.
 
@@ -898,7 +1002,7 @@ def insert_disk(
         raise VmError(f"unknown disk policy {disk_policy}")
     guessed = f"{storage}:vm-{vmid}-disk-0"
     if dry_run:
-        print(" ".join(["qm", "importdisk", str(vmid), image_path, storage]))
+        print(" ".join(importdisk_command(vmid, image_path, storage, volume_format)))
         if disk_policy == "backup":
             print(
                 f"# qm set {vmid} --scsiN {guessed},discard=on,ssd=1  "
@@ -938,6 +1042,7 @@ def insert_disk(
             disk_policy=disk_policy,
             config_text=config_text,
             backup_dir=backup_dir,
+            volume_format=volume_format,
         )
     if disk_policy == "overwrite":
         volid = _overwrite_boot_disk(
@@ -946,6 +1051,7 @@ def insert_disk(
             storage=storage,
             image_path=image_path,
             config_text=config_text,
+            volume_format=volume_format,
         )
         return InsertResult(volid)
     volid = _import_volume(
@@ -953,6 +1059,7 @@ def insert_disk(
         vmid=vmid,
         image_path=image_path,
         storage=storage,
+        volume_format=volume_format,
         created_now=False,
         destroyed=False,
     )

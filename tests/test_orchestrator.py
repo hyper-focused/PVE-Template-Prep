@@ -55,6 +55,8 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     vm.parse_qm_status = mock.MagicMock(name="parse_qm_status")
     vm.existing_prep_commands = mock.MagicMock(name="existing_prep_commands")
     vm.parse_storage_ids = mock.MagicMock(name="parse_storage_ids")
+    vm.parse_storage_kinds = real_vm.parse_storage_kinds
+    vm.volume_formats = real_vm.volume_formats
     vm.VmError = real_vm.VmError
     vm.VmDestroyedError = real_vm.VmDestroyedError
     vm.is_template = real_vm.is_template
@@ -401,7 +403,7 @@ class OrchestratorTest(unittest.TestCase):
                 MOD.main(["--version"])
         self.assertEqual(caught.exception.code, 0)
         self.assertEqual(buf.getvalue(), f"pve-template-prep {pve_prep.__version__}\n")
-        self.assertEqual(pve_prep.__version__, "1.0.1")
+        self.assertEqual(pve_prep.__version__, "1.1.0")
         import pve_prep.download as download
 
         self.assertEqual(download._HEADERS["User-Agent"], f"pve-prep/{pve_prep.__version__}")
@@ -429,6 +431,7 @@ class OrchestratorTest(unittest.TestCase):
             normalize_release,
             vmids_in_use,
             vm_has_disks,
+            storage_kinds=None,
         ):
             seen["dry_run"] = dry_run
             seen["storages"] = list_storages()

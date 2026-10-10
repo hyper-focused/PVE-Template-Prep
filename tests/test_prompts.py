@@ -49,6 +49,7 @@ class _Script:
         *,
         dry_run: bool,
         storages: list[str] | None = None,
+        kinds: dict[str, str] | None = None,
         in_use: set[int] | None = None,
         disks: set[int] | None = None,
     ) -> Job:
@@ -56,6 +57,9 @@ class _Script:
             if storages is None:
                 raise AssertionError("storage list should not be consulted")
             return list(storages)
+
+        def storage_kinds() -> dict[str, str]:
+            return dict(kinds or {})
 
         def vmids_in_use(vmids: tuple[int, ...]) -> set[int] | None:
             if in_use is None:
@@ -72,6 +76,7 @@ class _Script:
             self.write,
             dry_run=dry_run,
             list_storages=list_storages,
+            storage_kinds=storage_kinds,
             releases_for=_specs,
             normalize_release=_normalize,
             vmids_in_use=vmids_in_use,
@@ -86,8 +91,8 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "1, 2",
                 "2",
-                "1",
                 "",
+                "1",
                 "/tmp/images",
                 "yes",
                 "",
@@ -121,7 +126,7 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("debian 12 -> image raw /tmp/images/debian-12-pve.img guest-prep=yes", blob)
         self.assertIn("cache: keep /var/tmp/pve-template-prep/cache", blob)
         self.assertIn("debian 13 -> image raw /tmp/images/debian-13-pve.img guest-prep=yes", blob)
-        self.assertIn("ZFS raw", blob)
+        self.assertIn("raw (.img, full size)", blob)
         self.assertIn("Type YES: ", blob)
         self.assertIn("Provide a VMID for bookworm.", blob)
         self.assertIn("every selected release", blob)
@@ -134,12 +139,12 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "1, 2",
                 "",
-                "",
                 "910",
                 "911",
                 "2",
                 "DELETE",
                 "2",
+                "",
                 "",
                 "",
                 "",
@@ -155,7 +160,7 @@ class InterviewTest(unittest.TestCase):
         )
         self.assertEqual(job.mode, "template")
         self.assertEqual(job.releases, ("12", "13"))
-        self.assertEqual(job.disk_format, "raw")
+        self.assertEqual(job.disk_format, "qcow2")
         self.assertEqual(job.storage, "nfs-templates")
         self.assertEqual(job.dest_dir, "")
         self.assertEqual(job.vmids, (910, 911))
@@ -178,7 +183,7 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("Do not back up the existing template VM disk", blob)
         self.assertEqual(job.backup_vmids, frozenset())
         self.assertIn(
-            "debian 12 -> template VMID 910 name debian-12-cloud storage nfs-templates raw guest-prep=yes",
+            "debian 12 -> template VMID 910 name debian-12-cloud storage nfs-templates qcow2 guest-prep=yes",
             blob,
         )
         self.assertIn("VMID 910: the existing disk is not kept.", blob)
@@ -193,8 +198,8 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "",
-                "",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -226,8 +231,8 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "",
-                "",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -258,8 +263,8 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "",
-                "",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -286,8 +291,8 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "",
-                "",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -309,8 +314,8 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "1",
                 "2",
-                "1",
                 "",
+                "1",
                 "/tmp/images",
                 "y",
                 "",
@@ -326,8 +331,8 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "1",
                 "2",
-                "1",
                 "",
+                "1",
                 "/tmp/images",
                 "y",
                 "",
@@ -434,11 +439,11 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "1, 2",
                 "",
-                "2",
                 "910",
                 "911",
                 "1",
                 "nfs-templates",
+                "",
                 "n",
                 "n",
                 "vmbr1",
@@ -468,13 +473,13 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "1, 2",
                 "",
-                "",
                 "910",
                 "911",
                 "",
                 "2",
                 "DELETE",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -496,10 +501,10 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "1",
                 "",
-                "",
                 "9001",
                 "DELETE",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -522,9 +527,9 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "",
                 "",
-                "",
                 "nope",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -585,10 +590,10 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "1",
                 "2",
-                "",
                 "910",
                 "1",
                 "2",
+                "",
                 "",
                 "",
                 "yes",
@@ -609,7 +614,7 @@ class InterviewTest(unittest.TestCase):
         blob = "".join(script.written)
         self.assertIn("The VM stays. The new disk is inserted.", blob)
         self.assertEqual(job.backup_vmids, frozenset({910}))
-        self.assertIn("debian 12 -> insert VMID 910 storage nfs-templates raw disk=backup", blob)
+        self.assertIn("debian 12 -> insert VMID 910 storage nfs-templates qcow2 disk=backup", blob)
         self.assertNotIn("Replace VMID", blob)
         self.assertNotIn("Hardware defaults:", blob)
 
@@ -619,9 +624,9 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "1",
                 "2",
-                "",
                 "9001",
                 "1",
+                "",
                 "",
                 "/tmp/images",
                 "yes",
@@ -641,7 +646,6 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "1",
                 "",
-                "",
                 "9001",
                 "2",
                 "X",
@@ -656,13 +660,13 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "1, 2",
                 "",
-                "",
                 "910",
                 "911",
                 "2",
                 "DELETE",
                 "1",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -690,8 +694,8 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "",
                 "",
-                "",
                 "1",
+                "",
                 "",
                 "",
                 "n",
@@ -706,7 +710,7 @@ class InterviewTest(unittest.TestCase):
         self.assertTrue(job.clean_cache)
         blob = "".join(script.written)
         self.assertIn(
-            "debian 12 -> vm VMID 9001 name debian-12-cloud storage dir-templates raw guest-prep=yes",
+            "debian 12 -> vm VMID 9001 name debian-12-cloud storage dir-templates qcow2 guest-prep=yes",
             blob,
         )
         self.assertIn("Type YES to create the VM.", blob)
@@ -724,13 +728,13 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "1, 2",
                 "2",
-                "",
                 "911",
                 "910",
                 "1",
                 "2",
                 "DELETE",
                 "2",
+                "",
                 "",
                 "",
                 "yes",
@@ -759,12 +763,12 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "1, 2",
                 "2",
-                "",
                 "910",
                 "920",
                 "2",
                 "1",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -788,11 +792,100 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("Create a new VM template at 920", blob)
         self.assertIn("debian 12 -> insert VMID 910", blob)
         self.assertIn(
-            "debian 13 -> template VMID 920 name debian-13-cloud storage dir-templates raw guest-prep=yes",
+            "debian 13 -> template VMID 920 name debian-13-cloud storage dir-templates qcow2 guest-prep=yes",
             blob,
         )
         self.assertIn("Type YES to insert the disk and create the template.", blob)
         self.assertIn("hardware: bridge vmbr0, memory 2048 MB, cores 2", blob)
+
+    def test_zfs_storage_skips_the_format_question(self) -> None:
+        script = _Script(
+            [
+                "1",
+                "1",
+                "",
+                "",
+                "1",
+                "",
+                "",
+                "",
+                "",
+                "yes",
+            ]
+        )
+        job = script.run(
+            dry_run=False,
+            storages=["vm-data"],
+            kinds={"vm-data": "zfspool"},
+            in_use=set(),
+            disks=set(),
+        )
+        self.assertEqual(job.storage, "vm-data")
+        self.assertEqual(job.disk_format, "raw")
+        self.assertEqual(job.vmids, (9001,))
+        blob = "".join(script.written)
+        self.assertIn("vm-data is ZFS. The volume will be raw.", blob)
+        self.assertNotIn("Volume format on", blob)
+        self.assertNotIn("Select format", blob)
+
+    def test_cifs_storage_asks_and_enter_is_qcow2(self) -> None:
+        script = _Script(
+            [
+                "1",
+                "1",
+                "",
+                "",
+                "1",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "yes",
+            ]
+        )
+        job = script.run(
+            dry_run=False,
+            storages=["share"],
+            kinds={"share": "cifs"},
+            in_use=set(),
+            disks=set(),
+        )
+        self.assertEqual(job.storage, "share")
+        self.assertEqual(job.disk_format, "qcow2")
+        blob = "".join(script.written)
+        self.assertIn("Volume format on share.", blob)
+        self.assertIn("1) QEMU qcow2 (sparse)", blob)
+        self.assertIn("2) raw (full size)", blob)
+        self.assertNotIn("share is CIFS. The volume will be raw.", blob)
+
+    def test_cifs_raw_is_still_a_file_format(self) -> None:
+        script = _Script(
+            [
+                "1",
+                "1",
+                "",
+                "",
+                "1",
+                "2",
+                "",
+                "",
+                "",
+                "",
+                "yes",
+            ]
+        )
+        job = script.run(
+            dry_run=False,
+            storages=["share"],
+            kinds={"share": "cifs"},
+            in_use=set(),
+            disks=set(),
+        )
+        self.assertEqual(job.disk_format, "raw")
+        blob = "".join(script.written)
+        self.assertIn("debian 12 -> template VMID 9001", blob)
+        self.assertIn("storage share raw", blob)
 
 
 if __name__ == "__main__":

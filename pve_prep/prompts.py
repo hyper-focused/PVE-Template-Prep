@@ -19,6 +19,7 @@ from pve_prep.job import (
     published_name,
     vm_name,
 )
+from pve_prep.vm import volume_formats
 
 DEFAULT_BRIDGE = "vmbr0"
 DEFAULT_MEMORY_MB = 2048
@@ -258,37 +259,100 @@ def _ask_build(read_line, write) -> str:
     )
 
 
-def _ask_format(read_line, write) -> str:
+_STORAGE_LABEL = {
+    "zfspool": "ZFS",
+    "zfs": "ZFS",
+    "lvm": "LVM",
+    "lvmthin": "LVM-thin",
+    "rbd": "RBD",
+    "iscsi": "iSCSI",
+    "iscsidirect": "iSCSI",
+    "dir": "directory",
+    "nfs": "NFS",
+    "cifs": "CIFS",
+    "btrfs": "btrfs",
+    "cephfs": "CephFS",
+}
+
+
+def _storage_label(storage_type: str) -> str:
+    kind = (storage_type or "").strip().casefold()
+    return _STORAGE_LABEL.get(kind, kind or "this storage")
+
+
+def _ask_file_format(read_line, write) -> str:
+    """Format of a published file. There is no Proxmox storage involved."""
     if ui.enabled(read_line):
         _blank(write)
-        _say(read_line, write, "How the disk is stored before Proxmox imports it.\n", "header")
+        _say(read_line, write, "Format of the image file.\n", "header")
         write("\n")
-        write("  ZFS raw\n")
-        write("  A file-based raw image is .img and full size.\n")
+        write("  raw\n")
+        write("  A .img file, full size.\n")
         write("\n")
         write("  QEMU qcow2\n")
-        write("  Stays sparse until import.\n")
+        write("  Sparse.\n")
         return _pick(
             read_line,
             write,
             "Format",
             [
-                ("ZFS raw", "raw"),
-                ("QEMU qcow2", "qcow2"),
+                ("raw (.img, full size)", "raw"),
+                ("QEMU qcow2 (sparse)", "qcow2"),
             ],
             default="raw",
         )
-    write("How the disk is stored before Proxmox imports it.\n")
-    write("VM disk format:\n")
-    write("  1) ZFS raw (a file-based raw image is .img and full size)\n")
-    write("  2) QEMU qcow2 (stays sparse until import)\n")
+    write("Format of the image file.\n")
+    write("Image file format:\n")
+    write("  1) raw (.img, full size)\n")
+    write("  2) QEMU qcow2 (sparse)\n")
     return _ask_choice(
         read_line,
         write,
         "Select format [1]: ",
         {"1": "raw", "2": "qcow2"},
         "1",
-        "pick 1 ZFS raw or 2 QEMU qcow2",
+        "pick 1 raw or 2 qcow2",
+    )
+
+
+def _ask_volume_format(read_line, write, storage: str, storage_type: str) -> str:
+    """Format allocated on this storage. Block storage is raw and is not asked."""
+    formats = volume_formats(storage_type)
+    if formats == ("raw",):
+        if ui.enabled(read_line):
+            _blank(write)
+        label = _storage_label(storage_type)
+        write(f"{storage} is {label}. The volume will be raw.\n")
+        return "raw"
+    if ui.enabled(read_line):
+        _blank(write)
+        _say(read_line, write, f"Volume format on {storage}.\n", "header")
+        write("\n")
+        write("  QEMU qcow2\n")
+        write("  Sparse. Directory, NFS, and CIFS can hold it.\n")
+        write("\n")
+        write("  raw\n")
+        write("  Full size on this storage.\n")
+        return _pick(
+            read_line,
+            write,
+            "Format",
+            [
+                ("QEMU qcow2 (sparse)", "qcow2"),
+                ("raw (full size)", "raw"),
+            ],
+            default="qcow2",
+        )
+    write(f"Volume format on {storage}.\n")
+    write("  1) QEMU qcow2 (sparse)\n")
+    write("  2) raw (full size)\n")
+    return _ask_choice(
+        read_line,
+        write,
+        "Select format [1]: ",
+        {"1": "qcow2", "2": "raw"},
+        "1",
+        "pick 1 qcow2 or 2 raw",
     )
 
 
@@ -918,6 +982,7 @@ def interview(
     normalize_release,
     vmids_in_use,
     vm_has_disks,
+    storage_kinds=None,
 ) -> Job:
     """Walk the operator through one job.
 
@@ -932,10 +997,15 @@ def interview(
     mode = _ask_build(read_line, write)
     count = len(releases)
 
-    if mode == "existing":
-        disk_format = "raw"
-    else:
-        disk_format = _ask_format(read_line, write)
+    kinds: dict[str, str] = {}
+    if storage_kinds is not None:
+        try:
+            kinds = {str(key): str(value) for key, value in dict(storage_kinds() or {}).items()}
+        except Exception:
+            kinds = {}
+
+    def volume_format_for(storage: str) -> str:
+        return _ask_volume_format(read_line, write, storage, kinds.get(storage, ""))
 
     named = _named_releases(distro, releases, releases_for)
     template_vmids: frozenset[int] = frozenset()
@@ -946,6 +1016,7 @@ def interview(
         collision = _collision_for(destroy_vmids, backup_vmids)
         dest_dir = ""
         storage = _ask_storage(read_line, write, list_storages)
+        disk_format = volume_format_for(storage)
     elif mode == "image":
         vmids, backup_vmids, template_vmids = _ask_image_vmids(
             read_line, write, named, vmids_in_use, vm_has_disks
@@ -956,10 +1027,13 @@ def interview(
         if vmids:
             dest_dir = ""
             storage = _ask_storage(read_line, write, list_storages)
+            disk_format = volume_format_for(storage)
         else:
+            disk_format = _ask_file_format(read_line, write)
             dest_dir = _ask_directory(read_line, write)
             storage = ""
     else:
+        disk_format = "raw"
         vmids = _ask_existing_vmids(read_line, write, named, vmids_in_use)
         destroy_vmids = frozenset()
         backup_vmids = frozenset()
