@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from io import StringIO
 from contextlib import redirect_stdout
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from pve_prep.vm import (
     VmError,
     is_disk_backup,
+    cluster_config_links,
     config_has_os_disk,
     create_template,
     existing_prep_commands,
     insert_disk,
     parse_imported_volid,
+    parse_linked_clone_owners,
     parse_os_disk,
     parse_qm_status,
     vmid_config_missing,
@@ -344,7 +348,11 @@ class CreateTemplateTests(unittest.TestCase):
             printed[0],
             "# qm destroy 910  # only if this VMID exists and is stopped",
         )
-        self.assertEqual(printed[1:], [" ".join(cmd) for cmd in expected])
+        self.assertEqual(
+            printed[1],
+            "# a template with linked clones on any cluster node is left unchanged",
+        )
+        self.assertEqual(printed[2:], [" ".join(cmd) for cmd in expected])
 
     def test_refuses_running_even_if_destroy_ok(self) -> None:
         run = FakeRun([(0, "status: running\n")])
@@ -365,6 +373,7 @@ class CreateTemplateTests(unittest.TestCase):
         run = FakeRun(
             [
                 (0, "status: stopped\n"),
+                (0, "scsi0: NFS-SATA-SSD1:vm-910-disk-0\n"),
                 (0, ""),
                 (0, ""),
                 (0, ""),
@@ -378,12 +387,13 @@ class CreateTemplateTests(unittest.TestCase):
         result = create_template(**_create(destroy_ok=True, run=run))
         self.assertEqual(result, volid)
         self.assertEqual(run.calls[0], ["qm", "status", "910"])
-        self.assertEqual(run.calls[1], ["qm", "destroy", "910"])
-        self.assertEqual(run.calls[2][:3], ["qm", "create", "910"])
-        self.assertEqual(run.calls[3], ["qm", "importdisk", "910", IMAGE, STORAGE])
-        self.assertEqual(run.calls[4], ["qm", "config", "910"])
+        self.assertEqual(run.calls[1], ["qm", "config", "910"])
+        self.assertEqual(run.calls[2], ["qm", "destroy", "910"])
+        self.assertEqual(run.calls[3][:3], ["qm", "create", "910"])
+        self.assertEqual(run.calls[4], ["qm", "importdisk", "910", IMAGE, STORAGE])
+        self.assertEqual(run.calls[5], ["qm", "config", "910"])
         self.assertEqual(
-            run.calls[5:],
+            run.calls[6:],
             [
                 ["qm", "set", "910", "--scsi0", f"{volid},discard=on,ssd=1"],
                 ["qm", "set", "910", "--ide2", f"{STORAGE}:cloudinit"],
@@ -397,6 +407,7 @@ class CreateTemplateTests(unittest.TestCase):
         run = FakeRun(
             [
                 (0, "status: stopped\n"),
+                (0, "scsi0: NFS-SATA-SSD1:vm-910-disk-0\n"),
                 (0, ""),
                 (0, ""),
                 (0, ""),
@@ -409,8 +420,9 @@ class CreateTemplateTests(unittest.TestCase):
         )
         result = create_template(**_create(destroy_ok=True, run=run))
         self.assertEqual(result, volid)
-        self.assertEqual(run.calls[1], ["qm", "destroy", "910"])
-        self.assertEqual(run.calls[3], ["qm", "importdisk", "910", IMAGE, STORAGE])
+        self.assertEqual(run.calls[1], ["qm", "config", "910"])
+        self.assertEqual(run.calls[2], ["qm", "destroy", "910"])
+        self.assertEqual(run.calls[4], ["qm", "importdisk", "910", IMAGE, STORAGE])
         self.assertEqual(run.calls[-1], ["qm", "template", "910"])
 
     def test_make_template_false_skips_qm_template(self) -> None:
@@ -418,6 +430,7 @@ class CreateTemplateTests(unittest.TestCase):
         run = FakeRun(
             [
                 (0, "status: stopped\n"),
+                (0, "name: old\n"),
                 (0, ""),
                 (0, ""),
                 (0, ""),
@@ -495,38 +508,47 @@ class CreateTemplateTests(unittest.TestCase):
     def test_backup_copies_the_disk_before_destroy(self) -> None:
         old = "NFS-SATA-SSD1:vm-910-disk-0.raw"
         volid = "NFS-SATA-SSD1:910/vm-910-disk-0.raw"
-        run = FakeRun(
-            [
-                (0, "status: stopped\n"),
-                (0, f"template: 1\nscsi0: {old}\n"),
-                (0, "/mnt/pve/NFS/vm-910-disk-0.raw\n"),
-                (0, ""),
-                (0, ""),
-                (0, ""),
-                (0, ""),
-                (0, f"unused0: {volid}\n"),
-                (0, ""),
-                (0, ""),
-                (0, ""),
-                (0, ""),
-            ]
-        )
-        result = create_template(
-            **_create(
-                destroy_ok=True,
-                backup_disks=True,
-                backup_dir="/var/tmp/pve-template-prep/cache",
-                run=run,
+        with TemporaryDirectory() as tmp:
+            nodes = Path(tmp) / "nodes"
+            nodes.mkdir()
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, f"template: 1\nscsi0: {old}\n"),
+                    (0, "[]"),
+                    (0, "/mnt/pve/NFS/vm-910-disk-0.raw\n"),
+                    (0, ""),
+                    (0, ""),
+                    (0, ""),
+                    (0, ""),
+                    (0, f"unused0: {volid}\n"),
+                    (0, ""),
+                    (0, ""),
+                    (0, ""),
+                    (0, ""),
+                ]
             )
-        )
+            result = create_template(
+                **_create(
+                    destroy_ok=True,
+                    backup_disks=True,
+                    backup_dir="/var/tmp/pve-template-prep/cache",
+                    nodes_root=nodes,
+                    run=run,
+                )
+            )
         self.assertEqual(result, volid)
         self.assertEqual(run.calls[1], ["qm", "config", "910"])
-        self.assertEqual(run.calls[2], ["pvesm", "path", old])
-        self.assertEqual(run.calls[3][:4], ["qemu-img", "convert", "-O", "qcow2"])
-        self.assertTrue(run.calls[3][4].endswith("vm-910-disk-0.raw"))
-        self.assertIn("vm-910-scsi0.bak.", run.calls[3][5])
-        self.assertTrue(is_disk_backup(Path(run.calls[3][5]).name))
-        self.assertEqual(run.calls[4], ["qm", "destroy", "910"])
+        self.assertEqual(
+            run.calls[2],
+            ["pvesm", "list", STORAGE, "--output-format", "json"],
+        )
+        self.assertEqual(run.calls[3], ["pvesm", "path", old])
+        self.assertEqual(run.calls[4][:4], ["qemu-img", "convert", "-O", "qcow2"])
+        self.assertTrue(run.calls[4][4].endswith("vm-910-disk-0.raw"))
+        self.assertIn("vm-910-scsi0.bak.", run.calls[4][5])
+        self.assertTrue(is_disk_backup(Path(run.calls[4][5]).name))
+        self.assertEqual(run.calls[5], ["qm", "destroy", "910"])
 
     def test_cloudinit_alone_is_not_an_os_disk(self) -> None:
         text = "ide2: NFS-SATA-SSD1:9001/vm-9001-cloudinit.qcow2,media=cdrom\n"
@@ -557,7 +579,8 @@ class InsertDiskTests(unittest.TestCase):
             dry_run=False,
             run=run,
         )
-        self.assertEqual(result, new)
+        self.assertEqual(result.volid, new)
+        self.assertFalse(result.kept_template)
         self.assertEqual(run.calls[4], ["qm", "set", "910", "--scsi0", f"{new},discard=on,ssd=1"])
         self.assertEqual(run.calls[6], ["qm", "set", "910", "--delete", "unused0"])
         self.assertNotIn(["qm", "destroy", "910"], run.calls)
@@ -583,28 +606,256 @@ class InsertDiskTests(unittest.TestCase):
             dry_run=False,
             run=run,
         )
-        self.assertEqual(result, new)
+        self.assertEqual(result.volid, new)
+        self.assertFalse(result.kept_template)
         self.assertEqual(run.calls[4], ["qm", "set", "910", "--scsi1", f"{new},discard=on,ssd=1"])
         self.assertNotIn(["qm", "destroy", "910"], run.calls)
 
-    def test_refuses_a_template(self) -> None:
-        run = FakeRun(
-            [
-                (0, "status: stopped\n"),
-                (0, "template: 1\nscsi0: NFS-SATA-SSD1:vm-910-disk-0\n"),
-            ]
-        )
-        with self.assertRaises(VmError) as caught:
-            insert_disk(
+    def _nodes(self, tmp: str) -> Path:
+        root = Path(tmp) / "nodes"
+        root.mkdir()
+        return root
+
+    def test_template_boot_disk_is_replaced_and_the_template_stays(self) -> None:
+        old = "NFS-SATA-SSD1:base-910-disk-0"
+        new = "NFS-SATA-SSD1:vm-910-disk-1"
+        with TemporaryDirectory() as tmp:
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, f"template: 1\nname: keep-me\nscsi0: {old}\nnet0: virtio=AA:BB,bridge=vmbr1\n"),
+                    (0, "[]"),
+                    (0, ""),
+                    (0, ""),
+                    (0, f"unused0: {new}\nscsi0: {old}\n"),
+                    (0, ""),
+                    (0, f"unused0: {old}\nscsi0: {new}\n"),
+                    (0, ""),
+                    (0, ""),
+                ]
+            )
+            result = insert_disk(
                 vmid=910,
                 storage=STORAGE,
                 image_path=IMAGE,
                 disk_policy="overwrite",
                 dry_run=False,
                 run=run,
+                nodes_root=self._nodes(tmp),
             )
-        self.assertIn("template", str(caught.exception))
-        self.assertEqual(run.calls, [["qm", "status", "910"], ["qm", "config", "910"]])
+        self.assertEqual(result.volid, new)
+        self.assertTrue(result.kept_template)
+        self.assertEqual(result.backup_dir, "")
+        self.assertEqual(run.calls[3], ["qm", "set", "910", "--template", "0"])
+        self.assertEqual(run.calls[6], ["qm", "set", "910", "--scsi0", f"{new},discard=on,ssd=1"])
+        self.assertEqual(run.calls[-1], ["qm", "template", "910"])
+        self.assertNotIn(["qm", "destroy", "910"], run.calls)
+        self.assertNotIn(["qm", "create", "910"], run.calls)
+
+    def test_template_backup_copies_then_replaces_the_boot_disk(self) -> None:
+        old = "NFS-SATA-SSD1:base-910-disk-0"
+        new = "NFS-SATA-SSD1:vm-910-disk-1"
+        with TemporaryDirectory() as tmp:
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, f"template: 1\nscsi0: {old}\n"),
+                    (0, "[]"),
+                    (0, "/mnt/pve/NFS/base-910-disk-0.qcow2\n"),
+                    (0, ""),
+                    (0, ""),
+                    (0, ""),
+                    (0, f"unused0: {new}\nscsi0: {old}\n"),
+                    (0, ""),
+                    (0, f"unused0: {old}\nscsi0: {new}\n"),
+                    (0, ""),
+                    (0, ""),
+                ]
+            )
+            result = insert_disk(
+                vmid=910,
+                storage=STORAGE,
+                image_path=IMAGE,
+                disk_policy="backup",
+                dry_run=False,
+                backup_dir="/var/tmp/pve-template-prep/cache",
+                run=run,
+                nodes_root=self._nodes(tmp),
+            )
+        self.assertTrue(result.kept_template)
+        self.assertEqual(result.backup_dir, "/var/tmp/pve-template-prep/cache")
+        self.assertEqual(run.calls[3], ["pvesm", "path", old])
+        self.assertEqual(run.calls[4][:4], ["qemu-img", "convert", "-O", "qcow2"])
+        self.assertEqual(run.calls[-1], ["qm", "template", "910"])
+        self.assertNotIn(["qm", "set", "910", "--scsi1", f"{new},discard=on,ssd=1"], run.calls)
+
+    def test_linked_clone_on_shared_storage_blocks_the_insert(self) -> None:
+        listing = json.dumps(
+            [
+                {
+                    "volid": "NFS-SATA-SSD1:vm-200-disk-0",
+                    "vmid": 200,
+                    "parent": "NFS-SATA-SSD1:base-910-disk-0",
+                }
+            ]
+        )
+        with TemporaryDirectory() as tmp:
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, "template: 1\nscsi0: NFS-SATA-SSD1:base-910-disk-0\n"),
+                    (0, listing),
+                ]
+            )
+            with self.assertRaises(VmError) as caught:
+                insert_disk(
+                    vmid=910,
+                    storage=STORAGE,
+                    image_path=IMAGE,
+                    disk_policy="overwrite",
+                    dry_run=False,
+                    run=run,
+                    nodes_root=self._nodes(tmp),
+                )
+        self.assertIn("VM 200", str(caught.exception))
+        self.assertIn("not changed", str(caught.exception))
+        self.assertEqual(run.calls[-1][:2], ["pvesm", "list"])
+        self.assertNotIn(["qm", "set", "910", "--template", "0"], run.calls)
+
+    def test_linked_clone_on_another_node_blocks_the_insert(self) -> None:
+        with TemporaryDirectory() as tmp:
+            nodes = self._nodes(tmp)
+            conf = nodes / "pve2" / "qemu-server" / "201.conf"
+            conf.parent.mkdir(parents=True)
+            conf.write_text("scsi0: NFS-SATA-SSD1:base-910-disk-0/vm-201-disk-0\n")
+            own = nodes / "pve1" / "qemu-server" / "910.conf"
+            own.parent.mkdir(parents=True)
+            own.write_text("template: 1\nscsi0: NFS-SATA-SSD1:base-910-disk-0\n")
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, "template: 1\nscsi0: NFS-SATA-SSD1:base-910-disk-0\n"),
+                ]
+            )
+            with self.assertRaises(VmError) as caught:
+                insert_disk(
+                    vmid=910,
+                    storage=STORAGE,
+                    image_path=IMAGE,
+                    disk_policy="overwrite",
+                    dry_run=False,
+                    run=run,
+                    nodes_root=nodes,
+                )
+        self.assertIn("VM 201 on pve2", str(caught.exception))
+        self.assertNotIn(["pvesm", "list", STORAGE, "--output-format", "json"], run.calls)
+        self.assertNotIn(["qm", "destroy", "910"], run.calls)
+
+    def test_failed_disk_swap_restores_the_template_flag(self) -> None:
+        with TemporaryDirectory() as tmp:
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, "template: 1\nscsi0: NFS-SATA-SSD1:base-910-disk-0\n"),
+                    (0, "[]"),
+                    (0, ""),
+                    (1, "import failed\n"),
+                    (0, "name: keep-me\n"),
+                    (0, ""),
+                ]
+            )
+            with self.assertRaises(VmError) as caught:
+                insert_disk(
+                    vmid=910,
+                    storage=STORAGE,
+                    image_path=IMAGE,
+                    disk_policy="overwrite",
+                    dry_run=False,
+                    run=run,
+                    nodes_root=self._nodes(tmp),
+                )
+        self.assertIn("template flag was restored", str(caught.exception))
+        self.assertEqual(run.calls[-1], ["qm", "template", "910"])
+        self.assertNotIn(["qm", "destroy", "910"], run.calls)
+
+
+class LinkedCloneTests(unittest.TestCase):
+    def test_parent_on_shared_storage_is_a_clone_on_any_node(self) -> None:
+        text = json.dumps(
+            [
+                {
+                    "volid": "NFS:vm-200-disk-0",
+                    "vmid": 200,
+                    "parent": "NFS:base-910-disk-0",
+                },
+                {"volid": "NFS:base-910-disk-0", "vmid": 910},
+            ]
+        )
+        owners = parse_linked_clone_owners(text, template_vmid=910, parent_volids=set())
+        self.assertEqual(owners, ["VM 200 (NFS:vm-200-disk-0)"])
+
+    def test_same_vmid_snapshot_is_not_a_clone(self) -> None:
+        text = json.dumps(
+            [
+                {
+                    "volid": "NFS:base-910-disk-0@snap",
+                    "vmid": 910,
+                    "parent": "NFS:base-910-disk-0",
+                }
+            ]
+        )
+        self.assertEqual(
+            parse_linked_clone_owners(text, template_vmid=910, parent_volids=set()),
+            [],
+        )
+
+    def test_longer_vmid_is_not_a_prefix_match(self) -> None:
+        text = json.dumps(
+            [
+                {
+                    "volid": "NFS:vm-1-disk-0",
+                    "vmid": 1,
+                    "parent": "NFS:base-90140-disk-0",
+                }
+            ]
+        )
+        self.assertEqual(
+            parse_linked_clone_owners(text, template_vmid=9014, parent_volids=set()),
+            [],
+        )
+
+    def test_other_node_config_names_the_base_volume(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "nodes"
+            conf = root / "pve2" / "qemu-server" / "201.conf"
+            conf.parent.mkdir(parents=True)
+            conf.write_text("scsi0: NFS:base-910-disk-0/vm-201-disk-0\n")
+            own = root / "pve1" / "qemu-server" / "910.conf"
+            own.parent.mkdir(parents=True)
+            own.write_text("template: 1\nscsi0: NFS:base-910-disk-0\n")
+            self.assertEqual(cluster_config_links(root, 910), ["VM 201 on pve2"])
+
+    def test_missing_nodes_dir_refuses_the_change(self) -> None:
+        with self.assertRaises(VmError) as caught:
+            cluster_config_links(Path("/no/such/pve/nodes"), 910)
+        self.assertIn("not changed", str(caught.exception))
+
+    def test_create_refuses_a_template_with_a_remote_clone(self) -> None:
+        with TemporaryDirectory() as tmp:
+            nodes = Path(tmp) / "nodes"
+            conf = nodes / "pve2" / "qemu-server" / "201.conf"
+            conf.parent.mkdir(parents=True)
+            conf.write_text("scsi0: store:base-910-disk-0\n")
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, "template: 1\nscsi0: store:base-910-disk-0\n"),
+                ]
+            )
+            with self.assertRaises(VmError) as caught:
+                create_template(**_create(destroy_ok=True, nodes_root=nodes, run=run))
+        self.assertIn("VM 201 on pve2", str(caught.exception))
+        self.assertNotIn(["qm", "destroy", "910"], run.calls)
 
 
 if __name__ == "__main__":

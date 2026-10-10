@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -138,6 +140,182 @@ def is_template(config_text: str) -> bool:
         token = parsed[1].split(None, 1)[0]
         return token == "1"
     return False
+
+
+_CLUSTER_NODES = Path("/etc/pve/nodes")
+_VOLUME_KEY = re.compile(
+    r"^(?:scsi|virtio|sata|ide|nvme|efidisk|tpmstate|unused)[0-9]+$"
+)
+
+
+@dataclass(frozen=True)
+class InsertResult:
+    """Where an imported disk landed.
+
+    kept_template means the guest was already a template and still is.
+    backup_dir is set when the old disk was copied into the prep cache.
+    """
+
+    volid: str
+    kept_template: bool = False
+    backup_dir: str = ""
+
+
+def _base_token(template_vmid: int) -> re.Pattern[str]:
+    # base-9014- matches. base-90140- does not.
+    return re.compile(rf"base-{template_vmid}-(?!\d)")
+
+
+def _storage_of(volid: str) -> str:
+    storage, sep, _name = volid.partition(":")
+    if not sep or not storage or "/" in storage or " " in storage:
+        return ""
+    return storage
+
+
+def _config_volids(config_text: str) -> list[str]:
+    """Volume ids named in the guest config. Cloud-init and cdrom are skipped."""
+    found: list[str] = []
+    for raw in config_text.splitlines():
+        parsed = _key_rest(raw)
+        if parsed is None:
+            continue
+        key, rest = parsed
+        if _VOLUME_KEY.fullmatch(key) is None:
+            continue
+        volid = rest.split(",", 1)[0].strip()
+        if not volid or any(marker in volid or marker in rest for marker in _SKIP_MARKERS):
+            continue
+        found.append(volid)
+    return found
+
+
+def _config_storages(config_text: str) -> list[str]:
+    storages: list[str] = []
+    seen: set[str] = set()
+    for volid in _config_volids(config_text):
+        storage = _storage_of(volid)
+        if storage and storage not in seen:
+            seen.add(storage)
+            storages.append(storage)
+    return storages
+
+
+def parse_linked_clone_owners(
+    list_json: str,
+    *,
+    template_vmid: int,
+    parent_volids: set[str],
+) -> list[str]:
+    """Guests, other than this template, whose volumes are cloned from it.
+
+    pvesm list JSON on shared storage includes volumes owned by guests on
+    other cluster nodes. A same-VMID parent is a snapshot of the template.
+    """
+    try:
+        payload = json.loads(list_json or "[]")
+    except json.JSONDecodeError as exc:
+        raise VmError(
+            f"VM {template_vmid} linked-clone list was not json; "
+            "the template was not changed"
+        ) from exc
+    if isinstance(payload, dict):
+        payload = payload.get("data", [])
+    if not isinstance(payload, list):
+        raise VmError(
+            f"VM {template_vmid} linked-clone list was not a list; "
+            "the template was not changed"
+        )
+    token = _base_token(template_vmid)
+    found: list[str] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        parent = str(item.get("parent") or "")
+        if not parent:
+            continue
+        owned = parent in parent_volids or token.search(parent) is not None
+        if not owned:
+            continue
+        owner = item.get("vmid")
+        if owner is not None and str(owner) == str(template_vmid):
+            continue
+        volid = str(item.get("volid") or parent)
+        if owner is None or str(owner).strip() == "":
+            found.append(volid)
+        else:
+            found.append(f"VM {owner} ({volid})")
+    return found
+
+
+def cluster_config_links(nodes_root: Path, template_vmid: int) -> list[str]:
+    """Other guests in the cluster whose config names this template's base volume.
+
+    Configs under /etc/pve/nodes are replicated to every node, so a linked
+    clone that lives on another cluster member is visible here.
+    """
+    if not nodes_root.is_dir():
+        raise VmError(
+            f"VM {template_vmid} linked-clone check cannot read {nodes_root}; "
+            "the template was not changed"
+        )
+    token = _base_token(template_vmid)
+    found: list[str] = []
+    for conf in sorted(nodes_root.glob("*/qemu-server/*.conf")):
+        if conf.is_symlink() or not conf.is_file():
+            continue
+        if conf.stem == str(template_vmid):
+            continue
+        try:
+            text = conf.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise VmError(
+                f"VM {template_vmid} linked-clone check cannot read {conf}; "
+                "the template was not changed"
+            ) from exc
+        if token.search(text) is None:
+            continue
+        node = conf.parent.parent.name
+        found.append(f"VM {conf.stem} on {node}")
+    return found
+
+
+def _nodes_root(nodes_root: Path | None) -> Path:
+    if nodes_root is None:
+        return _CLUSTER_NODES
+    return Path(nodes_root)
+
+
+def _refuse_linked_clones(
+    run: Run,
+    vmid: int,
+    config_text: str,
+    nodes_root: Path | None,
+) -> None:
+    """Raise before any change when a linked clone exists anywhere in the cluster."""
+    hits = cluster_config_links(_nodes_root(nodes_root), vmid)
+    if hits:
+        shown = ", ".join(dict.fromkeys(hits))
+        raise VmError(f"VM {vmid} has linked clones ({shown}); the template was not changed")
+    parent_volids = set(_config_volids(config_text))
+    for storage in _config_storages(config_text):
+        listed = run(["pvesm", "list", storage, "--output-format", "json"])
+        if getattr(listed, "returncode", 1) != 0:
+            raise VmError(
+                f"VM {vmid} linked-clone check failed for {storage}; "
+                f"the template was not changed: {_detail(listed)}"
+            )
+        hits.extend(
+            parse_linked_clone_owners(
+                getattr(listed, "stdout", "") or "",
+                template_vmid=vmid,
+                parent_volids=parent_volids,
+            )
+        )
+    if not hits:
+        return
+    shown = ", ".join(dict.fromkeys(hits))
+    raise VmError(f"VM {vmid} has linked clones ({shown}); the template was not changed")
 
 
 def boot_devices(config_text: str) -> list[str] | None:
@@ -531,11 +709,13 @@ def create_template(
     backup_disks: bool = False,
     backup_dir: str = "",
     make_template: bool = True,
+    nodes_root: Path | None = None,
 ) -> str:
     """Create a cloud VM via run, or print qm commands when dry_run is set.
 
     An existing stopped VM is destroyed first when destroy_ok is set, template
     or not. backup_disks copies OS disks into backup_dir before that destroy.
+    A template that has linked clones, on this node or another, is not destroyed.
     make_template runs qm template after the disk is attached.
     """
     guessed = f"{storage}:vm-{vmid}-disk-0"
@@ -559,6 +739,7 @@ def create_template(
                 f"# qm destroy {vmid}  "
                 "# only if this VMID exists and is stopped"
             )
+            print("# a template with linked clones on any cluster node is left unchanged")
         for cmd in planned:
             print(" ".join(cmd))
         return guessed
@@ -573,14 +754,17 @@ def create_template(
             raise VmError(f"VM {vmid} already exists")
         if state != "stopped":
             raise VmError(f"VM {vmid} status {state or 'unknown'} cannot be replaced")
+        cfg = run(["qm", "config", str(vmid)])
+        if getattr(cfg, "returncode", 1) != 0:
+            raise VmError(f"VM {vmid} config failed: {_detail(cfg)}")
+        config_text = getattr(cfg, "stdout", "") or ""
+        if is_template(config_text):
+            _refuse_linked_clones(run, vmid, config_text, nodes_root)
         if backup_disks:
-            cfg = run(["qm", "config", str(vmid)])
-            if getattr(cfg, "returncode", 1) != 0:
-                raise VmError(f"VM {vmid} config failed: {_detail(cfg)}")
             _backup_os_disks(
                 run,
                 vmid=vmid,
-                config_text=getattr(cfg, "stdout", "") or "",
+                config_text=config_text,
                 backup_dir=backup_dir,
             )
         _must(run, ["qm", "destroy", str(vmid)], vmid=vmid, destroyed=False)
@@ -611,6 +795,83 @@ def create_template(
     return volid
 
 
+def _overwrite_boot_disk(
+    run: Run,
+    *,
+    vmid: int,
+    storage: str,
+    image_path: str,
+    config_text: str,
+) -> str:
+    """Import image_path and point the boot disk at it. The old volume is deleted."""
+    current = select_boot_disk(config_text)
+    volid = _import_volume(
+        run,
+        vmid=vmid,
+        image_path=image_path,
+        storage=storage,
+        created_now=False,
+        destroyed=False,
+    )
+    attached = f"{volid},discard=on,ssd=1"
+    if current is not None:
+        bus, old_volid = current
+        _must(run, ["qm", "set", str(vmid), f"--{bus}", attached], vmid=vmid, destroyed=False)
+        _delete_unused_volid(run, vmid=vmid, volid=old_volid)
+        return volid
+    slot = next_scsi_index(config_text)
+    _must(run, ["qm", "set", str(vmid), f"--scsi{slot}", attached], vmid=vmid, destroyed=False)
+    return volid
+
+
+def _replace_template_disk(
+    run: Run,
+    *,
+    vmid: int,
+    storage: str,
+    image_path: str,
+    disk_policy: str,
+    config_text: str,
+    backup_dir: str,
+) -> InsertResult:
+    """Swap the boot disk and leave the guest a template.
+
+    The template flag is cleared only for the disk edit, then qm template
+    puts it back and turns the new disk into a base volume. Name, network,
+    firewall, and the other options are not rewritten.
+    """
+    saved = ""
+    if disk_policy == "backup" and list_os_disks(config_text):
+        if not backup_dir:
+            raise VmError(f"VM {vmid} disk backup needs a cache directory")
+        _backup_os_disks(
+            run,
+            vmid=vmid,
+            config_text=config_text,
+            backup_dir=backup_dir,
+        )
+        saved = backup_dir
+    _must(run, ["qm", "set", str(vmid), "--template", "0"], vmid=vmid, destroyed=False)
+    try:
+        volid = _overwrite_boot_disk(
+            run,
+            vmid=vmid,
+            storage=storage,
+            image_path=image_path,
+            config_text=config_text,
+        )
+    except VmError as exc:
+        restored = run(["qm", "template", str(vmid)])
+        if getattr(restored, "returncode", 1) != 0:
+            raise VmError(f"{exc}; the template flag could not be restored") from exc
+        raise VmError(f"{exc}; the template flag was restored") from exc
+    try:
+        _must(run, ["qm", "template", str(vmid)], vmid=vmid, destroyed=False)
+    except VmError as exc:
+        raise VmError(f"{exc}; the VM is no longer a template") from exc
+    return InsertResult(volid, kept_template=True, backup_dir=saved)
+
+
 def insert_disk(
     *,
     vmid: int,
@@ -619,12 +880,19 @@ def insert_disk(
     disk_policy: str,
     dry_run: bool,
     run: Run,
-) -> str:
-    """Import a disk into a stopped VM. The VM itself is not replaced.
+    backup_dir: str = "",
+    nodes_root: Path | None = None,
+) -> InsertResult:
+    """Import a disk into a stopped guest. The guest config is not replaced.
 
-    backup leaves the current OS disk in place and attaches the new one on
-    the next scsi slot. overwrite replaces the boot disk and deletes the old
-    volume. A template is refused.
+    On a normal VM, backup leaves the current OS disk attached and adds the
+    new one on the next scsi slot. overwrite replaces the boot disk and
+    deletes the old volume.
+
+    On a template, the boot disk is replaced and the template flag is kept.
+    backup copies the old disk into backup_dir instead of leaving it attached.
+    A template with linked clones, including clones on other cluster nodes,
+    is not changed.
     """
     if disk_policy not in {"backup", "overwrite"}:
         raise VmError(f"unknown disk policy {disk_policy}")
@@ -641,7 +909,12 @@ def insert_disk(
                 f"# qm set {vmid} --<boot-disk> {guessed},discard=on,ssd=1  "
                 "# previous disk is deleted"
             )
-        return guessed
+        print(
+            f"# a template keeps its config: qm set {vmid} --template 0, "
+            "replace the boot disk, qm template. "
+            "Linked clones on any cluster node leave the template unchanged."
+        )
+        return InsertResult(guessed)
 
     status = run(["qm", "status", str(vmid)])
     if getattr(status, "returncode", 1) != 0:
@@ -656,8 +929,25 @@ def insert_disk(
         raise VmError(f"VM {vmid} config failed: {_detail(cfg)}")
     config_text = getattr(cfg, "stdout", "") or ""
     if is_template(config_text):
-        raise VmError(f"VM {vmid} is a template; insert does not replace a template")
-    current = select_boot_disk(config_text)
+        _refuse_linked_clones(run, vmid, config_text, nodes_root)
+        return _replace_template_disk(
+            run,
+            vmid=vmid,
+            storage=storage,
+            image_path=image_path,
+            disk_policy=disk_policy,
+            config_text=config_text,
+            backup_dir=backup_dir,
+        )
+    if disk_policy == "overwrite":
+        volid = _overwrite_boot_disk(
+            run,
+            vmid=vmid,
+            storage=storage,
+            image_path=image_path,
+            config_text=config_text,
+        )
+        return InsertResult(volid)
     volid = _import_volume(
         run,
         vmid=vmid,
@@ -667,14 +957,9 @@ def insert_disk(
         destroyed=False,
     )
     attached = f"{volid},discard=on,ssd=1"
-    if disk_policy == "overwrite" and current is not None:
-        bus, old_volid = current
-        _must(run, ["qm", "set", str(vmid), f"--{bus}", attached], vmid=vmid, destroyed=False)
-        _delete_unused_volid(run, vmid=vmid, volid=old_volid)
-        return volid
     slot = next_scsi_index(config_text)
     _must(run, ["qm", "set", str(vmid), f"--scsi{slot}", attached], vmid=vmid, destroyed=False)
-    return volid
+    return InsertResult(volid)
 
 
 def existing_prep_commands(

@@ -192,8 +192,14 @@ def _file_done(label: str, dest: Path, result) -> str:
     return sentence
 
 
-def _import_done(label: str, vmid: int, policy: str) -> str:
+def _import_done(label: str, vmid: int, policy: str, result) -> str:
     sentence = f"{label} VM disk image created and imported"
+    if getattr(result, "kept_template", False):
+        sentence += f". Template {vmid} kept"
+        saved = str(getattr(result, "backup_dir", "") or "")
+        if saved:
+            return f"{sentence}. Old disk saved in {saved}."
+        return f"{sentence}. Previous disk deleted."
     if policy == "backup":
         return f"{sentence}. Previous disk is still attached to VM {vmid}."
     return f"{sentence}. Previous disk deleted."
@@ -236,15 +242,16 @@ def _run_fetched(job: Job, release: str, vmid: int | None) -> str:
         return _file_done(label, dest, publish(work, dest, job.collision, dry_run=job.dry_run))
     if inserts:
         policy = "backup" if vmid in job.backup_vmids else "overwrite"
-        insert_disk(
+        inserted = insert_disk(
             vmid=vmid,
             storage=job.storage,
             image_path=str(work),
             disk_policy=policy,
             dry_run=job.dry_run,
+            backup_dir=job.cache_dir,
             run=default_run,
         )
-        return _import_done(label, vmid, policy)
+        return _import_done(label, vmid, policy, inserted)
     create_template(
         vmid=vmid,
         name=vm_name(job.distro, release),

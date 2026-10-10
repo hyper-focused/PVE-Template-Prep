@@ -420,8 +420,18 @@ def _ask_each_disk(read_line, write, vmids: tuple[int, ...], vm_has_disks, *, re
     write("\n")
     if replacing:
         _say(read_line, write, "If you continue, those VMs will be permanently deleted.\n", "danger")
+        write(
+            "A template that has linked clones is left unchanged, "
+            "including clones on other cluster nodes.\n"
+        )
     else:
         write("The VM stays. The new disk is inserted.\n")
+        write(
+            "A template keeps its config and gets a new boot disk. "
+            "Backup copies that old disk into the cache instead of leaving it attached. "
+            "A template with linked clones is left unchanged, "
+            "including clones on other cluster nodes.\n"
+        )
     backups: list[int] = []
     for vmid in vmids:
         present = vm_has_disks(vmid)
@@ -473,7 +483,8 @@ def _ask_each_disk(read_line, write, vmids: tuple[int, ...], vm_has_disks, *, re
             _confirm_delete(
                 read_line,
                 write,
-                f"The existing disk on VMID {vmid} will be deleted. The VM stays.",
+                f"The existing disk on VMID {vmid} will be deleted. The VM stays. "
+                "A template stays a template.",
             )
     return frozenset(backups)
 

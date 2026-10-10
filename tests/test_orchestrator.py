@@ -324,6 +324,19 @@ class OrchestratorTest(unittest.TestCase):
             "\n\nDebian 12 VM disk image created and imported. Previous disk deleted.\n",
             buf.getvalue(),
         )
+        kept_template = SimpleNamespace(
+            volid="dir-templates:vm-910-disk-1",
+            kept_template=True,
+            backup_dir="",
+        )
+        MOD.insert_disk = mock.MagicMock(return_value=kept_template)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            MOD.run_one(replaced, "12", 910)
+        self.assertIn(
+            "Template 910 kept. Previous disk deleted.",
+            buf.getvalue(),
+        )
 
     def test_main_continues_after_second_release_fails(self) -> None:
         job = _image_job(dry_run=True, prep=True)

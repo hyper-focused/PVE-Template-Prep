@@ -57,6 +57,7 @@ Releases are a checkbox: space marks one, and one to three are allowed. VMIDs, `
 7. Disks that are already there, asked once per VMID.
    - Template: **the VM will be deleted.** `1` copies the disk into the cache first. `2` does not. `2` then requires `DELETE`. `X` exits. A VM with no OS disk skips the backup menu and still requires `DELETE`.
    - Disk image: the VM stays. `1` keeps the old disk and attaches the new one. `2` deletes the old disk, after `DELETE`.
+   - That VMID is a template: the config stays and the boot disk is replaced. `1` copies the old disk into the cache. It is not left attached. **A template with linked clones is not changed**, including clones on other nodes.
    - A published file that already exists is renamed aside. That path does not ask.
 8. Guest prep. The prompt says what it changes. Enter means yes. `n` skips `virt-customize`.
 9. Template mode: the hardware that will be applied, then bridge, memory, and cores. Enter keeps `vmbr0`, 2048 MB, and 2 cores. `n` asks for those three. Machine type is `q35`. CPU type is `x86-64-v2-AES`. SCSI type, serial console, cloud-init, and the rest are listed and can be changed later with `qm set`.
@@ -66,9 +67,11 @@ Releases are a checkbox: space marks one, and one to three are allowed. VMIDs, `
 
 ## What the three products do
 
-**Image.** Download, optionally customize, and write `<distro>-<release>-pve.img` or `.qcow2` into the directory you named. Needs `qemu-img`. Does not need `qm` unless you typed an existing VMID. The directory is a filesystem path. A ZFS or LVM storage id will not do, however convincing the GUI is about it. An existing VMID keeps that VM and gets the new disk inserted. A template VM is refused.
+**Image.** Download, optionally customize, and write `<distro>-<release>-pve.img` or `.qcow2` into the directory you named. Needs `qemu-img`. Does not need `qm` unless you typed an existing VMID. The directory is a filesystem path. A ZFS or LVM storage id will not do, however convincing the GUI is about it. An existing VMID keeps that VM and gets the new disk inserted.
 
-**Template.** Customize the downloaded image while it is still a file, then `qm importdisk` into the storage you named. Any storage that accepts `images` works, including ZFS and LVM. Those volumes are raw. `qcow2` stays sparse on the cache disk until import. `raw` expands there first, a second full copy before the import. The cache disk has to hold it. The guest name is `<distro>-<release>-cloud`. Enter on the conversion question runs `qm template`. `n` leaves a normal VM with the same disk, cloud-init drive, and boot order. Needs `qemu-img`, `qm`, and `pvesm`. Guest prep also needs `virt-customize`.
+A template VMID is how you refresh a template without rebuilding it. Firewall, options, and the rest of the config stay. The boot disk is replaced, and the guest is still a template when it is done. **Linked clones block that.** A clone on another node counts when the disk is on shared storage. If the clone check cannot be read, the template is left alone.
+
+**Template.** Customize the downloaded image while it is still a file, then `qm importdisk` into the storage you named. Any storage that accepts `images` works, including ZFS and LVM. Those volumes are raw. `qcow2` stays sparse on the cache disk until import. `raw` expands there first, a second full copy before the import. The cache disk has to hold it. The guest name is `<distro>-<release>-cloud`. Enter on the conversion question runs `qm template`. `n` leaves a normal VM with the same disk, cloud-init drive, and boot order. This path builds a new VM. It does not keep the old firewall and options. A template that already has linked clones is not destroyed. Needs `qemu-img`, `qm`, and `pvesm`. Guest prep also needs `virt-customize`.
 
 **Existing.** No download. The VM must be stopped, and it must not already be a template. Prep runs on the OS disk in place, so `pvesm path` has to be a regular file. A zvol or an LVM volume is refused. libguestfs does not get to improvise on a block device. Needs `qm`, `pvesm`, and, if prep is on, `virt-customize`. Does not need `qemu-img`.
 
@@ -80,7 +83,9 @@ Enter never lands on a VMID that is already in use. Replacing one means you type
 
 Template mode replaces the whole VM, template or not, after the new image is downloaded and prepped. The VM has to be stopped. A running VM is left alone. Each in-use VMID is asked on its own. Backup copies that OS disk into the cache with `qemu-img convert` before `qm destroy`. Skipping the backup requires typing `DELETE`. `X` exits. If that destroy succeeds and the replacement does not finish, the run stops. **The download is kept in that case**, even when you asked to delete it. The disk backup is kept either way. Cleanup does not remove it.
 
-Disk-image mode does not destroy the VM. Backup attaches the new disk on the next free scsi slot and leaves the old disk attached. It does not copy the old disk anywhere else. Overwrite replaces the boot disk and deletes the previous volume. Existing mode never destroys a VM and never inserts a downloaded image.
+**A template with linked clones is not destroyed, and its disk is not replaced.** Clones on other cluster nodes count. Shared storage is where those show up. The check reads every guest config under `/etc/pve/nodes` and the storage volume list. If either one cannot be read, the template is left alone.
+
+Disk-image mode does not destroy the VM. On a normal VM, backup attaches the new disk on the next free scsi slot and leaves the old disk attached. It does not copy the old disk anywhere else. Overwrite replaces the boot disk and deletes the previous volume. On a template, the boot disk is replaced and the rest of the config stays. Backup copies the old disk into the cache first. Existing mode never destroys a VM, never inserts a downloaded image, and does not prep a template.
 
 The confirm screen lists every VMID that will be replaced, plus bridge, memory, and cores. Read it. `YES` is the whole safety interlock.
 
