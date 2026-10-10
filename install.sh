@@ -20,6 +20,7 @@ MODULES=(
   job.py
   prompts.py
   ui.py
+  update.py
   vm.py
 )
 
@@ -189,7 +190,7 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 paths = [root / "pve-template-prep.py", *sorted((root / "pve_prep").glob("*.py"))]
-if len(list((root / "pve_prep").glob("*.py"))) != 9:
+if len(list((root / "pve_prep").glob("*.py"))) != 10:
     raise SystemExit("pve_prep is missing modules")
 vendor = root / "vendor"
 paths.extend(sorted(vendor.rglob("*.py")))

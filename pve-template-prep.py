@@ -8,10 +8,12 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
 from pve_prep import __version__
+from pve_prep import update as tool_update
 from pve_prep.build import opening, prep_existing, run_fetched
 from pve_prep.catalog import normalize_release, releases_for
 from pve_prep.customize import apply as customize_apply
@@ -272,6 +274,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     print(f"{parser.prog} {__version__}")
+    failed_update = _consider_update(Path(__file__).resolve())
+    if failed_update:
+        return failed_update
     try:
         job = interview(
             arm(_read_line),
@@ -311,6 +316,57 @@ def main(argv: list[str] | None = None) -> int:
     if _clear_requested_cache(job, failed):
         failed = True
     return 1 if failed else 0
+
+
+def _consider_update(script: Path) -> int | None:
+    """Offer a newer main. None continues. 1 means the install did not finish.
+
+    A checkout, a skipped check, and a failed lookup do not ask. Enter keeps
+    this copy. Yes replaces the install directory and restarts this command.
+    """
+    if os.environ.get("PVE_PREP_SKIP_UPDATE") == "1":
+        return None
+    if tool_update.is_checkout(script):
+        return None
+    remote = tool_update.fetch_version()
+    if remote is None or not tool_update.is_newer(__version__, remote):
+        return None
+    print(tool_update.notice(__version__, remote))
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if not interactive:
+        return None
+    print("Fetch it now? [y/N]")
+    try:
+        answer = input()
+    except EOFError:
+        return None
+    if not tool_update.wants_fetch(answer):
+        return None
+    if os.geteuid() != 0:
+        print("Run as root to update. Continuing with this version.")
+        return None
+    work = Path(tempfile.mkdtemp(prefix="pve-prep-update-"))
+    try:
+        try:
+            proc = subprocess.run(
+                tool_update.install_argv(work / "install.sh", script.parent)
+            )
+        except OSError as exc:
+            print(f"update failed: {exc}")
+            return 1
+        if proc.returncode != 0:
+            print("update failed")
+            return 1
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    # One restart. The new process does not ask again during this handoff.
+    os.environ["PVE_PREP_SKIP_UPDATE"] = "1"
+    try:
+        os.execv(sys.executable, [sys.executable, str(script), *sys.argv[1:]])
+    except OSError as exc:
+        print(f"Updated, but the new copy did not start: {exc}")
+        return 1
+    return None
 
 
 def _read_line() -> str:

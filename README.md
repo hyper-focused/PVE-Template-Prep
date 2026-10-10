@@ -28,7 +28,7 @@ Somewhere else: `DEST=/somewhere bash install.sh`, or `sudo DEST=/somewhere bash
 
 `sudo` only has to set the effective uid to 0. `qm`, `pvesm`, `qemu-img`, and `virt-customize` are children of that process and stay root. They do not need their own sudoers rules. A `NOEXEC` tag on the sudoers command blocks them, and then nothing interesting happens.
 
-`pve-template-prep --version` prints the release and exits. A run prints that same line before the first question. Each release then prints a cyan line naming what it is building, the green virt-customize output with a blank line on either side, and a white line naming what finished.
+`pve-template-prep --version` prints the release and exits. It does not look for a newer copy. A run prints that same line, then an installed copy checks `main`. The check reads the version string and sends nothing else. A newer version asks `Fetch it now? [y/N]`. Enter keeps this copy. `y` runs `install.sh` into this install directory and starts that version. That includes a patch bump: a release added, a release removed, or a bugfix. A git checkout does not ask. If GitHub cannot be read, the questions start anyway. `PVE_PREP_SKIP_UPDATE=1` skips the check. Each release then prints a cyan line naming what it is building, the green virt-customize output with a blank line on either side, and a white line naming what finished.
 
 `--dry-run` asks the same questions and prints the commands. It does not need root, and it does not download or change the host. There are no distro or release flags. The questions are the interface. Run the dry-run before the real one.
 
@@ -36,7 +36,7 @@ Downloads land in `/var/tmp/pve-template-prep/cache`, mode `0700`, owned by root
 
 ## What it asks
 
-Each question says what that step does before it asks. Empty input accepts the default when the question shows one. A wrong answer asks that question again. The last line is `Type YES`. `YES` or `yes` starts the run. `X` or `no` exits. Nothing on the host has changed until that YES.
+Each question says what that step does before it asks. Empty input accepts the default when the question shows one. A wrong answer asks that question again. The last line is `Type YES`. `YES` or `yes` starts the run. `X` or `no` exits. Nothing on the host has been built until that YES. The update question, when it appears, is earlier, and yes replaces this install before these questions.
 
 On a terminal the same questions are menus, colored for a dark background with the 16 ANSI colors. A header is green, the explanation under it is white, then a green line, then the choices in cyan. The current row is a cyan background with black text. The question label is bright black, and `(Y/n)` is white. Arrow keys move, a number highlights that row, and Enter accepts it. The Enter default is the first row. Moving the pointer does not leave that row painted as the selection. Red is only the "do not back up" row and a sentence that says a VM will be deleted. If the text is red, it is load-bearing.
 
