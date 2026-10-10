@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 DEFAULT_CACHE = "/var/tmp/pve-template-prep/cache"
 
 _MIN_VMID = 100
 _MAX_VMID = 999_999_999
-_RANGE_RE = re.compile(r"(\d+)\s*-\s*(\d+)")
 
 
 @dataclass(frozen=True)
@@ -35,6 +33,8 @@ class Job:
     make_template: bool = False
     # Delete the prep-cache children after every release succeeds. Never on failure.
     clean_cache: bool = False
+    # Image-mode VMIDs created as new templates instead of receiving a disk.
+    template_vmids: frozenset[int] = frozenset()
 
 
 def published_name(distro: str, release: str, disk_format: str) -> str:
@@ -64,51 +64,39 @@ def _parse_id(token: str) -> int:
     return value
 
 
-def _reject_dupes(ids: list[int]) -> tuple[int, ...]:
-    seen: set[int] = set()
-    for value in ids:
-        if value in seen:
-            raise ValueError(f"duplicate VMID {value}")
-        seen.add(value)
-    return tuple(ids)
+def action_for(job: Job, vmid: int | None) -> str:
+    """Which build function this release calls.
 
-
-def parse_vmids(text: str, count: int) -> tuple[int, ...]:
-    """Accept:
-
-    - one integer: start, then start+1 ... until count IDs (auto-increment)
-    - comma and/or whitespace separated list whose length == count
-    - inclusive range A-B (single span) whose length == count
-
-    Reject count<1, IDs < 100 (PVE reserves low IDs; use 100 as minimum),
-    IDs > 999999999, duplicates, and length mismatch. Raise ValueError with
-    a short reason.
+    file, insert, template, or existing. Image mode can create a template
+    for a VMID that was not in use. The other releases keep their own action.
     """
-    if count < 1:
-        raise ValueError("need at least one VMID")
+    if job.mode == "existing":
+        return "existing"
+    if job.mode == "template":
+        return "template"
+    if job.mode != "image":
+        raise ValueError(f"unknown mode {job.mode}")
+    if vmid is not None and vmid in job.template_vmids:
+        return "template"
+    if vmid is None:
+        return "file"
+    return "insert"
+
+
+def converts_to_template(job: Job, vmid: int | None) -> bool:
+    """True when this release ends as a PVE template."""
+    if action_for(job, vmid) != "template":
+        return False
+    if vmid is not None and vmid in job.template_vmids:
+        return True
+    return job.make_template
+
+
+def parse_vmid(text: str) -> int:
+    """One VMID. Lists, ranges, and counting up are not accepted."""
     raw = text.strip()
     if not raw:
-        raise ValueError("VMID list is empty")
-
-    match = _RANGE_RE.fullmatch(raw)
-    if match:
-        start = _parse_id(match.group(1))
-        end = _parse_id(match.group(2))
-        if end < start:
-            raise ValueError("range is reversed")
-        span = end - start + 1
-        if span != count:
-            raise ValueError(f"range length {span} != {count}")
-        return tuple(range(start, end + 1))
-
-    parts = [part for part in re.split(r"[,\s]+", raw) if part]
-    if len(parts) == 1:
-        start = _parse_id(parts[0])
-        ids = [start + offset for offset in range(count)]
-        for value in ids:
-            if value > _MAX_VMID:
-                raise ValueError(f"VMID {value} is above {_MAX_VMID}")
-        return tuple(ids)
-    if len(parts) != count:
-        raise ValueError(f"got {len(parts)} VMIDs, need {count}")
-    return _reject_dupes([_parse_id(part) for part in parts])
+        raise ValueError("VMID is empty")
+    if not raw.isdigit():
+        raise ValueError("type one VMID")
+    return _parse_id(raw)

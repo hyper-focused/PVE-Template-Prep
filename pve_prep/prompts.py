@@ -15,7 +15,7 @@ from pve_prep.catalog import DISTROS
 from pve_prep.job import (
     DEFAULT_CACHE,
     Job,
-    parse_vmids,
+    parse_vmid,
     published_name,
     vm_name,
 )
@@ -352,39 +352,29 @@ def _ask_directory(read_line, write) -> str:
         write("directory is required\n")
 
 
-def _format_ids(ids: tuple[int, ...]) -> str:
-    if not ids:
-        return ""
-    if len(ids) == 1:
-        return str(ids[0])
-    if list(ids) == list(range(ids[0], ids[0] + len(ids))):
-        return f"{ids[0]}-{ids[-1]}"
-    return ", ".join(str(vmid) for vmid in ids)
+def _next_free(vmids_in_use, reserved: set[int]) -> tuple[int | None, bool]:
+    """Next VMID from 9001 that is not reserved.
 
-
-def _free_defaults(count: int, vmids_in_use) -> tuple[int, ...] | None:
-    """Next free VMIDs from 9001.
-
-    None means the probe cannot see the host. () means the window was full.
+    (id, True) is free. (id, False) could not be checked.
+    (None, True) means the probe window was full.
     """
-    found: list[int] = []
     start = DEFAULT_VMID
     scanned = 0
-    while len(found) < count and scanned < _PROBE_LIMIT:
+    while scanned < _PROBE_LIMIT:
         window = tuple(range(start, start + _PROBE_BATCH))
         scanned += len(window)
         start += _PROBE_BATCH
         occupied = vmids_in_use(window)
         if occupied is None:
-            return None
+            for vmid in range(DEFAULT_VMID, DEFAULT_VMID + _PROBE_LIMIT):
+                if vmid not in reserved:
+                    return vmid, False
+            return None, False
+        blocked = set(occupied) | reserved
         for vmid in window:
-            if vmid not in occupied:
-                found.append(vmid)
-            if len(found) == count:
-                return tuple(found)
-    if len(found) == count:
-        return tuple(found)
-    return ()
+            if vmid not in blocked:
+                return vmid, True
+    return None, True
 
 
 def _occupied(vmids: tuple[int, ...], vmids_in_use) -> set[int] | None:
@@ -412,7 +402,22 @@ def _confirm_delete(read_line, write, detail: str) -> None:
         write("type DELETE to proceed, or X to exit\n")
 
 
-def _ask_each_disk(read_line, write, vmids: tuple[int, ...], vm_has_disks, *, replacing: bool) -> frozenset[int]:
+def _disk_title(vmid: int, names: dict[int, str] | None) -> str:
+    label = (names or {}).get(vmid, "")
+    if label:
+        return f"{label}, VMID {vmid}"
+    return f"VMID {vmid}"
+
+
+def _ask_each_disk(
+    read_line,
+    write,
+    vmids: tuple[int, ...],
+    vm_has_disks,
+    *,
+    replacing: bool,
+    names: dict[int, str] | None = None,
+) -> frozenset[int]:
     """Per VMID: backup, or DELETE to drop the disk. Returns VMIDs to back up."""
     if ui.enabled(read_line):
         _blank(write)
@@ -435,17 +440,18 @@ def _ask_each_disk(read_line, write, vmids: tuple[int, ...], vm_has_disks, *, re
     backups: list[int] = []
     for vmid in vmids:
         present = vm_has_disks(vmid)
+        title = _disk_title(vmid, names)
         if present is False:
             if replacing:
                 _say(
                     read_line,
                     write,
-                    f"VMID {vmid} has no OS disk. The VM will still be deleted.\n",
+                    f"{title} has no OS disk. The VM will still be deleted.\n",
                     "danger",
                 )
                 _confirm_delete(read_line, write, f"All data for VMID {vmid} will be removed.")
             else:
-                write(f"VMID {vmid} has no OS disk. The new image is inserted.\n")
+                write(f"{title} has no OS disk. The new image is inserted.\n")
             continue
         if replacing:
             keep = "Back up the existing template VM disk"
@@ -455,15 +461,15 @@ def _ask_each_disk(read_line, write, vmids: tuple[int, ...], vm_has_disks, *, re
             drop = "Do not back up the existing VM disk"
         if ui.enabled(read_line):
             _blank(write)
-            write(f"VMID {vmid}\n")
+            write(f"{title}\n")
             choice = _pick(
                 read_line,
                 write,
-                f"VMID {vmid}",
+                title,
                 [(keep, "backup"), (drop, "overwrite", True)],
             )
         else:
-            write(f"VMID {vmid}:\n")
+            write(f"{title}:\n")
             write(f"  1) {keep}\n")
             write(f"  2) {_danger(drop)}\n")
             choice = _ask_choice(
@@ -489,144 +495,242 @@ def _ask_each_disk(read_line, write, vmids: tuple[int, ...], vm_has_disks, *, re
     return frozenset(backups)
 
 
-def _parse_vmid_line(
-    read_line,
-    write,
-    count: int,
-    prompt: str,
-    *,
-    default: str = "",
-) -> tuple[int, ...] | None:
-    raw = _ask_text(read_line, write, prompt, default=default)
-    if not raw:
-        return None
-    try:
-        return parse_vmids(raw, count)
-    except ValueError as exc:
-        write(f"{exc}\n")
-        return ()
+def _named_releases(distro: str, releases: tuple[str, ...], releases_for):
+    specs = {str(spec.release): spec for spec in releases_for(distro)}
+    named = []
+    for release in releases:
+        spec = specs.get(release)
+        label = ""
+        if spec is not None:
+            label = str(getattr(spec, "label", "") or "").strip()
+        named.append((release, label or release))
+    return tuple(named)
 
 
-def _ask_template_vmids(read_line, write, count: int, vmids_in_use, vm_has_disks):
-    """Return (vmids, destroy set, backup set).
+def _unchecked_default(reserved: set[int]) -> int | None:
+    for vmid in range(DEFAULT_VMID, DEFAULT_VMID + _PROBE_LIMIT):
+        if vmid not in reserved:
+            return vmid
+    return None
 
-    Empty input uses the next free IDs from 9001. A typed ID that is already
-    in use replaces that whole VM. Each such VMID is asked about its disk.
-    """
-    defaults = _free_defaults(count, vmids_in_use)
-    unknown = defaults is None
-    if unknown:
-        defaults = tuple(DEFAULT_VMID + offset for offset in range(count))
-    shown = _format_ids(defaults) if defaults else ""
-    label = "VMID" if count == 1 else "VMIDs"
+
+def _read_one_vmid(read_line, write, prompt: str, *, default: str = "") -> int | None:
+    """One VMID, or None when the line is empty. A bad line asks again."""
+    while True:
+        raw = _ask_text(read_line, write, prompt, default=default)
+        if not raw:
+            return None
+        try:
+            return parse_vmid(raw)
+        except ValueError as exc:
+            write(f"{exc}\n")
+
+
+def _already_used(names: dict[int, str], vmid: int, write) -> bool:
+    owner = names.get(vmid)
+    if owner is None:
+        return False
+    write(f"VMID {vmid} is already assigned to {owner}.\n")
+    return True
+
+
+def _template_intro(read_line, write, label: str, default: int | None, checked: bool) -> None:
     if ui.enabled(read_line):
         _blank(write)
+    _say(read_line, write, f"Provide a VMID for {label}.\n", "header")
+    if default is None:
+        write(f"No free VMID from {DEFAULT_VMID} in the next {_PROBE_LIMIT} IDs.\n")
+    elif checked:
+        write(f"If none is entered, {default} is assigned.\n")
+    else:
+        write(f"If none is entered, {default} is assigned.\n")
+        write("Could not check which VMIDs are free. An existing VM will not be replaced.\n")
+        return
     _say(
         read_line,
         write,
-        f"Select the {label} you would like to assign ({count} required).\n",
-        "header",
+        "If that VMID is in use, the existing VM is deleted and replaced.\n",
+        "danger",
     )
-    write("\n")
-    if unknown:
-        write(
-            "Could not check which VMIDs are free. "
-            f"Press enter to accept {shown}. An existing VM will not be replaced.\n"
-        )
-    elif not defaults:
-        write(
-            f"No {count} free VMID(s) from {DEFAULT_VMID} "
-            f"in the next {_PROBE_LIMIT} IDs.\n"
-            f"Specify {count} VMIDs separated by commas, spaces, or as a range.\n"
-        )
-    else:
-        write(
-            f"Press enter to accept the {label} below, or specify {count} "
-            "separated by commas, spaces, or as a range.\n"
-        )
-        _say(read_line, write, "An ID that is already in use replaces that VM.\n", "danger")
-    while True:
-        prompt = f"VMID [{shown}]: " if shown else "VMID: "
-        parsed = _parse_vmid_line(read_line, write, count, prompt, default=shown or "")
-        if parsed is None:
-            if not defaults:
-                write("VMID list is empty\n")
+    write("A template with linked clones is left unchanged.\n")
+
+
+def _ask_template_vmids(read_line, write, named, vmids_in_use, vm_has_disks):
+    """One VMID per release. Enter takes the next free ID from 9001."""
+    chosen: list[int] = []
+    destroy: list[int] = []
+    names: dict[int, str] = {}
+    host_known = True
+    for _release, label in named:
+        while True:
+            if host_known:
+                default, checked = _next_free(vmids_in_use, set(names))
+                if not checked:
+                    host_known = False
+            else:
+                default, checked = _unchecked_default(set(names)), False
+            _template_intro(read_line, write, label, default, checked)
+            prompt = f"VMID [{default}]: " if default is not None else "VMID: "
+            filled = str(default) if default is not None else ""
+            vmid = _read_one_vmid(read_line, write, prompt, default=filled)
+            if vmid is None:
+                if default is None:
+                    write("VMID is required\n")
+                    continue
+                vmid = default
+            if _already_used(names, vmid, write):
                 continue
-            vmids = defaults
-        elif parsed == ():
-            continue
-        else:
-            vmids = parsed
-        occupied = _occupied(vmids, vmids_in_use)
-        if occupied is None:
-            write("Could not check those VMIDs. An existing VM will not be replaced.\n")
-            return vmids, frozenset(), frozenset()
-        free = tuple(vmid for vmid in vmids if vmid not in occupied)
-        in_use = tuple(vmid for vmid in vmids if vmid in occupied)
-        if free:
-            write(f"Not in use: {_format_ids(free)}.\n")
-        if not in_use:
-            return vmids, frozenset(), frozenset()
-        backups = _ask_each_disk(read_line, write, in_use, vm_has_disks, replacing=True)
-        return vmids, frozenset(in_use), backups
+            names[vmid] = label
+            if vmid == default and checked:
+                chosen.append(vmid)
+                break
+            if not checked:
+                write("Could not check that VMID. An existing VM will not be replaced.\n")
+                chosen.append(vmid)
+                break
+            occupied = _occupied((vmid,), vmids_in_use)
+            if occupied is None:
+                host_known = False
+                write("Could not check that VMID. An existing VM will not be replaced.\n")
+                chosen.append(vmid)
+                break
+            chosen.append(vmid)
+            if vmid in occupied:
+                destroy.append(vmid)
+            break
+    vmids = tuple(chosen)
+    destroy_set = frozenset(destroy)
+    if not destroy:
+        return vmids, destroy_set, frozenset()
+    ordered = tuple(vmid for vmid in vmids if vmid in destroy_set)
+    backups = _ask_each_disk(
+        read_line, write, ordered, vm_has_disks, replacing=True, names=names
+    )
+    return vmids, destroy_set, backups
 
 
-def _ask_image_vmids(read_line, write, count: int, vmids_in_use, vm_has_disks):
-    """Return (vmids, backup set). Empty vmids publish a file and touch no VM."""
-    label = "VMID" if count == 1 else "VMIDs"
+def _image_intro(read_line, write, label: str, *, offer_publish: bool, several: bool) -> None:
     if ui.enabled(read_line):
         _blank(write)
-    _say(read_line, write, f"Select the {label} to receive the disk ({count} required).\n", "header")
-    write("Press enter to publish a file and leave every VM alone.\n")
-    write("\n")
-    write(f"Specify {count} existing VMIDs separated by commas, spaces, or as a range.\n")
-    while True:
-        parsed = _parse_vmid_line(read_line, write, count, "VMID: ")
-        if parsed is None:
-            return (), frozenset()
-        if parsed == ():
-            continue
-        vmids = parsed
-        occupied = _occupied(vmids, vmids_in_use)
-        if occupied is None:
-            write("Could not check those VMIDs. The run inserts the disk if the VM exists.\n")
-            backups = _ask_each_disk(read_line, write, vmids, vm_has_disks, replacing=False)
-            return vmids, backups
-        free = tuple(vmid for vmid in vmids if vmid not in occupied)
-        if free:
-            write(
-                f"Not in use: {_format_ids(free)}. "
-                "Press enter to publish a file, or type an existing VMID.\n"
-            )
-            continue
-        backups = _ask_each_disk(read_line, write, vmids, vm_has_disks, replacing=False)
-        return vmids, backups
+    _say(read_line, write, f"Provide a VMID for {label}.\n", "header")
+    if not offer_publish:
+        return
+    if several:
+        write("Enter publishes a file for every selected release and leaves every VM alone.\n")
+    else:
+        write("Enter publishes a file and leaves every VM alone.\n")
+    write("An existing VM stays. A template keeps its config and gets a new boot disk.\n")
+    write("A template with linked clones is left unchanged.\n")
 
 
-def _ask_existing_vmids(read_line, write, count: int, vmids_in_use) -> tuple[int, ...]:
-    label = "VMID" if count == 1 else "VMIDs"
+def _ask_missing_vmid(read_line, write, vmid: int) -> str:
+    """A disk-image VMID that does not exist. Returns again or template."""
+    again = "Try another VMID"
+    create = f"Create a new VM template at {vmid}"
+    detail = f"VMID {vmid} is not in use. There is no VM there to receive a disk.\n"
     if ui.enabled(read_line):
         _blank(write)
-    _say(read_line, write, f"Select the stopped {label} ({count} required).\n", "header")
-    write("The VM has to already exist.\n")
-    write("\n")
-    write(f"Specify {count} separated by commas, spaces, or as a range.\n")
-    while True:
-        parsed = _parse_vmid_line(read_line, write, count, "VMID: ")
-        if parsed is None:
-            write("VMID list is empty\n")
-            continue
-        if parsed == ():
-            continue
-        occupied = _occupied(parsed, vmids_in_use)
-        if occupied is None:
-            write("Could not check those VMIDs.\n")
-            return parsed
-        free = tuple(vmid for vmid in parsed if vmid not in occupied)
-        if free:
-            write(f"Not in use: {_format_ids(free)}. Type an existing VMID.\n")
-            continue
-        return parsed
+        write(detail)
+        return _pick(
+            read_line,
+            write,
+            f"VMID {vmid}",
+            [(again, "again"), (create, "template")],
+        )
+    write(detail)
+    write(f"  1) {again}\n")
+    write(f"  2) {create}\n")
+    return _ask_choice(
+        read_line,
+        write,
+        "Select: ",
+        {"1": "again", "2": "template"},
+        None,
+        "pick 1 to try another VMID, or 2 to create a template",
+    )
+
+
+def _ask_image_vmids(read_line, write, named, vmids_in_use, vm_has_disks):
+    """One existing VMID per release.
+
+    Enter on the first release publishes a file for every release.
+    A VMID that is not in use can create a new template at that ID.
+    Returns (vmids, backup set, template VMID set).
+    """
+    chosen: list[int] = []
+    templates: list[int] = []
+    names: dict[int, str] = {}
+    several = len(named) > 1
+    for index, (_release, label) in enumerate(named):
+        offer_publish = index == 0
+        while True:
+            _image_intro(read_line, write, label, offer_publish=offer_publish, several=several)
+            if offer_publish:
+                prompt = f"VMID for {label}, or Enter to publish files: "
+            else:
+                prompt = f"VMID for {label}: "
+            vmid = _read_one_vmid(read_line, write, prompt)
+            if vmid is None:
+                if offer_publish:
+                    return (), frozenset(), frozenset()
+                write("VMID is required\n")
+                continue
+            if _already_used(names, vmid, write):
+                continue
+            occupied = _occupied((vmid,), vmids_in_use)
+            if occupied is None:
+                write("Could not check that VMID. The run inserts the disk if the VM exists.\n")
+                names[vmid] = label
+                chosen.append(vmid)
+                break
+            if vmid not in occupied:
+                if _ask_missing_vmid(read_line, write, vmid) == "again":
+                    continue
+                names[vmid] = label
+                chosen.append(vmid)
+                templates.append(vmid)
+                break
+            names[vmid] = label
+            chosen.append(vmid)
+            break
+    vmids = tuple(chosen)
+    template_set = frozenset(templates)
+    inserts = tuple(vmid for vmid in vmids if vmid not in template_set)
+    if not inserts:
+        return vmids, frozenset(), template_set
+    backups = _ask_each_disk(
+        read_line, write, inserts, vm_has_disks, replacing=False, names=names
+    )
+    return vmids, backups, template_set
+
+
+def _ask_existing_vmids(read_line, write, named, vmids_in_use) -> tuple[int, ...]:
+    """One in-use VMID per release. There is no free-ID default."""
+    chosen: list[int] = []
+    names: dict[int, str] = {}
+    for _release, label in named:
+        if ui.enabled(read_line):
+            _blank(write)
+        _say(read_line, write, f"Provide a VMID for {label}.\n", "header")
+        write("The VM has to already exist.\n")
+        while True:
+            vmid = _read_one_vmid(read_line, write, f"VMID for {label}: ")
+            if vmid is None:
+                write("VMID is required\n")
+                continue
+            if _already_used(names, vmid, write):
+                continue
+            occupied = _occupied((vmid,), vmids_in_use)
+            if occupied is None:
+                write("Could not check that VMID.\n")
+                break
+            if vmid not in occupied:
+                write(f"Not in use: {vmid}. Type an existing VMID.\n")
+                continue
+            break
+        names[vmid] = label
+        chosen.append(vmid)
+    return tuple(chosen)
 
 
 def _ask_bool(read_line, write, prompt: str, default: bool) -> bool:
@@ -767,8 +871,24 @@ def _ask_clean_cache(read_line, write) -> bool:
     )
 
 
-def _confirm(read_line, write, *, mode: str, count: int, make_template: bool) -> None:
-    if mode == "template" and make_template:
+def _confirm(
+    read_line,
+    write,
+    *,
+    mode: str,
+    count: int,
+    make_template: bool,
+    new_templates: int = 0,
+) -> None:
+    inserts = count - new_templates
+    if mode == "image" and new_templates:
+        if inserts <= 0:
+            action = "create the template" if new_templates == 1 else "create the templates"
+        elif inserts == 1 and new_templates == 1:
+            action = "insert the disk and create the template"
+        else:
+            action = "insert the disks and create the templates"
+    elif mode == "template" and make_template:
         action = "create the template" if count == 1 else "create the templates"
     elif mode == "template":
         action = "create the VM" if count == 1 else "create the VMs"
@@ -817,19 +937,22 @@ def interview(
     else:
         disk_format = _ask_format(read_line, write)
 
+    named = _named_releases(distro, releases, releases_for)
+    template_vmids: frozenset[int] = frozenset()
     if mode == "template":
         vmids, destroy_vmids, backup_vmids = _ask_template_vmids(
-            read_line, write, count, vmids_in_use, vm_has_disks
+            read_line, write, named, vmids_in_use, vm_has_disks
         )
         collision = _collision_for(destroy_vmids, backup_vmids)
         dest_dir = ""
         storage = _ask_storage(read_line, write, list_storages)
     elif mode == "image":
-        vmids, backup_vmids = _ask_image_vmids(
-            read_line, write, count, vmids_in_use, vm_has_disks
+        vmids, backup_vmids, template_vmids = _ask_image_vmids(
+            read_line, write, named, vmids_in_use, vm_has_disks
         )
         destroy_vmids = frozenset()
-        collision = _collision_for(vmids, backup_vmids)
+        inserts = tuple(vmid for vmid in vmids if vmid not in template_vmids)
+        collision = _collision_for(inserts, backup_vmids)
         if vmids:
             dest_dir = ""
             storage = _ask_storage(read_line, write, list_storages)
@@ -837,7 +960,7 @@ def interview(
             dest_dir = _ask_directory(read_line, write)
             storage = ""
     else:
-        vmids = _ask_existing_vmids(read_line, write, count, vmids_in_use)
+        vmids = _ask_existing_vmids(read_line, write, named, vmids_in_use)
         destroy_vmids = frozenset()
         backup_vmids = frozenset()
         collision = "backup"
@@ -854,11 +977,13 @@ def interview(
         True,
     )
 
-    if mode == "template":
+    if mode == "template" or template_vmids:
         bridge, memory_mb, cores = _ask_hardware(read_line, write)
-        make_template = _ask_make_template(read_line, write, count)
     else:
         bridge, memory_mb, cores = DEFAULT_BRIDGE, DEFAULT_MEMORY_MB, DEFAULT_CORES
+    if mode == "template":
+        make_template = _ask_make_template(read_line, write, count)
+    else:
         make_template = False
     clean_cache = _ask_clean_cache(read_line, write)
 
@@ -871,18 +996,20 @@ def interview(
     else:
         paired = list(zip(releases, vmids))
     for release, vmid in paired:
+        line_mode = "template" if vmid in template_vmids else mode
+        line_template = True if vmid in template_vmids else make_template
         write(
             _summary_line(
                 distro,
                 release,
-                mode,
+                line_mode,
                 disk_format,
                 dest_dir,
                 storage,
                 vmid,
                 prep,
                 collision,
-                make_template,
+                line_template,
             )
             + "\n"
         )
@@ -894,7 +1021,7 @@ def interview(
             )
         else:
             write(f"VMID {vmid}: the existing disk is not kept. The VM is deleted.\n")
-    if mode == "template":
+    if mode == "template" or template_vmids:
         write(f"hardware: bridge {bridge}, memory {memory_mb} MB, cores {cores}\n")
     if clean_cache:
         write(
@@ -904,7 +1031,14 @@ def interview(
     else:
         write(f"cache: keep {DEFAULT_CACHE}\n")
 
-    _confirm(read_line, write, mode=mode, count=count, make_template=make_template)
+    _confirm(
+        read_line,
+        write,
+        mode=mode,
+        count=count,
+        make_template=make_template,
+        new_templates=len(template_vmids),
+    )
 
     return Job(
         distro=distro,
@@ -925,4 +1059,5 @@ def interview(
         backup_vmids=backup_vmids,
         make_template=make_template,
         clean_cache=clean_cache,
+        template_vmids=template_vmids,
     )

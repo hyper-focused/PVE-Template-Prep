@@ -46,13 +46,10 @@ Releases are a checkbox: space marks one, and one to three are allowed. VMIDs, `
 2. Releases, by number, comma-separated, one to three. **The numbers are the menu, not the version.** On Debian, `1, 2` is 12 and 13. On Fedora, `1, 2` is 43 and 44. A codename still works (`bookworm`, `noble`).
 3. What to build. `1` complete PVE VM template, `2` PVE VM disk image only, `3` prep a stopped VM in place. Enter selects the template.
 4. VM disk format, unless the choice was the stopped VM. `1` ZFS raw (a file-based raw image is `.img`), `2` QEMU qcow2. Enter selects raw.
-5. VMIDs, one per release.
-   - Template: Enter uses the next free IDs from 9001. If 9001 and 9002 are taken, two releases default to 9003 and 9004. A hole is skipped, so a taken 9002 with two releases defaults to 9001 and 9003.
-   - One typed number counts up from there. `910` with two releases becomes 910 and 911, even if one of those is already in use.
-   - A comma-separated list is used as written. The length has to match the release count.
-   - An inclusive range works when its length matches.
-   - Disk image only: Enter publishes a file and does not touch a VM. Type an existing VMID to insert the new disk into that VM. A free ID is rejected.
-   - Stopped-VM prep: the VM has to already exist. There is no free-ID default.
+5. VMIDs, one question per release. The question names the release (`Provide a VMID for Debian 13`). One number. A list or a range is rejected.
+   - Template: Enter assigns the next free ID from 9001. IDs already in use are skipped, quietly, including a hole such as a taken 9002. Two releases that both take the default become 9001 and 9002, or 9003 and 9004 when those first two are taken. A typed ID that is already in use replaces that VM. The question says the existing VM will be deleted.
+   - Disk image only: Enter on the first release publishes a file for every selected release and does not touch a VM. Each later release needs its own VMID. An existing VMID receives the new disk. A VMID that is not in use asks you to try another ID, or to create a new VM template at that ID.
+   - Stopped-VM prep: each release asks for a VMID that already exists. There is no free-ID default.
 6. Where it goes. A published disk image asks for a directory. A template, an insert, or a stopped VM asks for `VM Disk Storage Path`. A number picks from the detected list. A storage id that is not in that list is asked again.
 7. Disks that are already there, asked once per VMID.
    - Template: **the VM will be deleted.** `1` copies the disk into the cache first. `2` does not. `2` then requires `DELETE`. `X` exits. A VM with no OS disk skips the backup menu and still requires `DELETE`.

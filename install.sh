@@ -13,6 +13,7 @@ ARCHIVE_URL="https://github.com/${REPO}/archive/refs/heads/${REF}.tar.gz"
 
 MODULES=(
   __init__.py
+  build.py
   catalog.py
   customize.py
   download.py
@@ -188,7 +189,7 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 paths = [root / "pve-template-prep.py", *sorted((root / "pve_prep").glob("*.py"))]
-if len(list((root / "pve_prep").glob("*.py"))) != 8:
+if len(list((root / "pve_prep").glob("*.py"))) != 9:
     raise SystemExit("pve_prep is missing modules")
 vendor = root / "vendor"
 paths.extend(sorted(vendor.rglob("*.py")))

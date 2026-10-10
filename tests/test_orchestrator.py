@@ -288,6 +288,34 @@ class OrchestratorTest(unittest.TestCase):
         MOD.publish.assert_not_called()
         MOD.create_template.assert_not_called()
 
+    def test_image_missing_vmid_creates_a_template(self) -> None:
+        job = replace(
+            _image_job(releases=("13",), dry_run=True),
+            vmids=(920,),
+            storage="dir-templates",
+            template_vmids=frozenset({920}),
+            make_template=False,
+        )
+        recorded: list[dict] = []
+
+        def create_template(**kwargs):
+            recorded.append(kwargs)
+
+        MOD.create_template = create_template
+        MOD.insert_disk = mock.MagicMock()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            MOD.run_one(job, "13", 920)
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0]["vmid"], 920)
+        self.assertTrue(recorded[0]["make_template"])
+        self.assertFalse(recorded[0]["destroy_ok"])
+        MOD.insert_disk.assert_not_called()
+        MOD.publish.assert_not_called()
+        text = buf.getvalue()
+        self.assertIn("Creating Debian 13 VM template", text)
+        self.assertIn("Debian 13 VM template created", text)
+
     def test_release_lines_name_the_outcome(self) -> None:
         from pve_prep.job import DEFAULT_CACHE
 

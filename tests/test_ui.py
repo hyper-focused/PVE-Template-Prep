@@ -257,7 +257,7 @@ class WidgetInterviewTest(unittest.TestCase):
         job, blob, confirms = self._run(
             selects=["debian", "template", "raw", "dir-templates"],
             checks=[["13", "12"]],
-            texts=["", "vmbr1", "4096", "4", "YES"],
+            texts=["", "", "vmbr1", "4096", "4", "YES"],
             confirms=[True, False, True, False],
             in_use=set(),
             disks=set(),

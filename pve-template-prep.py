@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -13,11 +12,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pve_prep import __version__
+from pve_prep.build import opening, prep_existing, run_fetched
 from pve_prep.catalog import normalize_release, releases_for
 from pve_prep.customize import apply as customize_apply
 from pve_prep.customize import argv as customize_argv
 from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, publish
-from pve_prep.job import Job, published_name, vm_name
+from pve_prep.job import Job, action_for
 from pve_prep.prompts import PromptAbort, interview
 from pve_prep.ui import arm, tone
 from pve_prep.vm import (
@@ -158,61 +158,29 @@ def _spec_for(distro: str, release: str):
     raise RuntimeError(f"unknown release {release}")
 
 
-def _existing_plan(config_text: str, vmid: int, storage: str) -> tuple[str, list]:
-    # (qm argv lists, OS volid). vmid and storage are keyword-only on the vm helper.
-    commands, volid = existing_prep_commands(config_text, vmid=vmid, storage=storage)
-    return str(volid), list(commands)
-
-
 def _product(spec, distro: str, release: str) -> str:
     label = str(getattr(spec, "label", "") or "").strip()
     return label or f"{distro} {release}"
 
 
-def _opening(label: str, job: Job, vmid: int | None) -> str:
-    if job.mode == "template":
-        kind = "VM template" if job.make_template else "VM"
-        return f"Creating {label} {kind}"
-    if job.mode == "image" and vmid is None:
-        return f"Creating {label} disk image"
-    if job.mode == "image":
-        return f"Creating {label} VM disk image"
-    return f"Preparing {label} VM"
-
-
-def _file_done(label: str, dest: Path, result) -> str:
-    place = str(dest)
-    if result.status == "skipped":
-        return f"{label} disk image left unchanged at {place}"
-    sentence = f"{label} disk image created at {place}"
-    if result.backup:
-        return f"{sentence}. Old disk image saved at {result.backup}."
-    if result.replaced:
-        return f"{sentence}. Old disk image deleted."
-    return sentence
-
-
-def _import_done(label: str, vmid: int, policy: str, result) -> str:
-    sentence = f"{label} VM disk image created and imported"
-    if getattr(result, "kept_template", False):
-        sentence += f". Template {vmid} kept"
-        saved = str(getattr(result, "backup_dir", "") or "")
-        if saved:
-            return f"{sentence}. Old disk saved in {saved}."
-        return f"{sentence}. Previous disk deleted."
-    if policy == "backup":
-        return f"{sentence}. Previous disk is still attached to VM {vmid}."
-    return f"{sentence}. Previous disk deleted."
-
-
-def _template_done(label: str, job: Job, vmid: int) -> str:
-    kind = "VM template" if job.make_template else "VM"
-    sentence = f"{label} {kind} created"
-    if vmid in job.destroy_vmids:
-        sentence += ". Previous VM deleted."
-        if vmid in job.backup_vmids:
-            sentence += f" Old disk saved in {job.cache_dir}."
-    return sentence
+def _tools() -> SimpleNamespace:
+    """Host calls, read at use time so tests can replace the script bindings."""
+    return SimpleNamespace(
+        fetch_verified=fetch_verified,
+        convert=convert,
+        customize_apply=customize_apply,
+        customize_argv=customize_argv,
+        publish=publish,
+        insert_disk=insert_disk,
+        create_template=create_template,
+        run=default_run,
+        storage_rejects=_storage_rejects_images,
+        checked=_checked,
+        parse_qm_status=parse_qm_status,
+        is_template=is_template,
+        existing_prep_commands=existing_prep_commands,
+        existing_hw_commands=existing_hw_commands,
+    )
 
 
 def _announce(text: str, role: str) -> None:
@@ -222,115 +190,19 @@ def _announce(text: str, role: str) -> None:
         print(text)
 
 
-def _run_fetched(job: Job, release: str, vmid: int | None) -> str:
-    spec = _spec_for(job.distro, release)
-    label = _product(spec, job.distro, release)
-    inserts = job.mode == "image" and vmid is not None
-    if job.mode != "image" or inserts:
-        if vmid is None:
-            raise RuntimeError("VMID is required")
-        if _storage_rejects_images(job.storage):
-            raise RuntimeError(f"storage {job.storage} does not accept images")
-    src = fetch_verified(spec, Path(job.cache_dir), dry_run=job.dry_run)
-    work = Path(job.cache_dir) / (published_name(job.distro, release, job.disk_format) + ".work")
-    convert(src, work, job.disk_format, dry_run=job.dry_run)
-    if job.prep:
-        # apply() wants a str. shlex.join rejects a Path on dry-run.
-        customize_apply(str(work), spec.family, dry_run=job.dry_run)
-    if job.mode == "image" and not inserts:
-        dest = Path(job.dest_dir) / published_name(job.distro, release, job.disk_format)
-        return _file_done(label, dest, publish(work, dest, job.collision, dry_run=job.dry_run))
-    if inserts:
-        policy = "backup" if vmid in job.backup_vmids else "overwrite"
-        inserted = insert_disk(
-            vmid=vmid,
-            storage=job.storage,
-            image_path=str(work),
-            disk_policy=policy,
-            dry_run=job.dry_run,
-            backup_dir=job.cache_dir,
-            run=default_run,
-        )
-        return _import_done(label, vmid, policy, inserted)
-    create_template(
-        vmid=vmid,
-        name=vm_name(job.distro, release),
-        memory_mb=job.memory_mb,
-        cores=job.cores,
-        bridge=job.bridge,
-        storage=job.storage,
-        image_path=str(work),
-        dry_run=job.dry_run,
-        destroy_ok=vmid in job.destroy_vmids,
-        backup_disks=vmid in job.backup_vmids,
-        backup_dir=job.cache_dir,
-        make_template=job.make_template,
-        run=default_run,
-    )
-    return _template_done(label, job, vmid)
-
-
-def _first_path_line(text: str) -> str:
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped:
-            return stripped
-    return ""
-
-
-def _run_existing(job: Job, release: str, vmid: int | None) -> None:
-    if vmid is None:
-        raise RuntimeError("VMID is required")
-    prep = "yes" if job.prep else "no"
-    # Dry-run stays off the host. The live disk path is unknown, so the token is literal.
-    if job.dry_run:
-        print(f"existing VMID {vmid} storage {job.storage} guest-prep={prep}")
-        if job.prep:
-            spec = _spec_for(job.distro, release)
-            print()
-            print(shlex.join(customize_argv("<os-disk>", spec.family)))
-            print()
-        for command in existing_hw_commands(
-            vmid=vmid,
-            bus_key="scsi0",
-            disk_value="<os-disk>,discard=on,ssd=1",
-        ):
-            print(" ".join(command))
-        return
-    spec = _spec_for(job.distro, release)
-    status_res = _checked(["qm", "status", vmid], default_run)
-    status = str(parse_qm_status(status_res.stdout)).strip()
-    if status != "stopped":
-        raise RuntimeError(f"SKIP {vmid} status={status} (stop it first)")
-    config_res = _checked(["qm", "config", vmid], default_run)
-    if is_template(config_res.stdout):
-        raise RuntimeError(
-            f"VM {vmid} is a template; existing mode does not rewrite templates"
-        )
-    volid, commands = _existing_plan(config_res.stdout, vmid, job.storage)
-    path_res = _checked(["pvesm", "path", volid], default_run)
-    disk = _first_path_line(path_res.stdout)
-    if not disk or not Path(disk).is_file():
-        raise RuntimeError("disk is not a regular file")
-    for command in commands:
-        if not command:
-            continue
-        _checked(list(command), default_run)
-    if job.prep:
-        customize_apply(disk, spec.family, dry_run=job.dry_run)
-
-
 def run_one(job: Job, release: str, vmid: int | None) -> None:
     spec = _spec_for(job.distro, release)
     label = _product(spec, job.distro, release)
+    action = action_for(job, vmid)
     print()
-    _announce(_opening(label, job, vmid), "cyan")
+    _announce(opening(action, label, job, vmid), "cyan")
     print()
-    if job.mode == "existing":
-        _run_existing(job, release, vmid)
+    tools = _tools()
+    if action == "existing":
+        prep_existing(job, vmid, spec, tools)
         done = f"{label} VM prepared"
     else:
-        done = _run_fetched(job, release, vmid)
+        done = run_fetched(job, spec, vmid, label, tools)
     print()
     _announce(done, "body")
 
