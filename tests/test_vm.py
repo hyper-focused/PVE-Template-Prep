@@ -676,6 +676,53 @@ class InsertDiskTests(unittest.TestCase):
         self.assertNotIn(["qm", "destroy", "910"], run.calls)
         self.assertNotIn(["qm", "create", "910"], run.calls)
 
+    def test_pvesm_usage_line_still_lists_and_a_plain_disk_is_replaced(self) -> None:
+        old = "NFS-SATA-SSD1:base-910-disk-0"
+        new = "NFS-SATA-SSD1:vm-910-disk-1"
+        table = (
+            "Volid                                                           Format  Type             Size VMID\n"
+            f"{old}                                   raw     images     3221225472 910\n"
+        )
+        with TemporaryDirectory() as tmp:
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, f"template: 1\nname: keep-me\nscsi0: {old}\n"),
+                    (
+                        255,
+                        "Unknown option: output-format\n"
+                        "400 unable to parse option\n"
+                        "pvesm list <storage> [OPTIONS]\n",
+                    ),
+                    (0, table),
+                    (0, ""),
+                    (0, ""),
+                    (0, f"unused0: {new}\nscsi0: {old}\n"),
+                    (0, ""),
+                    (0, f"unused0: {old}\nscsi0: {new}\n"),
+                    (0, ""),
+                    (0, ""),
+                ]
+            )
+            result = insert_disk(
+                vmid=910,
+                storage=STORAGE,
+                image_path=IMAGE,
+                disk_policy="overwrite",
+                dry_run=False,
+                run=run,
+                nodes_root=self._nodes(tmp),
+            )
+        self.assertEqual(result.volid, new)
+        self.assertTrue(result.kept_template)
+        self.assertEqual(run.calls[2], ["pvesm", "list", STORAGE, "--output-format", "json"])
+        self.assertEqual(run.calls[3], ["pvesm", "list", STORAGE])
+        self.assertEqual(run.calls[4], ["qm", "set", "910", "--template", "0"])
+        self.assertEqual(run.calls[7], ["qm", "set", "910", "--scsi0", f"{new},discard=on,ssd=1"])
+        self.assertEqual(run.calls[-1], ["qm", "template", "910"])
+        self.assertNotIn(["qm", "destroy", "910"], run.calls)
+        self.assertNotIn(["qm", "create", "910"], run.calls)
+
     def test_template_backup_copies_then_replaces_the_boot_disk(self) -> None:
         old = "NFS-SATA-SSD1:base-910-disk-0"
         new = "NFS-SATA-SSD1:vm-910-disk-1"
@@ -945,7 +992,12 @@ class LinkedCloneTests(unittest.TestCase):
                 [
                     (0, "status: stopped\n"),
                     (0, "template: 1\nscsi0: NFS-SATA-SSD1:base-910-disk-0\n"),
-                    (255, "Unknown option: output-format\n"),
+                    (
+                        255,
+                        "Unknown option: output-format\n"
+                        "400 unable to parse option\n"
+                        "pvesm list <storage> [OPTIONS]\n",
+                    ),
                     (0, table),
                 ]
             )

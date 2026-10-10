@@ -354,16 +354,24 @@ def _nodes_root(nodes_root: Path | None) -> Path:
     return Path(nodes_root)
 
 
+def _command_text(result: object) -> str:
+    stderr = getattr(result, "stderr", "") or ""
+    stdout = getattr(result, "stdout", "") or ""
+    return f"{stderr}\n{stdout}"
+
+
 def _storage_listing(run: Run, storage: str) -> object:
     """Volume list for one storage.
 
-    PVE 9.2 pvesm list rejects --output-format. The table still has the volid.
-    Any other failure is returned as-is so the caller can refuse the change.
+    PVE 9.2 pvesm list rejects --output-format and then prints a usage line.
+    The option name is not on that last line, so the full output is checked.
+    The table from a plain list still has the volid. Any other failure is
+    returned as-is so the caller can refuse the change.
     """
     listed = run(["pvesm", "list", storage, "--output-format", "json"])
     if getattr(listed, "returncode", 1) == 0:
         return listed
-    detail = _detail(listed).casefold()
+    detail = _command_text(listed).casefold()
     if "output-format" in detail or "unable to parse option" in detail:
         return run(["pvesm", "list", storage])
     return listed
@@ -637,7 +645,15 @@ def _detail(result: object) -> str:
     code = getattr(result, "returncode", 1)
     if not text:
         return f"exit {code}"
-    return f"{text.splitlines()[-1][:400]} (exit {code})"
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    chosen = lines[-1]
+    # pvesm appends its usage synopsis. The useful line is the one above it.
+    if chosen.startswith("pvesm ") and "[OPTIONS]" in chosen:
+        for line in lines:
+            if not (line.startswith("pvesm ") and "[OPTIONS]" in line):
+                chosen = line
+                break
+    return f"{chosen[:400]} (exit {code})"
 
 
 def _must(run: Run, argv: list[str], *, vmid: int, destroyed: bool) -> object:

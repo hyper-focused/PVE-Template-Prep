@@ -120,6 +120,11 @@ class FetchTests(unittest.TestCase):
             self.assertEqual(fetch_version("https://example.invalid/v"), "1.1.4")
 
 
+def _next_patch() -> str:
+    major, minor, patch = (int(part) for part in __version__.split("."))
+    return f"{major}.{minor}.{patch + 1}"
+
+
 class StartupTests(unittest.TestCase):
     def _main_module(self):
         from tests.test_orchestrator import MOD
@@ -129,17 +134,18 @@ class StartupTests(unittest.TestCase):
     def test_enter_keeps_this_copy(self) -> None:
         mod = self._main_module()
         script = Path("/opt/pve-template-prep/pve-template-prep.py")
+        remote = _next_patch()
         buf = io.StringIO()
         with (
             mock.patch.object(mod.tool_update, "is_checkout", return_value=False),
-            mock.patch.object(mod.tool_update, "fetch_version", return_value="1.1.1"),
+            mock.patch.object(mod.tool_update, "fetch_version", return_value=remote),
             mock.patch.object(sys.stdin, "isatty", return_value=True),
             mock.patch.object(sys.stdout, "isatty", return_value=True),
             mock.patch("builtins.input", return_value=""),
             mock.patch.object(sys.stdout, "write", buf.write),
         ):
             self.assertIsNone(mod._consider_update(script))
-        self.assertIn(f"1.1.1 is available (this is {__version__}).", buf.getvalue())
+        self.assertIn(f"{remote} is available (this is {__version__}).", buf.getvalue())
         self.assertIn("Fetch it now? [y/N]", buf.getvalue())
 
     def test_unreachable_main_does_not_ask(self) -> None:
@@ -184,7 +190,7 @@ class StartupTests(unittest.TestCase):
 
         with (
             mock.patch.object(mod.tool_update, "is_checkout", return_value=False),
-            mock.patch.object(mod.tool_update, "fetch_version", return_value="1.1.1"),
+            mock.patch.object(mod.tool_update, "fetch_version", return_value=_next_patch()),
             mock.patch.object(sys.stdin, "isatty", return_value=True),
             mock.patch.object(sys.stdout, "isatty", return_value=True),
             mock.patch("builtins.input", return_value="yes"),
