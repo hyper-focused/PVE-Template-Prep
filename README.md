@@ -36,6 +36,8 @@ sudo bash install.sh
 sudo pve-template-prep
 ```
 
+The next run checks for a newer version on its own. It reads the version string on `main` and asks `Fetch it now? [y/N]`. Enter keeps this copy. `y` installs that version and starts it. `--version` only prints the release.
+
 `--dry-run` asks the same questions and prints the commands. It does not need root, and it does not download or change the host.
 
 Downloads land in `/var/tmp/pve-template-prep/cache`. **A disk backup in that directory is never deleted.**
