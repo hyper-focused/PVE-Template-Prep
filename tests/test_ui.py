@@ -258,7 +258,7 @@ class WidgetInterviewTest(unittest.TestCase):
             selects=["debian", "template", "dir-templates", "qcow2"],
             checks=[["13", "12"]],
             texts=["", "", "vmbr1", "4096", "4", "YES"],
-            confirms=[True, False, True, False],
+            confirms=[True, True, False, True, False],
             in_use=set(),
             disks=set(),
         )
@@ -275,6 +275,9 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertIn("Complete PVE VM template", blob)
         self.assertIn("Create a VM, import the disk", blob)
         self.assertTrue(any(line.startswith("Guest prep") for line in confirms))
+        self.assertTrue(any("00-enableroot.conf" in line for line in confirms))
+        self.assertTrue(any(line.startswith("Allow root") for line in confirms))
+        self.assertTrue(job.permit_root)
         self.assertTrue(any("vmbr0" in line for line in confirms))
         self.assertTrue(any("qm template" in line for line in confirms))
         self.assertTrue(any("pve-template-prep/cache" in line for line in confirms))
@@ -294,7 +297,7 @@ class WidgetInterviewTest(unittest.TestCase):
             )
 
     def test_plain_reader_never_calls_a_widget(self) -> None:
-        answers = ["1", "1, 2", "2", "", "1", "/tmp/images", "", "", "yes"]
+        answers = ["1", "1, 2", "2", "", "1", "/tmp/images", "", "", "", "yes"]
 
         def read_line() -> str:
             if not answers:
@@ -324,6 +327,7 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertEqual(job.mode, "image")
         self.assertEqual(job.dest_dir, "/tmp/images")
         self.assertEqual(job.vmids, ())
+        self.assertTrue(job.permit_root)
         self.assertIn("Type YES: ", "".join(written))
         self.assertIn("codename", "".join(written))
         self.assertIsInstance(job, Job)

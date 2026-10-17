@@ -213,10 +213,11 @@ class OrchestratorTest(unittest.TestCase):
             self.assertEqual(disk_format, "raw")
             self.assertFalse(dry_run)
 
-        def apply(path, family, dry_run=False):
+        def apply(path, family, permit_root=False, dry_run=False):
             order.append("apply")
             self.assertEqual(path, "/var/tmp/pve-template-prep/cache/debian-12-pve.img.work")
             self.assertEqual(family, "deb")
+            self.assertFalse(permit_root)
             self.assertFalse(dry_run)
 
         def publish(work, dest, collision, dry_run=False):
@@ -569,9 +570,17 @@ class OrchestratorTest(unittest.TestCase):
         text = buf.getvalue()
         self.assertIn("existing VMID 910 storage dir-templates guest-prep=yes", text)
         self.assertIn("virt-customize", text)
+        self.assertNotIn("00-enableroot.conf", text)
         self.assertIn("--agent", text)
         called.assert_not_called()
         MOD.fetch_verified.assert_not_called()
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            MOD.run_one(replace(_existing_job(dry_run=True), permit_root=True), "12", 910)
+        self.assertIn("00-enableroot.conf", buf.getvalue())
+        self.assertIn("PermitRootLogin yes", buf.getvalue())
+        self.assertIn("PasswordAuthentication yes", buf.getvalue())
 
     def test_existing_live_apply_then_hardware(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -606,7 +615,9 @@ class OrchestratorTest(unittest.TestCase):
             self.assertEqual(calls[1][:2], ["qm", "config"])
             self.assertEqual(calls[2][:3], ["pvesm", "path", "dir-templates:910/vm-910-disk-0.raw"])
             self.assertEqual(calls[3], ["qm", "set", "910", "--agent", "enabled=1"])
-            MOD.customize_apply.assert_called_once_with(str(disk), "deb", dry_run=False)
+            MOD.customize_apply.assert_called_once_with(
+                str(disk), "deb", permit_root=False, dry_run=False
+            )
             MOD.fetch_verified.assert_not_called()
 
     def test_existing_running_fails(self) -> None:

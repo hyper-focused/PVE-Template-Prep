@@ -64,7 +64,9 @@ def _prepare(job, spec, tools, *, cache_format: str) -> Path:
     tools.convert(src, work, cache_format, dry_run=job.dry_run)
     if job.prep:
         # apply() wants a str. shlex.join rejects a Path on dry-run.
-        tools.customize_apply(str(work), spec.family, dry_run=job.dry_run)
+        tools.customize_apply(
+            str(work), spec.family, permit_root=job.permit_root, dry_run=job.dry_run
+        )
     return work
 
 
@@ -148,7 +150,13 @@ def prep_existing(job, vmid: int | None, spec, tools) -> None:
         print(f"existing VMID {vmid} storage {job.storage} guest-prep={prep}")
         if job.prep:
             print()
-            print(shlex.join(tools.customize_argv("<os-disk>", spec.family)))
+            print(
+                shlex.join(
+                    tools.customize_argv(
+                        "<os-disk>", spec.family, permit_root=job.permit_root
+                    )
+                )
+            )
             print()
         for command in tools.existing_hw_commands(
             vmid=vmid,
@@ -178,4 +186,6 @@ def prep_existing(job, vmid: int | None, spec, tools) -> None:
             continue
         tools.checked(list(command), tools.run)
     if job.prep:
-        tools.customize_apply(disk, spec.family, dry_run=job.dry_run)
+        tools.customize_apply(
+            disk, spec.family, permit_root=job.permit_root, dry_run=job.dry_run
+        )

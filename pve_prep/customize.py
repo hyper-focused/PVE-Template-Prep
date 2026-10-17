@@ -1,4 +1,8 @@
-"""virt-customize guest prep. Command text matches prep-template.sh."""
+"""virt-customize guest prep.
+
+The base command text matches prep-template.sh. Root password SSH is an
+extra command, written only when the interview asked for it.
+"""
 
 import os
 import shlex
@@ -51,27 +55,50 @@ _SHARED_COMMANDS = (
     "rm -f /etc/ssh/ssh_host_*",
 )
 
+# First match wins, so this has to sort before 50-cloud-init and 60-cloudimg.
+# chcon is a no-op on Debian and Ubuntu. On EL it copies sshd_config's label.
+_ROOT_SSH_COMMAND = (
+    "mkdir -p /etc/ssh/sshd_config.d && "
+    r"printf '%s\n' 'PasswordAuthentication yes' 'PermitRootLogin yes' "
+    "> /etc/ssh/sshd_config.d/00-enableroot.conf && "
+    "chmod 644 /etc/ssh/sshd_config.d/00-enableroot.conf && "
+    "(chcon --reference=/etc/ssh/sshd_config "
+    "/etc/ssh/sshd_config.d/00-enableroot.conf 2>/dev/null "
+    "|| restorecon -F /etc/ssh/sshd_config.d/00-enableroot.conf 2>/dev/null "
+    "|| true)"
+)
 
-def argv(image: str, family: str) -> list[str]:
+
+def argv(image: str, family: str, *, permit_root: bool = False) -> list[str]:
     """Full argv starting with 'virt-customize', '-a', image, then --install and --run-command pairs.
 
     family is 'deb' or 'el'. ValueError on anything else.
+    permit_root writes /etc/ssh/sshd_config.d/00-enableroot.conf.
     """
     packages, commands = _plan(family)
+    if permit_root:
+        commands = commands + (_ROOT_SSH_COMMAND,)
     command = ["virt-customize", "-a", image, "--install", packages]
     for guest_cmd in commands:
         command.extend(("--run-command", guest_cmd))
     return command
 
 
-def apply(image: str, family: str, *, dry_run: bool = False, run=None) -> None:
+def apply(
+    image: str,
+    family: str,
+    *,
+    permit_root: bool = False,
+    dry_run: bool = False,
+    run=None,
+) -> None:
     """Build argv, set env LIBGUESTFS_BACKEND from the current environment or 'direct' if unset.
 
     dry_run: print the argv as one line (shlex.join) and return without run.
     run(argv, env) -> object with returncode. Default: subprocess.run(..., check=False).
     Nonzero raises RuntimeError including the return code. Do not use shell=True.
     """
-    command = argv(image, family)
+    command = argv(image, family, permit_root=permit_root)
     # Blank lines keep the green virt-customize block off the status lines.
     print()
     try:

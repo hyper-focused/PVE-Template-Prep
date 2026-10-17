@@ -35,6 +35,8 @@ class Job:
     clean_cache: bool = False
     # Image-mode VMIDs created as new templates instead of receiving a disk.
     template_vmids: frozenset[int] = frozenset()
+    # Guest prep writes /etc/ssh/sshd_config.d/00-enableroot.conf when this is true.
+    permit_root: bool = False
 
 
 def published_name(distro: str, release: str, disk_format: str) -> str:

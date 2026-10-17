@@ -879,24 +879,28 @@ def _summary_line(
     prep: bool,
     collision: str,
     make_template: bool,
+    permit_root: bool,
 ) -> str:
     flag = "yes" if prep else "no"
+    root = ""
+    if prep:
+        root = " root-ssh=" + ("yes" if permit_root else "no")
     if mode == "image" and vmid is None:
         dest = Path(dest_dir) / published_name(distro, release, disk_format)
-        return f"{distro} {release} -> image {disk_format} {dest} guest-prep={flag}"
+        return f"{distro} {release} -> image {disk_format} {dest} guest-prep={flag}{root}"
     if mode == "image":
         return (
             f"{distro} {release} -> insert VMID {vmid} storage {storage} "
-            f"{disk_format} disk={collision} guest-prep={flag}"
+            f"{disk_format} disk={collision} guest-prep={flag}{root}"
         )
     if mode == "template":
         name = vm_name(distro, release)
         kind = "template" if make_template else "vm"
         return (
             f"{distro} {release} -> {kind} VMID {vmid} name {name} "
-            f"storage {storage} {disk_format} guest-prep={flag}"
+            f"storage {storage} {disk_format} guest-prep={flag}{root}"
         )
-    return f"{distro} {release} -> existing VMID {vmid} storage {storage} guest-prep={flag}"
+    return f"{distro} {release} -> existing VMID {vmid} storage {storage} guest-prep={flag}{root}"
 
 
 def _collision_for(targets, backups: frozenset[int]) -> str:
@@ -1050,6 +1054,21 @@ def interview(
         "Enter applies it. n leaves the image as published. [Y/n]\n",
         True,
     )
+    permit_root = False
+    if prep:
+        permit_root = _ask_bool(
+            read_line,
+            write,
+            "Allow root to log in over SSH with a password?\n"
+            "Cloud-init user must be set to 'root'.\n"
+            "\n"
+            "To revert to the image default:\n"
+            "rm /etc/ssh/sshd_config.d/00-enableroot.conf\n"
+            "and restart SSHd.\n"
+            "\n"
+            "Enter allows it. n leaves the image default. [Y/n]\n",
+            True,
+        )
 
     if mode == "template" or template_vmids:
         bridge, memory_mb, cores = _ask_hardware(read_line, write)
@@ -1084,6 +1103,7 @@ def interview(
                 prep,
                 collision,
                 line_template,
+                permit_root,
             )
             + "\n"
         )
@@ -1134,4 +1154,5 @@ def interview(
         make_template=make_template,
         clean_cache=clean_cache,
         template_vmids=template_vmids,
+        permit_root=permit_root,
     )

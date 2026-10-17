@@ -65,6 +65,21 @@ class ArgvTests(unittest.TestCase):
             self.assertIn("99-grow.cfg", text)
             self.assertIn("ssh_host_", text)
             self.assertIn("machine-id", text)
+            self.assertNotIn("00-enableroot.conf", text)
+            self.assertNotIn("PermitRootLogin", text)
+
+    def test_root_ssh_drop_in_is_one_command_on_both_families(self) -> None:
+        for family in ("deb", "el"):
+            commands = _commands(argv("disk.img", family, permit_root=True))
+            root = [cmd for cmd in commands if "00-enableroot.conf" in cmd]
+            self.assertEqual(len(root), 1)
+            text = root[0]
+            self.assertIn("PasswordAuthentication yes", text)
+            self.assertIn("PermitRootLogin yes", text)
+            self.assertIn("chmod 644 /etc/ssh/sshd_config.d/00-enableroot.conf", text)
+            self.assertIn("chcon --reference=/etc/ssh/sshd_config", text)
+            self.assertIn("restorecon -F /etc/ssh/sshd_config.d/00-enableroot.conf", text)
+            self.assertIn("|| true", text)
 
     def test_unknown_family(self) -> None:
         with self.assertRaises(ValueError):
@@ -84,8 +99,15 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(lines[0], "")
         self.assertIn("virt-customize", lines[1])
         self.assertIn("disk.img", lines[1])
+        self.assertNotIn("00-enableroot.conf", lines[1])
         self.assertEqual(lines[2], "")
         self.assertTrue(body.endswith("\n"))
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            apply("disk.img", "el", permit_root=True, dry_run=True, run=fake_run)
+        self.assertIn("00-enableroot.conf", buf.getvalue())
+        self.assertIn("PermitRootLogin yes", buf.getvalue())
 
     def test_success_uses_direct_when_unset(self) -> None:
         calls: list[tuple[list[str], dict[str, str]]] = []

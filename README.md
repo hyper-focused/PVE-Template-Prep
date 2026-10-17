@@ -1,10 +1,24 @@
 # pve-template-prep
 
-Proxmox will let you click through the same cloud-image ritual until the mouse files a complaint. This asks the questions once, then builds up to three releases of one distro: a disk image, a template VM, or a stopped VM that already exists.
+One interview. Up to three releases of one distro. A disk image, a template VM, or a stopped VM that already exists.
 
-## Install and run
+Proxmox will let you click the cloud-image ritual until the mouse files a complaint. This asks once.
 
-A live run is **root on the PVE node**. Use the block that matches the prompt you already have. **Read `install.sh` before you run it.**
+| Build | What lands | Enter does this |
+| --- | --- | --- |
+| Template | A new VM named `<distro>-<release>-cloud` | Next free VMID from 9001, then `qm template` |
+| Disk image | `<distro>-<release>-pve.img` or `.qcow2` in a directory | Publishes the files and leaves every VM alone |
+| Stopped VM | Guest prep on the OS disk in place | You type a VMID that already exists |
+
+> [!IMPORTANT]
+> Nothing is built until you type `YES`. Red text is load-bearing: a VM will be deleted, or you are on the row that does not back the disk up.
+
+> [!CAUTION]
+> A template with linked clones is left alone, including a clone on another node. If that check cannot be read, the template is left alone.
+
+## Install
+
+A live run is **root on the PVE node**. Read `install.sh` before you run it.
 
 Already root:
 
@@ -22,6 +36,13 @@ sudo bash install.sh
 sudo pve-template-prep
 ```
 
+`--dry-run` asks the same questions and prints the commands. It does not need root, and it does not download or change the host.
+
+Downloads land in `/var/tmp/pve-template-prep/cache`. **A disk backup in that directory is never deleted.**
+
+<details>
+<summary>Installer, updates, and the cache</summary>
+
 The installer creates `/opt/pve-template-prep`, pulls `pve-template-prep.py`, `pve_prep/`, and `vendor/` from GitHub, checks that those files are root-owned and not writable by anyone else, and links the command to `/usr/local/sbin/pve-template-prep`. `vendor/` is questionary, prompt_toolkit, and wcwidth, pinned in `vendor/VERSIONS`. No pip. No `python3-venv`. It also installs `libguestfs-tools` and `qemu-utils` if they are missing. Python 3, `qm`, and `pvesm` are already on PVE 9.
 
 Somewhere else: `DEST=/somewhere bash install.sh`, or `sudo DEST=/somewhere bash install.sh`. A clone is for the unit tests. One downloaded script, with no `pve_prep/` directory beside it, will not start.
@@ -30,51 +51,110 @@ Somewhere else: `DEST=/somewhere bash install.sh`, or `sudo DEST=/somewhere bash
 
 `pve-template-prep --version` prints the release and exits. It does not look for a newer copy. A run prints that same line, then an installed copy checks `main`. The check reads the version string and sends nothing else. A newer version asks `Fetch it now? [y/N]`. Enter keeps this copy. `y` runs `install.sh` into this install directory and starts that version. That includes a patch bump: a release added, a release removed, or a bugfix. A git checkout does not ask. If GitHub cannot be read, the questions start anyway. `PVE_PREP_SKIP_UPDATE=1` skips the check. Each release then prints a cyan line naming what it is building, the green virt-customize output with a blank line on either side, and a white line naming what finished.
 
-`--dry-run` asks the same questions and prints the commands. It does not need root, and it does not download or change the host. There are no distro or release flags. The questions are the interface. Run the dry-run before the real one.
+There are no distro or release flags. The questions are the interface. Run the dry-run before the real one.
 
-Downloads land in `/var/tmp/pve-template-prep/cache`, mode `0700`, owned by root. At the end, Enter keeps the working files. `y` deletes them after every release succeeds. **A disk backup in that directory is never deleted.** A failed release also keeps the download, even if you asked to clean up. A dry-run deletes nothing. `virt-customize --install` fetches packages from inside the image. A live run needs outbound network.
+The cache is mode `0700`, owned by root. At the end of a run, Enter keeps the working files. `y` deletes them after every release succeeds. A failed release also keeps the download, even if you asked to clean up. A dry-run deletes nothing. `virt-customize --install` fetches packages from inside the image. A live run needs outbound network.
+
+</details>
+
+## Root password SSH
+
+When guest prep is on, the next question can let root log in over SSH with a password. Enter writes `/etc/ssh/sshd_config.d/00-enableroot.conf` on every family. `n` leaves the image default. Guest prep off skips the question.
+
+```
+PasswordAuthentication yes
+PermitRootLogin yes
+```
+
+> [!WARNING]
+> The cloud-init user has to be `root`. This tool does not set a password. A blank user becomes `ubuntu`, `debian`, `almalinux`, `fedora`, or `cloudlinux`, and root stays locked.
+
+To put the image default back, on the guest:
+
+```sh
+rm /etc/ssh/sshd_config.d/00-enableroot.conf
+systemctl restart ssh || systemctl restart sshd
+```
+
+Debian and Ubuntu name the unit `ssh`. Alma, CloudLinux, and Fedora name it `sshd`. The second restart runs when the first unit is not there. Tighten SSH after the first login.
+
+<details>
+<summary>Why the file is named 00-</summary>
+
+Deleting that file is the off switch. OpenSSH keeps the first value it reads, and `Include` is at the top of `sshd_config`. Ubuntu 22.04, 24.04, and 26.04 already set `PasswordAuthentication no` in `60-cloudimg-settings.conf`, so a later file cannot turn password login back on. `00-` is read first. It also wins if cloud-init later writes `PasswordAuthentication no` into `50-cloud-init.conf`. `ssh_pwauth: false` does not undo this file.
+
+</details>
 
 ## What it asks
 
-Each question says what that step does before it asks. Empty input accepts the default when the question shows one. A wrong answer asks that question again. The last line is `Type YES`. `YES` or `yes` starts the run. `X` or `no` exits. Nothing on the host has been built until that YES. The update question, when it appears, is earlier, and yes replaces this install before these questions.
+Each question says what that step does before it asks. Empty input accepts the default. A wrong answer asks again. On a terminal the choices are menus. A pipe gets numbered lines. Space marks a release. You type VMIDs, `DELETE`, and `YES`.
 
-On a terminal the same questions are menus, colored for a dark background with the 16 ANSI colors. A header is green, the explanation under it is white, then a green line, then the choices in cyan. The current row is a cyan background with black text. The question label is bright black, and `(Y/n)` is white. Arrow keys move, a number highlights that row, and Enter accepts it. The Enter default is the first row. Moving the pointer does not leave that row painted as the selection. Red is only the "do not back up" row and a sentence that says a VM will be deleted. If the text is red, it is load-bearing.
+| | Question | Enter |
+| --- | --- | --- |
+| 1 | Distro | |
+| 2 | One to three releases. The number is the menu, not the version. Debian `1, 2` is 12 and 13. Fedora `1, 2` is 43 and 44. | |
+| 3 | `1` template, `2` disk image, `3` stopped VM | Template |
+| 4 | One VMID per release. A list or a range is rejected. | Next free ID from 9001, in template mode |
+| 5 | A directory for a published image, or `VM Disk Storage Path` for a VM | |
+| 6 | Volume format on directory, NFS, and CIFS. `1` qcow2, `2` raw. ZFS, LVM, LVM-thin, RBD, and iSCSI skip this. | qcow2 |
+| 7 | What to do with a disk that is already there | |
+| 8 | Guest prep | Yes |
+| 9 | Root password SSH. Skipped when guest prep is off. | Yes. Removal is [above](#root-password-ssh). |
+| 10 | Hardware, in template mode: bridge, memory, cores | `vmbr0`, 2048 MB, 2 cores |
+| 11 | `qm template`, in template mode | Convert |
+| 12 | Delete the working files in the prep cache | Keep them. `y` deletes them. Disk backups stay. |
+| 13 | Read the summary and type `YES` | |
 
-Releases are a checkbox: space marks one, and one to three are allowed. VMIDs, `DELETE`, and `YES` are typed. A pipe, or a `vendor/` tree that will not import, keeps the numbered lines below. A codename such as `bookworm` works on that numbered path.
+When guest prep is on, the summary also says `root-ssh=yes` or `root-ssh=no`.
+
+<details>
+<summary>The long version of those questions</summary>
+
+`YES` or `yes` starts the run. `X` or `no` exits. Nothing on the host has been built until that YES. The update question, when it appears, is earlier, and yes replaces this install before these questions.
+
+On a terminal the menus are colored for a dark background with the 16 ANSI colors. A header is green, the explanation under it is white, then a green line, then the choices in cyan. The current row is a cyan background with black text. The question label is bright black, and `(Y/n)` is white. Arrow keys move, a number highlights that row, and Enter accepts it. The Enter default is the first row. Moving the pointer does not leave that row painted as the selection. Red is only the "do not back up" row and a sentence that says a VM will be deleted.
+
+Releases are a checkbox: one to three. A codename such as `bookworm` works on the numbered path. A `vendor/` tree that will not import keeps that numbered path too.
 
 1. Distro, by number.
-2. Releases, by number, comma-separated, one to three. **The numbers are the menu, not the version.** On Debian, `1, 2` is 12 and 13. On Fedora, `1, 2` is 43 and 44. A codename still works (`bookworm`, `noble`).
-3. What to build. `1` complete PVE VM template, `2` PVE VM disk image only, `3` prep a stopped VM in place. Enter selects the template.
-4. VMIDs, one question per release. The question names the release (`Provide a VMID for Debian 13`). One number. A list or a range is rejected.
+2. Releases, by number, comma-separated. **The numbers are the menu, not the version.** A codename still works (`bookworm`, `noble`).
+3. What to build. Enter selects the template.
+4. VMIDs, one question per release. The question names the release (`Provide a VMID for Debian 13`). One number.
    - Template: Enter assigns the next free ID from 9001. IDs already in use are skipped, quietly, including a hole such as a taken 9002. Two releases that both take the default become 9001 and 9002, or 9003 and 9004 when those first two are taken. A typed ID that is already in use replaces that VM. The question says the existing VM will be deleted.
    - Disk image only: Enter on the first release publishes a file for every selected release and does not touch a VM. Each later release needs its own VMID. An existing VMID receives the new disk. A VMID that is not in use asks you to try another ID, or to create a new VM template at that ID.
    - Stopped-VM prep: each release asks for a VMID that already exists. There is no free-ID default.
 5. Where it goes. A published disk image asks for the file format, then a directory. `1` raw (`.img`, full size), `2` QEMU qcow2. Enter selects raw. The directory is a path, not a storage id. A template, an insert, or a stopped VM asks for `VM Disk Storage Path`. A number picks from the detected list. A storage id that is not in that list is asked again.
-6. Volume format, after that storage, when the disk will be imported. Directory, NFS, CIFS, and the other file storages ask. `1` QEMU qcow2, `2` raw. Enter selects qcow2. That answer is `qm importdisk --format`. ZFS, LVM, LVM-thin, RBD, and iSCSI do not ask. The line says the volume will be raw. CIFS is a file share, including when the volume is raw. There is no block CIFS type. A stopped VM does not ask.
+6. Volume format, after that storage, when the disk will be imported. That answer is `qm importdisk --format`. The skipped storage types say the volume will be raw. CIFS is a file share, including when the volume is raw. There is no block CIFS type. A stopped VM does not ask.
 7. Disks that are already there, asked once per occupied VMID while the VMIDs are collected.
    - Template: **the VM will be deleted.** `1` copies the disk into the cache first. `2` does not. `2` then requires `DELETE`. `X` exits. A VM with no OS disk skips the backup menu and still requires `DELETE`.
    - Disk image: the VM stays. `1` keeps the old disk and attaches the new one. `2` deletes the old disk, after `DELETE`.
    - That VMID is a template: the config stays and the boot disk is replaced. `1` copies the old disk into the cache. It is not left attached. **A template with linked clones is not changed**, including clones on other nodes.
    - A published file that already exists is renamed aside. That path does not ask.
 8. Guest prep. The prompt says what it changes. Enter means yes. `n` skips `virt-customize`.
-9. Template mode: the hardware that will be applied, then bridge, memory, and cores. Enter keeps `vmbr0`, 2048 MB, and 2 cores. `n` asks for those three. Machine type is `q35`. CPU type is `x86-64-v2-AES`. SCSI type, serial console, cloud-init, and the rest are listed and can be changed later with `qm set`.
-10. Template mode: convert the new VM with `qm template`. Enter converts. `n` leaves a normal VM. A template is cloned, not booted.
-11. Delete the working files in `/var/tmp/pve-template-prep/cache` when the run finishes. Enter keeps them. `y` deletes them. A disk backup in that directory stays. This is the prep cache, not the rest of `/var/tmp`.
-12. Read the summary. Type `YES`.
+9. Root password SSH, asked only when guest prep is on. Enter writes the drop-in. `n` leaves the image default. The cloud-init user must be `root`.
+10. Template mode: the hardware that will be applied, then bridge, memory, and cores if you decline the default. Machine type is `q35`. CPU type is `x86-64-v2-AES`. SCSI type, serial console, cloud-init, and the rest are listed and can be changed later with `qm set`.
+11. Template mode: convert the new VM with `qm template`. Enter converts. `n` leaves a normal VM. A template is cloned, not booted.
+12. Delete the working files in `/var/tmp/pve-template-prep/cache` when the run finishes. This is the prep cache, not the rest of `/var/tmp`.
+13. Read the summary. Type `YES`.
 
-## What the three products do
+</details>
 
-**Image.** Download, optionally customize, and write `<distro>-<release>-pve.img` or `.qcow2` into the directory you named. Needs `qemu-img`. Does not need `qm` unless you typed an existing VMID. The directory is a filesystem path. A ZFS or LVM storage id will not do, however convincing the GUI is about it. An existing VMID keeps that VM and gets the new disk inserted.
+## The three paths
 
-A template VMID is how you refresh a template without rebuilding it. Firewall, options, and the rest of the config stay. The boot disk is replaced, and the guest is still a template when it is done. **Linked clones block that.** A clone on another node counts when the disk is on shared storage. If the clone check cannot be read, the template is left alone.
+**Image.** A directory path, not a storage id. A ZFS or LVM id will not do, however convincing the GUI is about it. An existing VMID keeps that VM and gets the new disk inserted. Needs `qemu-img`.
 
-**Template.** Customize the downloaded image while it is still a file, then `qm importdisk` into the storage you named. Any storage that accepts `images` works. ZFS, LVM, LVM-thin, RBD, and iSCSI allocate a raw volume. Directory, NFS, and CIFS pass `--format qcow2` or `--format raw`. The working copy in the cache stays qcow2 until that import, so a raw volume does not expand there first. A published raw file still does. The guest name is `<distro>-<release>-cloud`. Enter on the conversion question runs `qm template`. `n` leaves a normal VM with the same disk, cloud-init drive, and boot order. This path builds a new VM. It does not keep the old firewall and options. A template that already has linked clones is not destroyed. Needs `qemu-img`, `qm`, and `pvesm`. Guest prep also needs `virt-customize`.
+**Template.** The image is customized as a file, then imported. Enter runs `qm template`. `n` leaves a normal VM with the same disk, cloud-init drive, and boot order. This path builds a new VM. It does not keep the old firewall and options. Needs `qemu-img`, `qm`, and `pvesm`.
 
-**Existing.** No download. The VM must be stopped, and it must not already be a template. Prep runs on the OS disk in place, so `pvesm path` has to be a regular file. A zvol or an LVM volume is refused. libguestfs does not get to improvise on a block device. Needs `qm`, `pvesm`, and, if prep is on, `virt-customize`. Does not need `qemu-img`.
+**Existing.** No download. The VM is stopped, and it is not already a template. `pvesm path` has to be a regular file. A zvol or an LVM volume is refused. Needs `qm`, `pvesm`, and, if prep is on, `virt-customize`.
 
-One release failing does not cancel the rest, unless a template was destroyed and its replacement did not finish. In that case the run stops. The exit status is 0 only when every selected release succeeds.
+One release failing does not cancel the rest, unless a template was destroyed and its replacement did not finish. Then the run stops. Exit status is 0 only when every selected release succeeds.
 
-## Replacing a VMID
+<details>
+<summary>Import format, backups, and linked clones</summary>
+
+Any storage that accepts `images` works for a template. ZFS, LVM, LVM-thin, RBD, and iSCSI allocate a raw volume. Directory, NFS, and CIFS pass `--format qcow2` or `--format raw`. The working copy in the cache stays qcow2 until that import, so a raw volume does not expand there first. A published raw file still does. The guest name is `<distro>-<release>-cloud`. Guest prep also needs `virt-customize`.
+
+A template VMID in image mode is how you refresh a template without rebuilding it. Firewall, options, and the rest of the config stay. The boot disk is replaced, and the guest is still a template when it is done. **Linked clones block that.** A clone on another node counts when the disk is on shared storage.
 
 Enter never lands on a VMID that is already in use. Replacing one means you typed that ID.
 
@@ -86,19 +166,7 @@ Disk-image mode does not destroy the VM. On a normal VM, backup attaches the new
 
 The confirm screen lists every VMID that will be replaced, plus bridge, memory, and cores. Read it. `YES` is the whole safety interlock.
 
-## Catalog
-
-Each distro is one file, `pve_prep/distros/<distro>.json`. A release is a row in that file: version, codename, aliases, and whether it is EOL. The image URL is a pattern on the same file. Adding or dropping a release is data, which is the whole reason it is not hardcoded into a function named after a codename. Fedora's directory index and CloudLinux's `catalog.json` picker stay in `catalog.py`, because those are parsers, not version numbers. Guest prep is still one path per family (`deb` or `el`) in `customize.py`.
-
-| Distro | Releases | Notes |
-| --- | --- | --- |
-| debian | 12, 13 | |
-| ubuntu | 22.04, 24.04, 26.04 | |
-| alma | 8, 9, 10 | |
-| cloudlinux | 8, 9, 10 | Minimal OpenStack qcow2. Filename and SHA256 come from `catalog.json` at download. |
-| fedora | 43, 44 | The Generic qcow2 is chosen from the release index at download. |
-
-No CentOS. Fedora 42 is not listed. It stopped building. CloudLinux logs in as `cloudlinux`. Its packages do not update until the guest is registered with a license. Unlicensed, it is a very calm brick. CloudLinux 6 and 7 are not listed.
+</details>
 
 ## Guest prep
 
@@ -110,12 +178,27 @@ Default yes. Image and template mode apply it to the downloaded file before publ
 - growpart
 - chrony
 - Reset machine-id and SSH host keys
+- Root password SSH, when that question is accepted. The file and how to remove it are under [Root password SSH](#root-password-ssh).
 
 Debian and Ubuntu: mask AppArmor, purge snapd. A cloud template does not need a snap of anything.
 
 Alma, CloudLinux, and Fedora: SELinux permissive, firewalld disabled. Same EL path, on purpose.
 
 `virt-customize` uses `LIBGUESTFS_BACKEND=direct` when that variable is unset, so libguestfs starts qemu itself instead of asking libvirt for permission.
+
+## Catalog
+
+Each distro is one file, `pve_prep/distros/<distro>.json`. Adding or dropping a release is a row in that file. Fedora's directory index and CloudLinux's `catalog.json` picker stay in `catalog.py`. Guest prep is one path per family (`deb` or `el`) in `customize.py`.
+
+| Distro | Releases | Notes |
+| --- | --- | --- |
+| debian | 12, 13 | |
+| ubuntu | 22.04, 24.04, 26.04 | |
+| alma | 8, 9, 10 | |
+| cloudlinux | 8, 9, 10 | Minimal OpenStack qcow2. Filename and SHA256 come from `catalog.json` at download. |
+| fedora | 43, 44 | The Generic qcow2 is chosen from the release index at download. |
+
+No CentOS. Fedora 42 is not listed. It stopped building. CloudLinux logs in as `cloudlinux`. Its packages do not update until the guest is registered with a license. Unlicensed, it is a very calm brick. CloudLinux 6 and 7 are not listed.
 
 ## Not in this version
 

@@ -96,6 +96,7 @@ class InterviewTest(unittest.TestCase):
                 "/tmp/images",
                 "yes",
                 "",
+                "",
                 "yes",
             ]
         )
@@ -120,12 +121,19 @@ class InterviewTest(unittest.TestCase):
                 destroy_vmids=frozenset(),
                 make_template=False,
                 clean_cache=False,
+                permit_root=True,
             ),
         )
         blob = "".join(script.written)
-        self.assertIn("debian 12 -> image raw /tmp/images/debian-12-pve.img guest-prep=yes", blob)
+        self.assertIn(
+            "debian 12 -> image raw /tmp/images/debian-12-pve.img guest-prep=yes root-ssh=yes",
+            blob,
+        )
         self.assertIn("cache: keep /var/tmp/pve-template-prep/cache", blob)
-        self.assertIn("debian 13 -> image raw /tmp/images/debian-13-pve.img guest-prep=yes", blob)
+        self.assertIn(
+            "debian 13 -> image raw /tmp/images/debian-13-pve.img guest-prep=yes root-ssh=yes",
+            blob,
+        )
         self.assertIn("raw (.img, full size)", blob)
         self.assertIn("Type YES: ", blob)
         self.assertIn("Provide a VMID for bookworm.", blob)
@@ -144,6 +152,7 @@ class InterviewTest(unittest.TestCase):
                 "2",
                 "DELETE",
                 "2",
+                "",
                 "",
                 "",
                 "",
@@ -183,7 +192,7 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("Do not back up the existing template VM disk", blob)
         self.assertEqual(job.backup_vmids, frozenset())
         self.assertIn(
-            "debian 12 -> template VMID 910 name debian-12-cloud storage nfs-templates qcow2 guest-prep=yes",
+            "debian 12 -> template VMID 910 name debian-12-cloud storage nfs-templates qcow2 guest-prep=yes root-ssh=yes",
             blob,
         )
         self.assertIn("VMID 910: the existing disk is not kept.", blob)
@@ -199,6 +208,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -237,6 +247,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "",
+                "",
                 "yes",
             ]
         )
@@ -264,6 +275,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -297,6 +309,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "",
+                "",
                 "yes",
             ]
         )
@@ -319,6 +332,7 @@ class InterviewTest(unittest.TestCase):
                 "/tmp/images",
                 "y",
                 "",
+                "",
                 "no",
             ]
         )
@@ -335,6 +349,7 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "/tmp/images",
                 "y",
+                "",
                 "",
                 "yess",
                 "yes",
@@ -370,8 +385,11 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.dest_dir, "/tmp/x")
         self.assertEqual(job.collision, "backup")
         self.assertFalse(job.prep)
+        self.assertFalse(job.permit_root)
         self.assertEqual(job.vmids, ())
         blob = "".join(script.written)
+        self.assertNotIn("00-enableroot.conf", blob)
+        self.assertNotIn("root-ssh=", blob)
         self.assertIn("unknown release: nope", blob)
         self.assertIn("pick a release number: 12", blob)
         self.assertIn("need at least one release", blob)
@@ -462,6 +480,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.destroy_vmids, frozenset({910}))
         self.assertEqual(job.collision, "backup")
         self.assertFalse(job.prep)
+        self.assertFalse(job.permit_root)
         self.assertEqual(job.bridge, "vmbr1")
         self.assertEqual(job.memory_mb, 4096)
         self.assertEqual(job.cores, 4)
@@ -479,6 +498,7 @@ class InterviewTest(unittest.TestCase):
                 "2",
                 "DELETE",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -509,6 +529,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "",
+                "",
                 "yes",
             ]
         )
@@ -529,6 +550,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "nope",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -580,6 +602,8 @@ class InterviewTest(unittest.TestCase):
         )
         blob = "".join(script.written)
         self.assertIn("debian 12 -> existing VMID 400 storage dir-templates guest-prep=no", blob)
+        self.assertNotIn("root-ssh=", blob)
+        self.assertNotIn("00-enableroot.conf", blob)
         self.assertNotIn("VM disk format:", blob)
         self.assertNotIn("Disk:", blob)
         self.assertNotIn("Hardware defaults:", blob)
@@ -593,6 +617,7 @@ class InterviewTest(unittest.TestCase):
                 "910",
                 "1",
                 "2",
+                "",
                 "",
                 "",
                 "",
@@ -630,6 +655,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "/tmp/images",
                 "yes",
+                "",
                 "",
                 "yes",
             ]
@@ -671,6 +697,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "",
+                "",
                 "yes",
             ]
         )
@@ -698,6 +725,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "",
+                "",
                 "n",
                 "y",
                 "yes",
@@ -710,7 +738,7 @@ class InterviewTest(unittest.TestCase):
         self.assertTrue(job.clean_cache)
         blob = "".join(script.written)
         self.assertIn(
-            "debian 12 -> vm VMID 9001 name debian-12-cloud storage dir-templates qcow2 guest-prep=yes",
+            "debian 12 -> vm VMID 9001 name debian-12-cloud storage dir-templates qcow2 guest-prep=yes root-ssh=yes",
             blob,
         )
         self.assertIn("Type YES to create the VM.", blob)
@@ -734,6 +762,7 @@ class InterviewTest(unittest.TestCase):
                 "2",
                 "DELETE",
                 "2",
+                "",
                 "",
                 "",
                 "",
@@ -772,6 +801,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "",
+                "",
                 "yes",
             ]
         )
@@ -792,7 +822,7 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("Create a new VM template at 920", blob)
         self.assertIn("debian 12 -> insert VMID 910", blob)
         self.assertIn(
-            "debian 13 -> template VMID 920 name debian-13-cloud storage dir-templates qcow2 guest-prep=yes",
+            "debian 13 -> template VMID 920 name debian-13-cloud storage dir-templates qcow2 guest-prep=yes root-ssh=yes",
             blob,
         )
         self.assertIn("Type YES to insert the disk and create the template.", blob)
@@ -806,6 +836,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -836,6 +867,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "1",
+                "",
                 "",
                 "",
                 "",
@@ -872,6 +904,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "",
+                "",
                 "yes",
             ]
         )
@@ -886,6 +919,36 @@ class InterviewTest(unittest.TestCase):
         blob = "".join(script.written)
         self.assertIn("debian 12 -> template VMID 9001", blob)
         self.assertIn("storage share raw", blob)
+        self.assertIn("guest-prep=yes root-ssh=yes", blob)
+
+    def test_root_ssh_no_leaves_the_image_default(self) -> None:
+        script = _Script(
+            [
+                "1",
+                "1",
+                "2",
+                "",
+                "1",
+                "/tmp/images",
+                "",
+                "n",
+                "",
+                "yes",
+            ]
+        )
+        job = script.run(dry_run=False)
+        self.assertTrue(job.prep)
+        self.assertFalse(job.permit_root)
+        blob = "".join(script.written)
+        self.assertIn("Allow root to log in over SSH with a password?", blob)
+        self.assertIn("Cloud-init user must be set to 'root'.", blob)
+        self.assertIn("rm /etc/ssh/sshd_config.d/00-enableroot.conf", blob)
+        self.assertIn("and restart SSHd.", blob)
+        self.assertIn("Enter allows it. n leaves the image default. [Y/n]", blob)
+        self.assertIn(
+            "debian 12 -> image raw /tmp/images/debian-12-pve.img guest-prep=yes root-ssh=no",
+            blob,
+        )
 
 
 if __name__ == "__main__":
