@@ -89,7 +89,7 @@ Deleting that file is the off switch. OpenSSH keeps the first value it reads, an
 
 ## What it asks
 
-Each question says what that step does before it asks. Empty input accepts the default. A wrong answer asks again. On a terminal the choices are menus. A pipe gets numbered lines. Space marks a release. You type VMIDs, `DELETE`, and `YES`.
+Each question says what that step does before it asks. Empty input accepts the default. A wrong typed answer asks again, and that next prompt says why. On a terminal the choices are menus. A pipe gets numbered lines. Space or Enter selects a one-choice menu. Space marks a release, and Enter accepts that list. You type VMIDs, `DELETE`, and `YES`.
 
 | | Question | Enter |
 | --- | --- | --- |
@@ -114,22 +114,22 @@ When guest prep is on, the summary also says `root-ssh=yes` or `root-ssh=no`.
 
 A backup, or a run that replaces nothing, starts when you type `YES` or `yes`. A delete with no backup starts when you type `DELETE`. `X` or `no` exits. Nothing on the host has been built until that word. The update question, when it appears, is earlier, and yes replaces this install before these questions.
 
-On a terminal the menus are colored for a dark background with the 16 ANSI colors. A header is green, the explanation under it is white, then a green line, then the choices in cyan. The current row is a cyan background with black text. The question label is bright black, and `(Y/n)` is white. Arrow keys move, a number highlights that row, and Enter accepts it. The Enter default is the first row. Moving the pointer does not leave that row painted as the selection. Red is the screen that permanently deletes a template or its disk.
+On a terminal the menus use one dark palette. A pipe, `NO_COLOR`, or `TERM=dumb` stays plain. `TERM=linux` stays on the 16 ANSI colors. `COLORTERM=truecolor` or `24bit` uses 24-bit. Anything else on a terminal, including `xterm-256color` after SSH, uses 256 colors. `PROMPT_TOOLKIT_COLOR_DEPTH` can force one of those. A header is green, the body is off-white, and the choices are cyan. The current row is a cyan background with near-black text. The question label is dim. Arrow keys move. A number highlights that row. Space or Enter selects it. The Enter default is the first row. Moving the pointer does not leave that row painted as the selection. Releases are the one list where Space marks and Enter accepts. Red is the screen that permanently deletes a template or its disk.
 
 Releases are a checkbox: one to three. A codename such as `bookworm` works on the numbered path. A `vendor/` tree that will not import keeps that numbered path too.
 
 1. Distro, by number.
 2. Releases, by number, comma-separated. **The numbers are the menu, not the version.** A codename still works (`bookworm`, `noble`).
 3. What to build. Enter selects the template.
-4. VMIDs, one question per release. The question names the release (`Provide a VMID for Debian 13`). One number.
+4. VMIDs, one question per release. The question names the release (`VMID for Debian 13. Enter uses 9002.`). One number. A value that cannot be used is asked again, and the next prompt says why.
    - Template: Enter assigns the next free ID from 9001. IDs already in use are skipped, quietly, including a hole such as a taken 9002. Two releases that both take the default become 9001 and 9002, or 9003 and 9004 when those first two are taken. A typed ID that is already in use has to be a template. The template is deleted and replaced. A normal VM is refused. A linked clone is refused. A template that still has linked clones is refused, including a clone on another node.
    - Disk image only: Enter on the first release publishes a file for every selected release and does not touch a VM. Each later release needs its own VMID. An existing VMID has to be a template. Its boot disk is replaced. The same refusals apply. A VMID that is not in use asks you to try another ID, or to create a new VM template at that ID.
    - Stopped-VM prep: each release asks for a VMID that already exists. There is no free-ID default. A template is refused. A linked clone is refused.
 5. Where it goes. A published disk image asks for the file format, then a directory. `1` raw (`.img`, full size), `2` QEMU qcow2. Enter selects raw. The directory is a path, not a storage id. A template, an insert, or a stopped VM asks for `VM Disk Storage Path`. A number picks from the detected list. A storage id that is not in that list is asked again.
 6. Volume format, after that storage, when the disk will be imported. That answer is `qm importdisk --format`. The skipped storage types say the volume will be raw. CIFS is a file share, including when the volume is raw. There is no block CIFS type. A stopped VM does not ask.
 7. Guest prep. The prompt says what it changes. Enter means yes. `n` skips `virt-customize`.
-8. Root password SSH, asked only when guest prep is on. Enter writes the drop-in. `n` leaves the image default. The cloud-init user must be `root`.
-9. Template mode: the hardware that will be applied, then bridge, memory, and cores if you decline the default. Machine type is `q35`. CPU type is `x86-64-v2-AES`. SCSI type, serial console, cloud-init, and the rest are listed and can be changed later with `qm set`.
+8. Root password SSH, asked only when guest prep is on. Enter writes the drop-in. `n` leaves the image default. The cloud-init user must be `root`. The question does not repeat the revert command. That stays in [Root password SSH](#root-password-ssh).
+9. Template mode: bridge, memory, and cores. Enter keeps `vmbr0`, 2048 MB, and 2 cores. `n` changes those three. Machine type is `q35`, the SCSI controller is virtio-scsi, the display is a serial console, and the guest agent is on. The rest can be changed later with `qm set`.
 10. Template mode: convert the new VM with `qm template`. Enter converts. `n` leaves a normal VM. A template is cloned, not booted.
 11. Delete the working files in `/var/tmp/pve-template-prep/cache` when the run finishes. This is the prep cache, not the rest of `/var/tmp`. A disk backup in that directory is never deleted.
 12. Disks that will be replaced. One question, after the other options. Enter copies every one of them into the cache. `n` does not. A VMID with no OS disk is named, and the question is still asked. A new VMID, a published file, and stopped-VM prep skip this. A published file that already exists is renamed aside. That path does not ask.
@@ -161,7 +161,7 @@ A template VMID in image mode is how you refresh a template without rebuilding i
 
 Enter never lands on a VMID that is already in use. Replacing one means you typed that ID.
 
-Template mode replaces a whole template. A normal VM is not destroyed. The guest has to be stopped. A running guest is left alone. The check, and the disk copy when you asked for one, run before the new image is downloaded. `qemu-img convert` writes the copy into the cache. The copy counts only when that command exits 0 and the file is not empty. The line is `VM disk copy completed, building new template images now...`. A failed copy leaves the template alone and does not build the new image. Skipping the backup requires typing `DELETE`. `X` exits. If that destroy succeeds and the replacement does not finish, the run stops. **The download is kept in that case**, even when you asked to delete it. The disk backup is kept either way. Cleanup does not remove it.
+Template mode replaces a whole template. A normal VM is not destroyed. The guest has to be stopped. A running guest is left alone. The check, and the disk copy when you asked for one, run before the new image is downloaded. `qemu-img convert` writes the copy into the cache. On a terminal that command prints its own progress. The copy counts only when that command exits 0 and the file is not empty. The line is `VM disk copy completed, building new template images now...`. A failed copy leaves the template alone and does not build the new image. Skipping the backup requires typing `DELETE`. `X` exits. If that destroy succeeds and the replacement does not finish, the run stops. **The download is kept in that case**, even when you asked to delete it. The disk backup is kept either way. Cleanup does not remove it.
 
 **A linked clone is not changed, on any of the three actions.** A template that still has linked clones is not destroyed, and its disk is not replaced. A linked clone is a disk that still depends on the template base volume. A full clone does not. Clones on other cluster nodes count. Shared storage is where those show up. The check reads every guest config under `/etc/pve/nodes` and the storage volume list. If either one cannot be read, the guest is left alone. Stopped-VM prep refuses a template and refuses a guest that is itself a linked clone.
 

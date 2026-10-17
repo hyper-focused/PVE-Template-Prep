@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 
 from . import __version__
 from .catalog import ImageSpec, finalize_index
-from .vm import is_disk_backup
+from .vm import is_disk_backup, qemu_img_convert_argv
 
 _TIMEOUT = 120
 _CHUNK = 1024 * 1024
@@ -333,7 +333,7 @@ def convert(
         raise DownloadError(f"unsupported disk format: {disk_format}")
     src = Path(src)
     dest = Path(dest)
-    argv = ["qemu-img", "convert", "-O", disk_format, str(src), str(dest)]
+    argv = qemu_img_convert_argv(str(src), str(dest), disk_format)
     if dry_run:
         print(" ".join(argv))
         return

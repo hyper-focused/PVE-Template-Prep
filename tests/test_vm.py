@@ -1107,5 +1107,23 @@ class LinkedCloneTests(unittest.TestCase):
         self.assertNotIn(["qm", "set", "910", "--template", "0"], run.calls)
 
 
+class ConvertArgvTests(unittest.TestCase):
+    def test_progress_flag_follows_the_tty(self) -> None:
+        from unittest import mock
+
+        from pve_prep.vm import qemu_img_convert_argv
+
+        plain = ["qemu-img", "convert", "-O", "qcow2", "a", "b"]
+        shown = ["qemu-img", "convert", "-p", "-O", "qcow2", "a", "b"]
+        with mock.patch("pve_prep.vm.stdout_is_tty", return_value=False):
+            self.assertEqual(qemu_img_convert_argv("a", "b", "qcow2"), plain)
+        with mock.patch("pve_prep.vm.stdout_is_tty", return_value=True):
+            self.assertEqual(qemu_img_convert_argv("a", "b", "qcow2"), shown)
+        self.assertEqual(
+            qemu_img_convert_argv("a", "b", "raw", progress=False),
+            ["qemu-img", "convert", "-O", "raw", "a", "b"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

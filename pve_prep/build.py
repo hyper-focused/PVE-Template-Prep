@@ -10,6 +10,7 @@ import shlex
 from pathlib import Path
 
 from pve_prep.job import action_for, converts_to_template, published_name, vm_name
+from pve_prep.vm import qemu_img_convert_argv
 
 
 def opening(action: str, label: str, job, vmid: int | None) -> str:
@@ -65,10 +66,14 @@ def _stage_replace(job, vmid: int, tools, *, backup: bool) -> None:
     """Refuse a bad target. Copy disks before the new image is built."""
     if job.dry_run:
         if backup:
-            print(
-                f"# qemu-img convert -O qcow2 <os-disk> "
-                f"{job.cache_dir}/vm-{vmid}-os.bak.qcow2"
+            shown = " ".join(
+                qemu_img_convert_argv(
+                    "<os-disk>",
+                    f"{job.cache_dir}/vm-{vmid}-os.bak.qcow2",
+                    "qcow2",
+                )
             )
+            print(f"# {shown}")
         return
     copied = tools.prepare_replace(
         vmid=vmid,

@@ -784,6 +784,33 @@ def _backup_dest(backup_dir: str, vmid: int, bus: str) -> str:
     return str(Path(backup_dir) / disk_backup_name(vmid, bus, stamp))
 
 
+def stdout_is_tty() -> bool:
+    """True when qemu-img can print its own progress on this stdout."""
+    import sys
+
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def qemu_img_convert_argv(
+    src: str,
+    dest: str,
+    disk_format: str,
+    *,
+    progress: bool | None = None,
+) -> list[str]:
+    """qemu-img convert argv. -p only when stdout is a terminal."""
+    if progress is None:
+        progress = stdout_is_tty()
+    argv = ["qemu-img", "convert"]
+    if progress:
+        argv.append("-p")
+    argv.extend(["-O", disk_format, src, dest])
+    return argv
+
+
 def _backup_os_disks(run: Run, *, vmid: int, config_text: str, backup_dir: str) -> int:
     """Copy each OS disk to backup_dir. The VM is left alone.
 
@@ -803,7 +830,7 @@ def _backup_os_disks(run: Run, *, vmid: int, config_text: str, backup_dir: str) 
         if not source:
             raise VmError(f"VM {vmid} disk path for {volid} was empty")
         dest = _backup_dest(backup_dir, vmid, bus)
-        copied = run(["qemu-img", "convert", "-O", "qcow2", source, dest])
+        copied = run(qemu_img_convert_argv(source, dest, "qcow2"))
         if getattr(copied, "returncode", 1) != 0:
             raise VmError(f"VM {vmid} disk backup failed for {volid}: {_detail(copied)}")
         written = Path(dest)
@@ -916,7 +943,14 @@ def create_template(
     if dry_run:
         if backup_disks:
             dest = backup_dir or "."
-            print(f"# qemu-img convert -O qcow2 <os-disk> {dest}/vm-{vmid}-os.bak.qcow2")
+            shown = " ".join(
+                qemu_img_convert_argv(
+                    "<os-disk>",
+                    f"{dest}/vm-{vmid}-os.bak.qcow2",
+                    "qcow2",
+                )
+            )
+            print(f"# {shown}")
         if destroy_ok:
             print(
                 f"# qm destroy {vmid}  "

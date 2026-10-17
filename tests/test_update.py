@@ -164,7 +164,7 @@ class StartupTests(unittest.TestCase):
         buf = io.StringIO()
         with (
             mock.patch.object(mod.tool_update, "is_checkout", return_value=False),
-            mock.patch.object(mod.tool_update, "fetch_version", return_value="1.2.0"),
+            mock.patch.object(mod.tool_update, "fetch_version", return_value=_next_patch()),
             mock.patch.object(sys.stdin, "isatty", return_value=True),
             mock.patch.object(sys.stdout, "isatty", return_value=True),
             mock.patch("builtins.input", return_value="y"),

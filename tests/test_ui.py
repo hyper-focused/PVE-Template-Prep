@@ -142,24 +142,73 @@ class VendorTest(unittest.TestCase):
     def test_dark_background_keeps_yes_no_readable(self) -> None:
         self.assertTrue(ui.available())
         rules = dict(ui.widget_style().style_rules)
-        self.assertIn("ansigreen", rules["separator"])
-        self.assertEqual(rules["text"], "fg:ansicyan")
-        self.assertEqual(rules["highlighted"], "bg:ansicyan fg:ansiblack")
+        self.assertIn(ui._hex("header"), rules["separator"])
+        self.assertEqual(rules["text"], f"fg:{ui._hex('cyan')}")
+        self.assertEqual(rules["highlighted"], f"bg:{ui._hex('cyan')} fg:{ui._hex('ink')}")
         self.assertEqual(rules["selected"], rules["highlighted"])
         self.assertEqual(rules["pointer"], rules["highlighted"])
-        self.assertIn("ansibrightblack", rules["question"])
-        self.assertEqual(rules["instruction"], "fg:ansiwhite")
-        self.assertEqual(rules["answer"], "fg:ansiwhite")
-        self.assertNotIn("#", " ".join(rules.values()))
-        self.assertIn("ansired", rules["danger"])
-        self.assertTrue(ui.tone("explanation", "body").startswith("\033[37m"))
-        self.assertIn("explanation", ui.tone("explanation", "body"))
-        self.assertTrue(ui.tone("Releases.", "header").startswith("\033[32m"))
-        self.assertTrue(ui.tone("Creating Debian 12 VM template", "cyan").startswith("\033[36m"))
-        self.assertIn("deleted", ui.tone("deleted", "danger"))
+        self.assertIn(ui._hex("muted"), rules["question"])
+        self.assertIn(ui._hex("danger"), rules["danger"])
+        self.assertTrue(ui.tone("explanation", "body", depth="16").startswith("\033[37m"))
+        self.assertIn("explanation", ui.tone("explanation", "body", depth="16"))
+        self.assertTrue(ui.tone("Releases.", "header", depth="16").startswith("\033[32m"))
+        self.assertTrue(ui.tone("Creating Debian 12 VM template", "cyan", depth="16").startswith("\033[36m"))
+        self.assertIn("deleted", ui.tone("deleted", "danger", depth="24"))
+        self.assertIn("38;2;255;85;85", ui.tone("deleted", "danger", depth="24"))
+        self.assertEqual(ui.tone("plain", "body", depth="none"), "plain")
+        self.assertIn("38;5;", ui.tone("status", "cyan", depth="256"))
         title = ui.choice_title("42  Fedora 42 EOL")
         self.assertEqual(title[1], ("class:danger", " EOL"))
         self.assertIn("Fedora 42", title[0][1])
+
+    def test_color_profile_follows_the_terminal(self) -> None:
+        self.assertEqual(ui.color_depth(environ={"TERM": "xterm-256color"}, is_tty=False), "none")
+        self.assertEqual(
+            ui.color_depth(environ={"TERM": "xterm-256color", "NO_COLOR": "1"}, is_tty=True),
+            "none",
+        )
+        self.assertEqual(ui.color_depth(environ={"TERM": "dumb"}, is_tty=True), "none")
+        self.assertEqual(ui.color_depth(environ={"TERM": "linux"}, is_tty=True), "16")
+        self.assertEqual(
+            ui.color_depth(
+                environ={"TERM": "linux", "COLORTERM": "truecolor"},
+                is_tty=True,
+            ),
+            "16",
+        )
+        self.assertEqual(
+            ui.color_depth(environ={"TERM": "xterm-256color", "COLORTERM": "truecolor"}, is_tty=True),
+            "24",
+        )
+        self.assertEqual(ui.color_depth(environ={"TERM": "xterm-256color"}, is_tty=True), "256")
+        self.assertEqual(
+            ui.color_depth(
+                environ={
+                    "TERM": "dumb",
+                    "PROMPT_TOOLKIT_COLOR_DEPTH": "DEPTH_24_BIT",
+                },
+                is_tty=True,
+            ),
+            "24",
+        )
+
+    def test_space_accepts_the_highlighted_row(self) -> None:
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        _alarm(8)
+        try:
+            with create_pipe_input() as pipe:
+                pipe.send_text(" ")
+                picked = ui.select(
+                    "Build",
+                    [("template", "template"), ("image", "image")],
+                    input=pipe,
+                    output=DummyOutput(),
+                )
+        finally:
+            signal.alarm(0)
+        self.assertEqual(picked, "template")
 
 
 class ArmTest(unittest.TestCase):
@@ -208,7 +257,6 @@ class WidgetInterviewTest(unittest.TestCase):
             return selects.pop(0)
 
         def checkbox(message, choices, instruction=None, validate=None):
-            self.assertIn("Space marks a release", instruction or "")
             return checks.pop(0)
 
         def text(message, default="", instruction=None):
@@ -272,11 +320,11 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertIn("Releases.", blob)
         self.assertNotIn("codename", blob)
         self.assertNotIn("  1) ", blob)
-        self.assertIn("Complete PVE VM template", blob)
-        self.assertIn("Create a VM, import the disk", blob)
+        self.assertIn("Space marks", ui._CHECK_KEYS)
+        self.assertIn("Space or Enter", ui._SELECT_KEYS)
         self.assertTrue(any(line.startswith("Guest prep") for line in confirms))
-        self.assertTrue(any("00-enableroot.conf" in line for line in confirms))
-        self.assertTrue(any(line.startswith("Allow root") for line in confirms))
+        self.assertFalse(any("00-enableroot.conf" in line for line in confirms))
+        self.assertTrue(any(line.startswith("Allow root SSH") for line in confirms))
         self.assertTrue(job.permit_root)
         self.assertTrue(any("vmbr0" in line for line in confirms))
         self.assertTrue(any("qm template" in line for line in confirms))

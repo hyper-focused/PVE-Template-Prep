@@ -62,6 +62,7 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     vm.is_template = real_vm.is_template
     vm.is_linked_clone = real_vm.is_linked_clone
     vm.prepare_replace = mock.MagicMock(name="prepare_replace", return_value=1)
+    vm.qemu_img_convert_argv = real_vm.qemu_img_convert_argv
     vm.refuse_replace_target = real_vm.refuse_replace_target
     vm.parse_storage_content = real_vm.parse_storage_content
     vm.storage_lacks_images = real_vm.storage_lacks_images
@@ -459,7 +460,7 @@ class OrchestratorTest(unittest.TestCase):
                 MOD.main(["--version"])
         self.assertEqual(caught.exception.code, 0)
         self.assertEqual(buf.getvalue(), f"pve-template-prep {pve_prep.__version__}\n")
-        self.assertEqual(pve_prep.__version__, "1.1.3")
+        self.assertEqual(pve_prep.__version__, "1.2.0")
         import pve_prep.download as download
 
         self.assertEqual(download._HEADERS["User-Agent"], f"pve-prep/{pve_prep.__version__}")
