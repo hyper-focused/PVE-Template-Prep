@@ -1,13 +1,12 @@
 """Interview. A terminal draws questionary widgets. Anything else stays numbered.
 
 read_line raises EOFError on EOF. A reader with use_questionary set, and a
-vendored questionary that imports, takes the widget path. The questions,
-the free-VMID rule, and the DELETE gate do not move.
+vendored questionary that imports, takes the widget path. The questions and
+the free-VMID rule stay. Backup and DELETE are one screen after the options.
 """
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from pve_prep import ui
@@ -227,7 +226,7 @@ def _ask_build(read_line, write) -> str:
         write("  Create a VM, import the disk, and ask before qm template converts it.\n")
         write("\n")
         write("  PVE VM disk image only\n")
-        write("  Write a file. An existing VMID keeps that VM and receives the new disk.\n")
+        write("  Write a file, or replace the boot disk of a template.\n")
         write("\n")
         write("  Prep a stopped VM in place\n")
         write("  No download. Customize the disk that is already attached.\n")
@@ -246,7 +245,7 @@ def _ask_build(read_line, write) -> str:
     write("  1) Complete PVE VM template\n")
     write("     Create a VM, import the disk, and ask before qm template converts it.\n")
     write("  2) PVE VM disk image only\n")
-    write("     Write a file. An existing VMID keeps that VM and receives the new disk.\n")
+    write("     Write a file, or replace the boot disk of a template.\n")
     write("  3) Prep a stopped VM in place\n")
     write("     No download. Customize the disk that is already attached.\n")
     return _ask_choice(
@@ -448,115 +447,61 @@ def _occupied(vmids: tuple[int, ...], vmids_in_use) -> set[int] | None:
     return {vmid for vmid in vmids if vmid in set(found)}
 
 
-def _danger(text: str) -> str:
-    """Red when stdout is a terminal. Pipes and tests stay plain."""
-    if sys.stdout.isatty():
-        return ui.tone(text, "danger")
-    return text
-
-
 def _confirm_delete(read_line, write, detail: str) -> None:
     _say(read_line, write, detail + "\n", "danger")
     while True:
-        raw = _ask_text(read_line, write, "Type DELETE to proceed, or X to exit: ")
+        raw = _ask_text(
+            read_line,
+            write,
+            "Please type DELETE to continue, or X to exit the script without any changes: ",
+        )
         if raw == "DELETE":
             return
         if raw in {"X", "x"}:
             raise PromptAbort("exit")
-        write("type DELETE to proceed, or X to exit\n")
+        write("type DELETE to continue, or X to exit\n")
 
 
-def _disk_title(vmid: int, names: dict[int, str] | None) -> str:
-    label = (names or {}).get(vmid, "")
-    if label:
-        return f"{label}, VMID {vmid}"
-    return f"VMID {vmid}"
+def _guest_role(guest_role, vmid: int, *, default: str) -> str:
+    """template, vm, clone, or blocked. An unreadable check is blocked."""
+    if guest_role is None:
+        return default
+    role = guest_role(vmid)
+    if role in {"template", "vm", "clone", "blocked"}:
+        return role
+    return "blocked"
 
 
-def _ask_each_disk(
-    read_line,
-    write,
-    vmids: tuple[int, ...],
-    vm_has_disks,
-    *,
-    replacing: bool,
-    names: dict[int, str] | None = None,
-) -> frozenset[int]:
-    """Per VMID: backup, or DELETE to drop the disk. Returns VMIDs to back up."""
-    if ui.enabled(read_line):
-        _blank(write)
-    _say(read_line, write, "One or more of the selected VMIDs is currently in use.\n", "header")
-    write("\n")
-    if replacing:
-        _say(read_line, write, "If you continue, those VMs will be permanently deleted.\n", "danger")
-        write(
-            "A template that has linked clones is left unchanged, "
-            "including clones on other cluster nodes.\n"
-        )
+def _replace_refused(write, vmid: int, role: str) -> bool:
+    """True when this VMID cannot replace a template or its disk."""
+    if role == "template":
+        return False
+    if role == "vm":
+        write(f"VMID {vmid} is a VM, not a template.\n")
+    elif role == "clone":
+        write(f"VMID {vmid} is a linked clone. It will not be changed.\n")
     else:
-        write("The VM stays. The new disk is inserted.\n")
         write(
-            "A template keeps its config and gets a new boot disk. "
-            "Backup copies that old disk into the cache instead of leaving it attached. "
-            "A template with linked clones is left unchanged, "
-            "including clones on other cluster nodes.\n"
+            f"VMID {vmid} has linked clones, or the check could not be read. "
+            "It will not be changed.\n"
         )
-    backups: list[int] = []
-    for vmid in vmids:
-        present = vm_has_disks(vmid)
-        title = _disk_title(vmid, names)
-        if present is False:
-            if replacing:
-                _say(
-                    read_line,
-                    write,
-                    f"{title} has no OS disk. The VM will still be deleted.\n",
-                    "danger",
-                )
-                _confirm_delete(read_line, write, f"All data for VMID {vmid} will be removed.")
-            else:
-                write(f"{title} has no OS disk. The new image is inserted.\n")
-            continue
-        if replacing:
-            keep = "Back up the existing template VM disk"
-            drop = "Do not back up the existing template VM disk"
-        else:
-            keep = "Back up the existing VM disk"
-            drop = "Do not back up the existing VM disk"
-        if ui.enabled(read_line):
-            _blank(write)
-            write(f"{title}\n")
-            choice = _pick(
-                read_line,
-                write,
-                title,
-                [(keep, "backup"), (drop, "overwrite", True)],
-            )
-        else:
-            write(f"{title}:\n")
-            write(f"  1) {keep}\n")
-            write(f"  2) {_danger(drop)}\n")
-            choice = _ask_choice(
-                read_line,
-                write,
-                "Backup: ",
-                {"1": "backup", "2": "overwrite"},
-                None,
-                "pick 1 to back up, or 2 to skip the backup",
-            )
-        if choice == "backup":
-            backups.append(vmid)
-            continue
-        if replacing:
-            _confirm_delete(read_line, write, f"All data for VMID {vmid} will be removed.")
-        else:
-            _confirm_delete(
-                read_line,
-                write,
-                f"The existing disk on VMID {vmid} will be deleted. The VM stays. "
-                "A template stays a template.",
-            )
-    return frozenset(backups)
+    return True
+
+
+def _existing_refused(write, vmid: int, role: str) -> bool:
+    """True when stopped-VM prep must not touch this guest."""
+    if role == "vm":
+        return False
+    if role == "clone":
+        write(f"VMID {vmid} is a linked clone. It will not be changed.\n")
+    elif role == "template":
+        write(f"VMID {vmid} is a template. Existing mode does not change templates.\n")
+    else:
+        write(
+            f"VMID {vmid} has linked clones, or the check could not be read. "
+            "It will not be changed.\n"
+        )
+    return True
 
 
 def _named_releases(distro: str, releases: tuple[str, ...], releases_for):
@@ -613,13 +558,15 @@ def _template_intro(read_line, write, label: str, default: int | None, checked: 
     _say(
         read_line,
         write,
-        "If that VMID is in use, the existing VM is deleted and replaced.\n",
+        "If that VMID is in use, it has to be a template. "
+        "The template is deleted and replaced.\n",
         "danger",
     )
-    write("A template with linked clones is left unchanged.\n")
+    write("A normal VM is refused. A linked clone is refused.\n")
+    write("A template that has linked clones is refused, including a clone on another node.\n")
 
 
-def _ask_template_vmids(read_line, write, named, vmids_in_use, vm_has_disks):
+def _ask_template_vmids(read_line, write, named, vmids_in_use, guest_role=None):
     """One VMID per release. Enter takes the next free ID from 9001."""
     chosen: list[int] = []
     destroy: list[int] = []
@@ -658,33 +605,28 @@ def _ask_template_vmids(read_line, write, named, vmids_in_use, vm_has_disks):
                 write("Could not check that VMID. An existing VM will not be replaced.\n")
                 chosen.append(vmid)
                 break
-            chosen.append(vmid)
             if vmid in occupied:
+                role = _guest_role(guest_role, vmid, default="template")
+                if _replace_refused(write, vmid, role):
+                    names.pop(vmid, None)
+                    continue
                 destroy.append(vmid)
+            chosen.append(vmid)
             break
-    vmids = tuple(chosen)
-    destroy_set = frozenset(destroy)
-    if not destroy:
-        return vmids, destroy_set, frozenset()
-    ordered = tuple(vmid for vmid in vmids if vmid in destroy_set)
-    backups = _ask_each_disk(
-        read_line, write, ordered, vm_has_disks, replacing=True, names=names
-    )
-    return vmids, destroy_set, backups
+    return tuple(chosen), frozenset(destroy)
 
 
 def _image_intro(read_line, write, label: str, *, offer_publish: bool, several: bool) -> None:
     if ui.enabled(read_line):
         _blank(write)
     _say(read_line, write, f"Provide a VMID for {label}.\n", "header")
-    if not offer_publish:
-        return
-    if several:
+    if offer_publish and several:
         write("Enter publishes a file for every selected release and leaves every VM alone.\n")
-    else:
+    elif offer_publish:
         write("Enter publishes a file and leaves every VM alone.\n")
-    write("An existing VM stays. A template keeps its config and gets a new boot disk.\n")
-    write("A template with linked clones is left unchanged.\n")
+    write("An existing VMID has to be a template. Its boot disk is replaced.\n")
+    write("A normal VM is refused. A linked clone is refused.\n")
+    write("A template that has linked clones is refused, including a clone on another node.\n")
 
 
 def _ask_missing_vmid(read_line, write, vmid: int) -> str:
@@ -714,12 +656,12 @@ def _ask_missing_vmid(read_line, write, vmid: int) -> str:
     )
 
 
-def _ask_image_vmids(read_line, write, named, vmids_in_use, vm_has_disks):
+def _ask_image_vmids(read_line, write, named, vmids_in_use, guest_role=None):
     """One existing VMID per release.
 
     Enter on the first release publishes a file for every release.
     A VMID that is not in use can create a new template at that ID.
-    Returns (vmids, backup set, template VMID set).
+    Returns (vmids, template VMID set). Backup is decided later, once.
     """
     chosen: list[int] = []
     templates: list[int] = []
@@ -736,13 +678,16 @@ def _ask_image_vmids(read_line, write, named, vmids_in_use, vm_has_disks):
             vmid = _read_one_vmid(read_line, write, prompt)
             if vmid is None:
                 if offer_publish:
-                    return (), frozenset(), frozenset()
+                    return (), frozenset()
                 write("VMID is required\n")
                 continue
             if _already_used(names, vmid, write):
                 continue
             occupied = _occupied((vmid,), vmids_in_use)
             if occupied is None:
+                role = _guest_role(guest_role, vmid, default="template")
+                if guest_role is not None and _replace_refused(write, vmid, role):
+                    continue
                 write("Could not check that VMID. The run inserts the disk if the VM exists.\n")
                 names[vmid] = label
                 chosen.append(vmid)
@@ -754,21 +699,16 @@ def _ask_image_vmids(read_line, write, named, vmids_in_use, vm_has_disks):
                 chosen.append(vmid)
                 templates.append(vmid)
                 break
+            role = _guest_role(guest_role, vmid, default="template")
+            if _replace_refused(write, vmid, role):
+                continue
             names[vmid] = label
             chosen.append(vmid)
             break
-    vmids = tuple(chosen)
-    template_set = frozenset(templates)
-    inserts = tuple(vmid for vmid in vmids if vmid not in template_set)
-    if not inserts:
-        return vmids, frozenset(), template_set
-    backups = _ask_each_disk(
-        read_line, write, inserts, vm_has_disks, replacing=False, names=names
-    )
-    return vmids, backups, template_set
+    return tuple(chosen), frozenset(templates)
 
 
-def _ask_existing_vmids(read_line, write, named, vmids_in_use) -> tuple[int, ...]:
+def _ask_existing_vmids(read_line, write, named, vmids_in_use, guest_role=None) -> tuple[int, ...]:
     """One in-use VMID per release. There is no free-ID default."""
     chosen: list[int] = []
     names: dict[int, str] = {}
@@ -776,7 +716,8 @@ def _ask_existing_vmids(read_line, write, named, vmids_in_use) -> tuple[int, ...
         if ui.enabled(read_line):
             _blank(write)
         _say(read_line, write, f"Provide a VMID for {label}.\n", "header")
-        write("The VM has to already exist.\n")
+        write("The VM has to already exist. A template is refused.\n")
+        write("A linked clone is refused.\n")
         while True:
             vmid = _read_one_vmid(read_line, write, f"VMID for {label}: ")
             if vmid is None:
@@ -787,9 +728,15 @@ def _ask_existing_vmids(read_line, write, named, vmids_in_use) -> tuple[int, ...
             occupied = _occupied((vmid,), vmids_in_use)
             if occupied is None:
                 write("Could not check that VMID.\n")
+                role = _guest_role(guest_role, vmid, default="vm")
+                if _existing_refused(write, vmid, role):
+                    continue
                 break
             if vmid not in occupied:
                 write(f"Not in use: {vmid}. Type an existing VMID.\n")
+                continue
+            role = _guest_role(guest_role, vmid, default="vm")
+            if _existing_refused(write, vmid, role):
                 continue
             break
         names[vmid] = label
@@ -939,6 +886,42 @@ def _ask_clean_cache(read_line, write) -> bool:
     )
 
 
+def _diskless(vm_has_disks, vmid: int) -> bool:
+    """True only when the host says this guest has no OS disk."""
+    if vm_has_disks is None:
+        return False
+    try:
+        found = vm_has_disks(vmid)
+    except Exception:
+        return False
+    return found is False
+
+
+def _confirm_copy(read_line, write, vmids: tuple[int, ...], cache: str) -> None:
+    """One YES after the operator asked for a disk copy. No second gate."""
+    lines = [
+        f"A copy of the VM disks below will be saved to {cache}.",
+        "A new image will then be created.",
+        *[str(vmid) for vmid in vmids],
+    ]
+    write("\n".join(lines) + "\n")
+    while True:
+        answer = _ask_text(read_line, write, "Type YES to continue, or X to exit: ")
+        if answer in {"YES", "yes"}:
+            return
+        if answer in {"X", "x", "n", "no", "NO"}:
+            raise PromptAbort("not confirmed")
+        write("type YES to continue, or X to exit\n")
+
+
+def _delete_notice(*, whole_vm: bool, vmids: tuple[int, ...]) -> str:
+    if whole_vm:
+        head = "The templates listed below will be permanently deleted."
+    else:
+        head = "The existing disk for the templates listed below will be permanently deleted."
+    return "\n".join([head, *[str(vmid) for vmid in vmids]])
+
+
 def _confirm(
     read_line,
     write,
@@ -987,6 +970,7 @@ def interview(
     vmids_in_use,
     vm_has_disks,
     storage_kinds=None,
+    guest_role=None,
 ) -> Job:
     """Walk the operator through one job.
 
@@ -1014,20 +998,17 @@ def interview(
     named = _named_releases(distro, releases, releases_for)
     template_vmids: frozenset[int] = frozenset()
     if mode == "template":
-        vmids, destroy_vmids, backup_vmids = _ask_template_vmids(
-            read_line, write, named, vmids_in_use, vm_has_disks
+        vmids, destroy_vmids = _ask_template_vmids(
+            read_line, write, named, vmids_in_use, guest_role
         )
-        collision = _collision_for(destroy_vmids, backup_vmids)
         dest_dir = ""
         storage = _ask_storage(read_line, write, list_storages)
         disk_format = volume_format_for(storage)
     elif mode == "image":
-        vmids, backup_vmids, template_vmids = _ask_image_vmids(
-            read_line, write, named, vmids_in_use, vm_has_disks
+        vmids, template_vmids = _ask_image_vmids(
+            read_line, write, named, vmids_in_use, guest_role
         )
         destroy_vmids = frozenset()
-        inserts = tuple(vmid for vmid in vmids if vmid not in template_vmids)
-        collision = _collision_for(inserts, backup_vmids)
         if vmids:
             dest_dir = ""
             storage = _ask_storage(read_line, write, list_storages)
@@ -1038,10 +1019,8 @@ def interview(
             storage = ""
     else:
         disk_format = "raw"
-        vmids = _ask_existing_vmids(read_line, write, named, vmids_in_use)
+        vmids = _ask_existing_vmids(read_line, write, named, vmids_in_use, guest_role)
         destroy_vmids = frozenset()
-        backup_vmids = frozenset()
-        collision = "backup"
         dest_dir = ""
         storage = _ask_storage(read_line, write, list_storages)
 
@@ -1080,6 +1059,32 @@ def interview(
         make_template = False
     clean_cache = _ask_clean_cache(read_line, write)
 
+    if mode == "template":
+        replace_ids = tuple(vmid for vmid in vmids if vmid in destroy_vmids)
+        whole_vm = True
+    elif mode == "image":
+        replace_ids = tuple(vmid for vmid in vmids if vmid not in template_vmids)
+        whole_vm = False
+    else:
+        replace_ids = ()
+        whole_vm = False
+
+    backup = False
+    if replace_ids:
+        for vmid in replace_ids:
+            if _diskless(vm_has_disks, vmid):
+                write(f"VMID {vmid} has no OS disk.\n")
+        backup = _ask_bool(
+            read_line,
+            write,
+            "Back up these disks into the cache first?\n"
+            f"The copy is kept in {DEFAULT_CACHE}.\n"
+            "Enter backs them up. n deletes without a copy. [Y/n]\n",
+            True,
+        )
+    backup_vmids = frozenset(replace_ids) if backup else frozenset()
+    collision = _collision_for(replace_ids, backup_vmids)
+
     if ui.enabled(read_line):
         _blank(write)
     if dry_run:
@@ -1107,14 +1112,22 @@ def interview(
             )
             + "\n"
         )
-    for vmid in sorted(destroy_vmids):
-        if vmid in backup_vmids:
+    for vmid in replace_ids:
+        if mode == "template":
+            if vmid in backup_vmids:
+                write(
+                    f"VMID {vmid}: the existing disk is copied into the cache, "
+                    "then the VM is deleted. Cache cleanup does not remove that copy.\n"
+                )
+            else:
+                write(f"VMID {vmid}: the existing disk is not kept. The VM is deleted.\n")
+        elif vmid in backup_vmids:
             write(
                 f"VMID {vmid}: the existing disk is copied into the cache, "
-                "then the VM is deleted. Cache cleanup does not remove that copy.\n"
+                "then the boot disk is replaced. Cache cleanup does not remove that copy.\n"
             )
         else:
-            write(f"VMID {vmid}: the existing disk is not kept. The VM is deleted.\n")
+            write(f"VMID {vmid}: the existing disk is not kept. The boot disk is replaced.\n")
     if mode == "template" or template_vmids:
         write(f"hardware: bridge {bridge}, memory {memory_mb} MB, cores {cores}\n")
     if clean_cache:
@@ -1125,14 +1138,23 @@ def interview(
     else:
         write(f"cache: keep {DEFAULT_CACHE}\n")
 
-    _confirm(
-        read_line,
-        write,
-        mode=mode,
-        count=count,
-        make_template=make_template,
-        new_templates=len(template_vmids),
-    )
+    if replace_ids and backup:
+        _confirm_copy(read_line, write, replace_ids, DEFAULT_CACHE)
+    elif replace_ids:
+        _confirm_delete(
+            read_line,
+            write,
+            _delete_notice(whole_vm=whole_vm, vmids=replace_ids),
+        )
+    else:
+        _confirm(
+            read_line,
+            write,
+            mode=mode,
+            count=count,
+            make_template=make_template,
+            new_templates=len(template_vmids),
+        )
 
     return Job(
         distro=distro,

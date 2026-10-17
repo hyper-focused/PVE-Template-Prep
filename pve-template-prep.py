@@ -24,13 +24,17 @@ from pve_prep.prompts import PromptAbort, interview
 from pve_prep.ui import arm, tone
 from pve_prep.vm import (
     VmDestroyedError,
+    VmError,
     config_has_os_disk,
     create_template,
     existing_hw_commands,
     existing_prep_commands,
     insert_disk,
+    is_linked_clone,
     is_template,
     parse_qm_status,
+    prepare_replace,
+    refuse_replace_target,
     vmid_config_missing,
     storage_lacks_images,
     parse_storage_ids,
@@ -102,6 +106,34 @@ def vm_has_disks(vmid: int) -> bool | None:
             return False
         return None
     return config_has_os_disk(proc.stdout or "")
+
+
+def guest_role(vmid: int) -> str | None:
+    """template, vm, clone, blocked, or None when qm config cannot be read.
+
+    None and any other unreadable result are treated as blocked. A template
+    that still has linked clones is blocked. A normal VM is vm.
+    """
+    try:
+        proc = subprocess.run(
+            ["qm", "config", str(vmid)],
+            text=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    text = proc.stdout or ""
+    if is_linked_clone(text):
+        return "clone"
+    if not is_template(text):
+        return "vm"
+    try:
+        refuse_replace_target(default_run, vmid, text, None)
+    except VmError:
+        return "blocked"
+    return "template"
 
 
 def _pvesm_status() -> str:
@@ -188,11 +220,13 @@ def _tools() -> SimpleNamespace:
         publish=publish,
         insert_disk=insert_disk,
         create_template=create_template,
+        prepare_replace=prepare_replace,
         run=default_run,
         storage_rejects=_storage_rejects_images,
         checked=_checked,
         parse_qm_status=parse_qm_status,
         is_template=is_template,
+        is_linked_clone=is_linked_clone,
         existing_prep_commands=existing_prep_commands,
         existing_hw_commands=existing_hw_commands,
     )
@@ -288,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
             normalize_release=normalize_release,
             vmids_in_use=vmids_in_use,
             vm_has_disks=vm_has_disks,
+            guest_role=guest_role,
         )
     except PromptAbort:
         print("aborted")

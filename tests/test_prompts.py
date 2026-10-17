@@ -52,6 +52,7 @@ class _Script:
         kinds: dict[str, str] | None = None,
         in_use: set[int] | None = None,
         disks: set[int] | None = None,
+        roles: dict[int, str] | None = None,
     ) -> Job:
         def list_storages() -> list[str]:
             if storages is None:
@@ -71,6 +72,11 @@ class _Script:
                 return None
             return vmid in disks
 
+        def guest_role(vmid: int) -> str | None:
+            if roles is None:
+                return None
+            return roles.get(vmid)
+
         return interview(
             self.read_line,
             self.write,
@@ -81,6 +87,7 @@ class _Script:
             normalize_release=_normalize,
             vmids_in_use=vmids_in_use,
             vm_has_disks=vm_has_disks,
+            guest_role=guest_role if roles is not None else None,
         )
 
 
@@ -150,15 +157,14 @@ class InterviewTest(unittest.TestCase):
                 "910",
                 "911",
                 "2",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "n",
                 "DELETE",
-                "2",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "yes",
             ]
         )
         job = script.run(
@@ -186,10 +192,13 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("VM Disk Storage Path:", blob)
         self.assertIn("Provide a VMID for bookworm.", blob)
         self.assertIn("Provide a VMID for trixie.", blob)
-        self.assertIn("If that VMID is in use, the existing VM is deleted and replaced.", blob)
+        self.assertIn("If that VMID is in use, it has to be a template.", blob)
+        self.assertIn("A normal VM is refused.", blob)
+        self.assertIn("A linked clone is refused.", blob)
         self.assertNotIn("Not in use:", blob)
-        self.assertIn("permanently deleted", blob)
-        self.assertIn("Do not back up the existing template VM disk", blob)
+        self.assertIn("The templates listed below will be permanently deleted.", blob)
+        self.assertIn("Please type DELETE to continue", blob)
+        self.assertNotIn("Do not back up the existing template VM disk", blob)
         self.assertEqual(job.backup_vmids, frozenset())
         self.assertIn(
             "debian 12 -> template VMID 910 name debian-12-cloud storage nfs-templates qcow2 guest-prep=yes root-ssh=yes",
@@ -459,7 +468,6 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "910",
                 "911",
-                "1",
                 "nfs-templates",
                 "",
                 "n",
@@ -467,6 +475,7 @@ class InterviewTest(unittest.TestCase):
                 "vmbr1",
                 "4096",
                 "4",
+                "",
                 "",
                 "",
                 "yes",
@@ -486,7 +495,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.cores, 4)
         self.assertIn("copied into the cache", "".join(script.written))
 
-    def test_disk_answer_empty_reasks(self) -> None:
+    def test_backup_answer_empty_keeps_the_copy(self) -> None:
         script = _Script(
             [
                 "1",
@@ -494,15 +503,14 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "910",
                 "911",
-                "",
-                "2",
-                "DELETE",
                 "1",
                 "",
                 "",
                 "",
                 "",
                 "",
+                "",
+                "maybe",
                 "",
                 "yes",
             ]
@@ -511,18 +519,20 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.vmids, (910, 911))
         self.assertEqual(job.destroy_vmids, frozenset({910}))
         self.assertEqual(job.storage, "dir-templates")
-        self.assertEqual(job.collision, "overwrite")
-        self.assertIn("pick 1 to back up, or 2 to skip the backup", "".join(script.written))
-        self.assertEqual(job.backup_vmids, frozenset())
+        self.assertEqual(job.collision, "backup")
+        blob = "".join(script.written)
+        self.assertIn("answer y or n", blob)
+        self.assertIn("A copy of the VM disks below will be saved to", blob)
+        self.assertIn("/var/tmp/pve-template-prep/cache", blob)
+        self.assertEqual(job.backup_vmids, frozenset({910}))
 
-    def test_no_disk_skips_the_policy_question(self) -> None:
+    def test_no_disk_still_asks_before_delete(self) -> None:
         script = _Script(
             [
                 "1",
                 "1",
                 "",
                 "9001",
-                "DELETE",
                 "1",
                 "",
                 "",
@@ -530,7 +540,8 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "",
                 "",
-                "yes",
+                "n",
+                "DELETE",
             ]
         )
         job = script.run(dry_run=False, storages=["dir-templates"], in_use={9001}, disks=set())
@@ -539,6 +550,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.collision, "overwrite")
         blob = "".join(script.written)
         self.assertIn("VMID 9001 has no OS disk.", blob)
+        self.assertIn("The templates listed below will be permanently deleted.", blob)
         self.assertNotIn("Backup: ", blob)
 
     def test_unknown_storage_reasks(self) -> None:
@@ -615,8 +627,8 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "2",
                 "910",
-                "1",
                 "2",
+                "",
                 "",
                 "",
                 "",
@@ -637,8 +649,10 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.collision, "backup")
         self.assertEqual(job.destroy_vmids, frozenset())
         blob = "".join(script.written)
-        self.assertIn("The VM stays. The new disk is inserted.", blob)
+        self.assertIn("An existing VMID has to be a template.", blob)
+        self.assertNotIn("The VM stays", blob)
         self.assertEqual(job.backup_vmids, frozenset({910}))
+        self.assertIn("A copy of the VM disks below will be saved to", blob)
         self.assertIn("debian 12 -> insert VMID 910 storage nfs-templates qcow2 disk=backup", blob)
         self.assertNotIn("Replace VMID", blob)
         self.assertNotIn("Hardware defaults:", blob)
@@ -673,14 +687,21 @@ class InterviewTest(unittest.TestCase):
                 "1",
                 "",
                 "9001",
-                "2",
+                "1",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "n",
                 "X",
             ]
         )
         with self.assertRaises(PromptAbort):
             script.run(dry_run=False, storages=["dir-templates"], in_use={9001}, disks={9001})
 
-    def test_each_vmid_keeps_its_own_backup_choice(self) -> None:
+    def test_one_backup_choice_covers_every_replaced_vmid(self) -> None:
         script = _Script(
             [
                 "1",
@@ -688,10 +709,8 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "910",
                 "911",
-                "2",
-                "DELETE",
                 "1",
-                "1",
+                "",
                 "",
                 "",
                 "",
@@ -709,10 +728,12 @@ class InterviewTest(unittest.TestCase):
         )
         self.assertEqual(job.vmids, (910, 911))
         self.assertEqual(job.destroy_vmids, frozenset({910, 911}))
-        self.assertEqual(job.backup_vmids, frozenset({911}))
+        self.assertEqual(job.backup_vmids, frozenset({910, 911}))
         blob = "".join(script.written)
-        self.assertIn("VMID 910: the existing disk is not kept.", blob)
+        self.assertIn("VMID 910: the existing disk is copied into the cache", blob)
         self.assertIn("VMID 911: the existing disk is copied into the cache", blob)
+        self.assertIn("910\n911", blob)
+        self.assertNotIn("permanently deleted", blob)
 
     def test_template_can_stay_a_vm_and_can_drop_the_cache(self) -> None:
         script = _Script(
@@ -758,15 +779,13 @@ class InterviewTest(unittest.TestCase):
                 "2",
                 "911",
                 "910",
-                "1",
                 "2",
+                "",
+                "",
+                "",
+                "",
+                "n",
                 "DELETE",
-                "2",
-                "",
-                "",
-                "",
-                "",
-                "yes",
             ]
         )
         job = script.run(
@@ -776,13 +795,14 @@ class InterviewTest(unittest.TestCase):
             disks={910, 911},
         )
         self.assertEqual(job.vmids, (911, 910))
-        self.assertEqual(job.backup_vmids, frozenset({911}))
+        self.assertEqual(job.backup_vmids, frozenset())
         self.assertEqual(job.template_vmids, frozenset())
+        self.assertEqual(job.collision, "overwrite")
         blob = "".join(script.written)
         self.assertIn("Provide a VMID for bookworm.", blob)
         self.assertIn("Provide a VMID for trixie.", blob)
-        self.assertIn("bookworm, VMID 911:", blob)
-        self.assertIn("trixie, VMID 910:", blob)
+        self.assertIn("The existing disk for the templates listed below will be permanently deleted.", blob)
+        self.assertIn("911\n910", blob)
         self.assertIn("debian 12 -> insert VMID 911", blob)
         self.assertIn("debian 13 -> insert VMID 910", blob)
 
@@ -796,7 +816,7 @@ class InterviewTest(unittest.TestCase):
                 "920",
                 "2",
                 "1",
-                "1",
+                "",
                 "",
                 "",
                 "",
@@ -825,7 +845,9 @@ class InterviewTest(unittest.TestCase):
             "debian 13 -> template VMID 920 name debian-13-cloud storage dir-templates qcow2 guest-prep=yes root-ssh=yes",
             blob,
         )
-        self.assertIn("Type YES to insert the disk and create the template.", blob)
+        self.assertIn("Type YES to continue, or X to exit", blob)
+        self.assertIn("A new image will then be created.", blob)
+        self.assertNotIn("920\n", blob.split("A copy of the VM disks")[-1].split("Type YES")[0])
         self.assertIn("hardware: bridge vmbr0, memory 2048 MB, cores 2", blob)
 
     def test_zfs_storage_skips_the_format_question(self) -> None:
@@ -949,6 +971,104 @@ class InterviewTest(unittest.TestCase):
             "debian 12 -> image raw /tmp/images/debian-12-pve.img guest-prep=yes root-ssh=no",
             blob,
         )
+
+    def test_normal_vm_is_refused_on_template_replace(self) -> None:
+        script = _Script(
+            [
+                "1",
+                "1",
+                "",
+                "910",
+                "",
+                "1",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "yes",
+            ]
+        )
+        job = script.run(
+            dry_run=False,
+            storages=["dir-templates"],
+            in_use={910},
+            disks={910},
+            roles={910: "vm"},
+        )
+        self.assertEqual(job.vmids, (9001,))
+        self.assertEqual(job.destroy_vmids, frozenset())
+        self.assertIn("VMID 910 is a VM, not a template.", "".join(script.written))
+
+    def test_linked_clone_is_refused_on_every_action(self) -> None:
+        existing = _Script(
+            [
+                "1",
+                "1",
+                "3",
+                "910",
+                "400",
+                "1",
+                "n",
+                "",
+                "yes",
+            ]
+        )
+        job = existing.run(
+            dry_run=False,
+            storages=["dir-templates"],
+            in_use={910, 400},
+            roles={910: "clone", 400: "vm"},
+        )
+        self.assertEqual(job.vmids, (400,))
+        self.assertIn("VMID 910 is a linked clone.", "".join(existing.written))
+
+        image = _Script(
+            [
+                "1",
+                "1",
+                "2",
+                "910",
+                "",
+                "1",
+                "/tmp/images",
+                "",
+                "",
+                "",
+                "yes",
+            ]
+        )
+        published = image.run(dry_run=False, in_use={910}, roles={910: "clone"})
+        self.assertEqual(published.vmids, ())
+        self.assertIn("VMID 910 is a linked clone.", "".join(image.written))
+
+    def test_unreadable_check_is_refused(self) -> None:
+        script = _Script(
+            [
+                "1",
+                "1",
+                "",
+                "910",
+                "",
+                "1",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "yes",
+            ]
+        )
+        job = script.run(
+            dry_run=False,
+            storages=["dir-templates"],
+            in_use={910},
+            roles={910: "blocked"},
+        )
+        self.assertEqual(job.destroy_vmids, frozenset())
+        self.assertIn("could not be read", "".join(script.written))
 
 
 if __name__ == "__main__":

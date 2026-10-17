@@ -60,6 +60,9 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     vm.VmError = real_vm.VmError
     vm.VmDestroyedError = real_vm.VmDestroyedError
     vm.is_template = real_vm.is_template
+    vm.is_linked_clone = real_vm.is_linked_clone
+    vm.prepare_replace = mock.MagicMock(name="prepare_replace", return_value=1)
+    vm.refuse_replace_target = real_vm.refuse_replace_target
     vm.parse_storage_content = real_vm.parse_storage_content
     vm.storage_lacks_images = real_vm.storage_lacks_images
     vm.vmid_config_missing = real_vm.vmid_config_missing
@@ -252,10 +255,16 @@ class OrchestratorTest(unittest.TestCase):
 
         MOD.create_template = create_template
         job = _template_job()
-        MOD.run_one(job, "12", 910)
-        MOD.run_one(job, "13", 911)
+        first = io.StringIO()
+        with redirect_stdout(first):
+            MOD.run_one(job, "12", 910)
+        second = io.StringIO()
+        with redirect_stdout(second):
+            MOD.run_one(job, "13", 911)
+        self.assertIn("qemu-img convert -O qcow2 <os-disk>", first.getvalue())
+        self.assertNotIn("qemu-img", second.getvalue())
         self.assertEqual([item["destroy_ok"] for item in recorded], [True, False])
-        self.assertEqual([item["backup_disks"] for item in recorded], [True, False])
+        self.assertEqual([item["backup_disks"] for item in recorded], [False, False])
         self.assertEqual([item["vmid"] for item in recorded], [910, 911])
         self.assertEqual(
             [item["name"] for item in recorded],
@@ -272,6 +281,52 @@ class OrchestratorTest(unittest.TestCase):
         self.assertFalse(recorded[-1]["make_template"])
         MOD.publish.assert_not_called()
         MOD.fetch_verified.assert_called()
+
+    def test_disk_copy_runs_before_the_download(self) -> None:
+        order: list[tuple] = []
+
+        def prepare_replace(**kwargs):
+            order.append(("copy", kwargs["backup"], kwargs["vmid"]))
+            return 1
+
+        def fetch(*_args, **_kwargs):
+            order.append(("fetch",))
+            return Path("/tmp/src.qcow2")
+
+        MOD.prepare_replace = prepare_replace
+        MOD.fetch_verified = fetch
+        MOD.convert = lambda *_args, **_kwargs: None
+        MOD.customize_apply = lambda *_args, **_kwargs: None
+        MOD.create_template = lambda **_kwargs: None
+        job = replace(_template_job(dry_run=False), releases=("12",), vmids=(910,))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            MOD.run_one(job, "12", 910)
+        self.assertEqual(order, [("copy", True, 910), ("fetch",)])
+        self.assertIn(
+            "VM disk copy completed, building new template images now...",
+            buf.getvalue(),
+        )
+
+    def test_refused_target_is_not_downloaded(self) -> None:
+        order: list[str] = []
+
+        def prepare_replace(**kwargs):
+            order.append("check")
+            self.assertFalse(kwargs["backup"])
+            raise RuntimeError("VM 910 is not a template")
+
+        MOD.prepare_replace = prepare_replace
+        MOD.fetch_verified = lambda *_args, **_kwargs: order.append("fetch")
+        job = replace(
+            _template_job(dry_run=False),
+            releases=("12",),
+            vmids=(910,),
+            backup_vmids=frozenset(),
+        )
+        with self.assertRaises(RuntimeError):
+            MOD.run_one(job, "12", 910)
+        self.assertEqual(order, ["check"])
 
     def test_image_insert_does_not_publish_or_destroy(self) -> None:
         job = replace(
@@ -344,7 +399,7 @@ class OrchestratorTest(unittest.TestCase):
             MOD.run_one(kept, "12", 910)
         self.assertIn(
             "\n\nDebian 12 VM disk image created and imported. "
-            "Previous disk is still attached to VM 910.\n",
+            "Old disk saved in the cache.\n",
             buf.getvalue(),
         )
         replaced = replace(kept, backup_vmids=frozenset())
@@ -404,7 +459,7 @@ class OrchestratorTest(unittest.TestCase):
                 MOD.main(["--version"])
         self.assertEqual(caught.exception.code, 0)
         self.assertEqual(buf.getvalue(), f"pve-template-prep {pve_prep.__version__}\n")
-        self.assertEqual(pve_prep.__version__, "1.1.2")
+        self.assertEqual(pve_prep.__version__, "1.1.3")
         import pve_prep.download as download
 
         self.assertEqual(download._HEADERS["User-Agent"], f"pve-prep/{pve_prep.__version__}")
@@ -433,6 +488,7 @@ class OrchestratorTest(unittest.TestCase):
             vmids_in_use,
             vm_has_disks,
             storage_kinds=None,
+            guest_role=None,
         ):
             seen["dry_run"] = dry_run
             seen["storages"] = list_storages()

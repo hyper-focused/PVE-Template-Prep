@@ -288,10 +288,10 @@ class WidgetInterviewTest(unittest.TestCase):
     def test_delete_x_still_aborts(self) -> None:
         with self.assertRaises(PromptAbort):
             self._run(
-                selects=["debian", "template", "overwrite"],
+                selects=["debian", "template", "dir-templates", "qcow2"],
                 checks=[["12"]],
                 texts=["910", "X"],
-                confirms=[],
+                confirms=[True, True, True, True, False, False],
                 in_use={910},
                 disks={910},
             )

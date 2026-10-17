@@ -235,6 +235,16 @@ def _config_volids(config_text: str) -> list[str]:
     return found
 
 
+def is_linked_clone(config_text: str) -> bool:
+    """True when a volume is a child of a template base, not the base itself.
+
+    The template disk is NFS:9001/base-9001-disk-0.raw.
+    A clone continues past that name: NFS:9001/base-9001-disk-0.raw/122/vm-122-disk-0.qcow2.
+    """
+    child = re.compile(r"base-\d+-disk-\d+(?:\.[A-Za-z0-9]+)?/")
+    return any(child.search(volid) for volid in _config_volids(config_text))
+
+
 def _config_storages(config_text: str) -> list[str]:
     storages: list[str] = []
     seen: set[str] = set()
@@ -405,6 +415,25 @@ def _refuse_linked_clones(
         return
     shown = ", ".join(dict.fromkeys(hits))
     raise VmError(f"VM {vmid} has linked clones ({shown}); the template was not changed")
+
+
+def refuse_replace_target(
+    run: Run,
+    vmid: int,
+    config_text: str,
+    nodes_root: Path | None,
+) -> None:
+    """Raise before a template replace or a template disk replace.
+
+    A normal VM is refused. A guest that is itself a linked clone is refused.
+    A template that still has linked clones, on this node or another, is refused.
+    An unreadable check is a refusal.
+    """
+    if is_linked_clone(config_text):
+        raise VmError(f"VM {vmid} is a linked clone; it was not changed")
+    if not is_template(config_text):
+        raise VmError(f"VM {vmid} is not a template; it was not changed")
+    _refuse_linked_clones(run, vmid, config_text, nodes_root)
 
 
 def boot_devices(config_text: str) -> list[str] | None:
@@ -755,11 +784,15 @@ def _backup_dest(backup_dir: str, vmid: int, bus: str) -> str:
     return str(Path(backup_dir) / disk_backup_name(vmid, bus, stamp))
 
 
-def _backup_os_disks(run: Run, *, vmid: int, config_text: str, backup_dir: str) -> None:
-    """Copy each OS disk to backup_dir. The VM is left alone."""
+def _backup_os_disks(run: Run, *, vmid: int, config_text: str, backup_dir: str) -> int:
+    """Copy each OS disk to backup_dir. The VM is left alone.
+
+    Returns how many disks were copied. Zero disks is success and copies nothing.
+    A convert that exits 0 still fails when the destination is missing or empty.
+    """
     disks = list_os_disks(config_text)
     if not disks:
-        return
+        return 0
     if not backup_dir:
         raise VmError(f"VM {vmid} disk backup needs a cache directory")
     for bus, volid in disks:
@@ -773,7 +806,11 @@ def _backup_os_disks(run: Run, *, vmid: int, config_text: str, backup_dir: str) 
         copied = run(["qemu-img", "convert", "-O", "qcow2", source, dest])
         if getattr(copied, "returncode", 1) != 0:
             raise VmError(f"VM {vmid} disk backup failed for {volid}: {_detail(copied)}")
+        written = Path(dest)
+        if not written.is_file() or written.stat().st_size <= 0:
+            raise VmError(f"VM {vmid} disk backup for {volid} is missing or empty: {dest}")
         print(f"backup {volid} -> {dest}")
+    return len(disks)
 
 
 def next_scsi_index(config_text: str) -> int:
@@ -805,6 +842,38 @@ def _delete_unused_volid(run: Run, *, vmid: int, volid: str) -> None:
         _must(run, ["qm", "set", str(vmid), "--delete", key], vmid=vmid, destroyed=False)
 
 
+def prepare_replace(
+    *,
+    vmid: int,
+    run: Run,
+    backup: bool,
+    backup_dir: str = "",
+    nodes_root: Path | None = None,
+) -> int:
+    """Check the guest, and copy its OS disks when backup is set.
+
+    This runs before the new image is downloaded. A failed copy leaves the
+    guest alone and does not build the new image. Returns how many disks
+    were copied. Zero means there was nothing to copy.
+    """
+    status = run(["qm", "status", str(vmid)])
+    if getattr(status, "returncode", 1) != 0:
+        raise VmError(f"VM {vmid} does not exist")
+    state = parse_qm_status(getattr(status, "stdout", "") or "")
+    if state == "running":
+        raise VmError(f"VM {vmid} is running")
+    if state != "stopped":
+        raise VmError(f"VM {vmid} status {state or 'unknown'} cannot be replaced")
+    cfg = run(["qm", "config", str(vmid)])
+    if getattr(cfg, "returncode", 1) != 0:
+        raise VmError(f"VM {vmid} config failed: {_detail(cfg)}")
+    config_text = getattr(cfg, "stdout", "") or ""
+    refuse_replace_target(run, vmid, config_text, nodes_root)
+    if not backup:
+        return 0
+    return _backup_os_disks(run, vmid=vmid, config_text=config_text, backup_dir=backup_dir)
+
+
 def create_template(
     *,
     vmid: int,
@@ -825,9 +894,10 @@ def create_template(
 ) -> str:
     """Create a cloud VM via run, or print qm commands when dry_run is set.
 
-    An existing stopped VM is destroyed first when destroy_ok is set, template
-    or not. backup_disks copies OS disks into backup_dir before that destroy.
-    A template that has linked clones, on this node or another, is not destroyed.
+    An existing stopped template is destroyed first when destroy_ok is set.
+    A normal VM is not destroyed. A linked clone is not destroyed. A template
+    that still has linked clones, on this node or another, is not destroyed.
+    backup_disks copies OS disks into backup_dir before that destroy.
     make_template runs qm template after the disk is attached.
     """
     guessed = f"{storage}:vm-{vmid}-disk-0"
@@ -871,8 +941,7 @@ def create_template(
         if getattr(cfg, "returncode", 1) != 0:
             raise VmError(f"VM {vmid} config failed: {_detail(cfg)}")
         config_text = getattr(cfg, "stdout", "") or ""
-        if is_template(config_text):
-            _refuse_linked_clones(run, vmid, config_text, nodes_root)
+        refuse_replace_target(run, vmid, config_text, nodes_root)
         if backup_disks:
             _backup_os_disks(
                 run,
@@ -951,6 +1020,7 @@ def _replace_template_disk(
     config_text: str,
     backup_dir: str,
     volume_format: str,
+    copies_done: bool = False,
 ) -> InsertResult:
     """Swap the boot disk and leave the guest a template.
 
@@ -959,15 +1029,16 @@ def _replace_template_disk(
     firewall, and the other options are not rewritten.
     """
     saved = ""
-    if disk_policy == "backup" and list_os_disks(config_text):
+    if disk_policy == "backup" and (copies_done or list_os_disks(config_text)):
         if not backup_dir:
             raise VmError(f"VM {vmid} disk backup needs a cache directory")
-        _backup_os_disks(
-            run,
-            vmid=vmid,
-            config_text=config_text,
-            backup_dir=backup_dir,
-        )
+        if not copies_done:
+            _backup_os_disks(
+                run,
+                vmid=vmid,
+                config_text=config_text,
+                backup_dir=backup_dir,
+            )
         saved = backup_dir
     _must(run, ["qm", "set", str(vmid), "--template", "0"], vmid=vmid, destroyed=False)
     try:
@@ -1002,17 +1073,13 @@ def insert_disk(
     backup_dir: str = "",
     nodes_root: Path | None = None,
     volume_format: str = "raw",
+    copies_done: bool = False,
 ) -> InsertResult:
-    """Import a disk into a stopped guest. The guest config is not replaced.
+    """Replace the boot disk of a stopped template. The rest of the config stays.
 
-    On a normal VM, backup leaves the current OS disk attached and adds the
-    new one on the next scsi slot. overwrite replaces the boot disk and
-    deletes the old volume.
-
-    On a template, the boot disk is replaced and the template flag is kept.
-    backup copies the old disk into backup_dir instead of leaving it attached.
-    A template with linked clones, including clones on other cluster nodes,
-    is not changed.
+    A normal VM is refused. A linked clone is refused. A template that still
+    has linked clones, including clones on other cluster nodes, is not changed.
+    backup copies the old disk into backup_dir unless copies_done is set.
     """
     if disk_policy not in {"backup", "overwrite"}:
         raise VmError(f"unknown disk policy {disk_policy}")
@@ -1021,8 +1088,8 @@ def insert_disk(
         print(" ".join(importdisk_command(vmid, image_path, storage, volume_format)))
         if disk_policy == "backup":
             print(
-                f"# qm set {vmid} --scsiN {guessed},discard=on,ssd=1  "
-                "# next free scsi slot; the current disk stays"
+                f"# old disk copied into the cache; "
+                f"qm set {vmid} --<boot-disk> {guessed},discard=on,ssd=1"
             )
         else:
             print(
@@ -1048,41 +1115,18 @@ def insert_disk(
     if getattr(cfg, "returncode", 1) != 0:
         raise VmError(f"VM {vmid} config failed: {_detail(cfg)}")
     config_text = getattr(cfg, "stdout", "") or ""
-    if is_template(config_text):
-        _refuse_linked_clones(run, vmid, config_text, nodes_root)
-        return _replace_template_disk(
-            run,
-            vmid=vmid,
-            storage=storage,
-            image_path=image_path,
-            disk_policy=disk_policy,
-            config_text=config_text,
-            backup_dir=backup_dir,
-            volume_format=volume_format,
-        )
-    if disk_policy == "overwrite":
-        volid = _overwrite_boot_disk(
-            run,
-            vmid=vmid,
-            storage=storage,
-            image_path=image_path,
-            config_text=config_text,
-            volume_format=volume_format,
-        )
-        return InsertResult(volid)
-    volid = _import_volume(
+    refuse_replace_target(run, vmid, config_text, nodes_root)
+    return _replace_template_disk(
         run,
         vmid=vmid,
-        image_path=image_path,
         storage=storage,
+        image_path=image_path,
+        disk_policy=disk_policy,
+        config_text=config_text,
+        backup_dir=backup_dir,
         volume_format=volume_format,
-        created_now=False,
-        destroyed=False,
+        copies_done=copies_done,
     )
-    attached = f"{volid},discard=on,ssd=1"
-    slot = next_scsi_index(config_text)
-    _must(run, ["qm", "set", str(vmid), f"--scsi{slot}", attached], vmid=vmid, destroyed=False)
-    return InsertResult(volid)
 
 
 def existing_prep_commands(

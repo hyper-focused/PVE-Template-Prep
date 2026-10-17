@@ -209,17 +209,18 @@ class StartupTests(unittest.TestCase):
     def test_pipe_prints_the_notice_and_does_not_wait(self) -> None:
         mod = self._main_module()
         script = Path("/opt/pve-template-prep/pve-template-prep.py")
+        remote = _next_patch()
         buf = io.StringIO()
         with (
             mock.patch.object(mod.tool_update, "is_checkout", return_value=False),
-            mock.patch.object(mod.tool_update, "fetch_version", return_value="1.1.3"),
+            mock.patch.object(mod.tool_update, "fetch_version", return_value=remote),
             mock.patch.object(sys.stdin, "isatty", return_value=False),
             mock.patch.object(sys.stdout, "isatty", return_value=True),
             mock.patch("builtins.input", side_effect=AssertionError("asked")),
             mock.patch.object(sys.stdout, "write", buf.write),
         ):
             self.assertIsNone(mod._consider_update(script))
-        self.assertIn("1.1.3 is available", buf.getvalue())
+        self.assertIn(f"{remote} is available", buf.getvalue())
         self.assertNotIn("Fetch it now", buf.getvalue())
 
 

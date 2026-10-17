@@ -44,7 +44,10 @@ def _finish_insert(label: str, vmid: int, policy: str, result) -> str:
             return f"{sentence}. Old disk saved in {saved}."
         return f"{sentence}. Previous disk deleted."
     if policy == "backup":
-        return f"{sentence}. Previous disk is still attached to VM {vmid}."
+        saved = str(getattr(result, "backup_dir", "") or "")
+        if saved:
+            return f"{sentence}. Old disk saved in {saved}."
+        return f"{sentence}. Old disk saved in the cache."
     return f"{sentence}. Previous disk deleted."
 
 
@@ -56,6 +59,28 @@ def _finish_template(label: str, job, vmid: int) -> str:
         if vmid in job.backup_vmids:
             sentence += f" Old disk saved in {job.cache_dir}."
     return sentence
+
+
+def _stage_replace(job, vmid: int, tools, *, backup: bool) -> None:
+    """Refuse a bad target. Copy disks before the new image is built."""
+    if job.dry_run:
+        if backup:
+            print(
+                f"# qemu-img convert -O qcow2 <os-disk> "
+                f"{job.cache_dir}/vm-{vmid}-os.bak.qcow2"
+            )
+        return
+    copied = tools.prepare_replace(
+        vmid=vmid,
+        backup=backup,
+        backup_dir=job.cache_dir,
+        run=tools.run,
+    )
+    if backup:
+        if copied:
+            print("VM disk copy completed, building new template images now...")
+        else:
+            print("No OS disk to copy. Building the new template image now...")
 
 
 def _prepare(job, spec, tools, *, cache_format: str) -> Path:
@@ -78,8 +103,10 @@ def publish_file(job, spec, label: str, tools) -> str:
 
 def insert_image(job, spec, vmid: int, label: str, tools) -> str:
     # The cache copy stays qcow2. importdisk allocates the volume format.
+    backup = vmid in job.backup_vmids
+    _stage_replace(job, vmid, tools, backup=backup)
     work = _prepare(job, spec, tools, cache_format="qcow2")
-    policy = "backup" if vmid in job.backup_vmids else "overwrite"
+    policy = "backup" if backup else "overwrite"
     inserted = tools.insert_disk(
         vmid=vmid,
         storage=job.storage,
@@ -88,6 +115,7 @@ def insert_image(job, spec, vmid: int, label: str, tools) -> str:
         dry_run=job.dry_run,
         backup_dir=job.cache_dir,
         volume_format=job.disk_format,
+        copies_done=backup and not job.dry_run,
         run=tools.run,
     )
     return _finish_insert(label, vmid, policy, inserted)
@@ -95,6 +123,10 @@ def insert_image(job, spec, vmid: int, label: str, tools) -> str:
 
 def create_guest(job, spec, vmid: int, label: str, tools) -> str:
     # The cache copy stays qcow2. A raw ZFS or LVM volume is allocated at import.
+    replacing = vmid in job.destroy_vmids
+    backup = replacing and vmid in job.backup_vmids
+    if replacing:
+        _stage_replace(job, vmid, tools, backup=backup)
     work = _prepare(job, spec, tools, cache_format="qcow2")
     tools.create_template(
         vmid=vmid,
@@ -106,7 +138,7 @@ def create_guest(job, spec, vmid: int, label: str, tools) -> str:
         image_path=str(work),
         dry_run=job.dry_run,
         destroy_ok=vmid in job.destroy_vmids,
-        backup_disks=vmid in job.backup_vmids,
+        backup_disks=False,
         backup_dir=job.cache_dir,
         make_template=converts_to_template(job, vmid),
         volume_format=job.disk_format,
@@ -174,6 +206,8 @@ def prep_existing(job, vmid: int | None, spec, tools) -> None:
         raise RuntimeError(
             f"VM {vmid} is a template; existing mode does not rewrite templates"
         )
+    if tools.is_linked_clone(config_res.stdout):
+        raise RuntimeError(f"VM {vmid} is a linked clone; it was not changed")
     commands, volid = tools.existing_prep_commands(
         config_res.stdout, vmid=vmid, storage=job.storage
     )
