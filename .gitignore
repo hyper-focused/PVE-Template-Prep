@@ -3,3 +3,6 @@ __pycache__/
 .DS_Store
 image_update.sh
 prep-template.sh
+README.starwars.md
+README.startrek.md
+docs/reference.md
