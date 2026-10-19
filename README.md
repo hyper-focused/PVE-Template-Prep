@@ -55,7 +55,7 @@ Somewhere else: `DEST=/somewhere bash install.sh`, or `sudo DEST=/somewhere bash
 
 There are no distro or release flags. The questions are the interface. Run the dry-run before the real one.
 
-The cache is mode `0700`, owned by root. After the builds finish, one question asks whether to delete the working files. Enter keeps them. `y` deletes them. A disk backup in that directory is never deleted. A failed release asks the same question and says the download is still there. Enter keeps it. A dry-run asks and does not delete. `virt-customize --install` fetches packages from inside the image. A live run needs outbound network.
+The cache is mode `0700`, owned by root. After the builds finish, the question is `Delete working files in /var/tmp/pve-template-prep/cache? (y/n) [No]:`. Enter keeps them. `y` deletes them. A disk backup in that directory is never deleted. A failed release asks the same question and says the download is still there. Enter keeps it. A dry-run asks and does not delete. `virt-customize --install` fetches packages from inside the image. A live run needs outbound network.
 
 </details>
 
@@ -103,7 +103,7 @@ Each question says what that step does before it asks. Empty input accepts the d
 | 8 | Back up the disks that will be replaced. One answer for the whole list. Skipped when nothing is being replaced. The field is `(y/n) [Yes]:`. | Yes. `n` deletes them with no copy. |
 | 9 | Read the summary. A backup ends on `YES`. No backup ends on `DELETE`. | |
 
-When guest prep is on, the summary also says `root-ssh=yes` or `root-ssh=no`. After the builds, one question deletes the working files in the prep cache: `Delete working files in /var/tmp/pve-template-prep/cache? (y/n) [No]:`. Enter keeps them. `y` deletes them. Disk backups stay. A failed release asks too, and Enter keeps the download.
+The summary says `root-ssh=yes` or `root-ssh=no`. After the builds, one question deletes the working files in the prep cache: `Delete working files in /var/tmp/pve-template-prep/cache? (y/n) [No]:`. Enter keeps them. `y` deletes them. Disk backups stay. A failed release asks too, and Enter keeps the download.
 
 <details>
 <summary>The long version of those questions</summary>
@@ -196,6 +196,20 @@ Each distro is one file, `pve_prep/distros/<distro>.json`. Adding or dropping a 
 | fedora | 43, 44 | The Generic qcow2 is chosen from the release index at download. |
 
 No CentOS. Fedora 42 is not listed. It stopped building. CloudLinux logs in as `cloudlinux`. Its packages do not update until the guest is registered with a license. Unlicensed, it is a very calm brick. CloudLinux 6 and 7 are not listed.
+
+## Since 1.2.0
+
+The questions above are the current interview. This is what changed on `main` after release 1.2.0. The version string is still `1.2.0`, so an installed copy does not offer these changes. `Fetch it now?` asks only when `main` carries a newer `x.y.z`. `install.sh` installs current `main` and does not read that string.
+
+**What to build is the first question.** Enter creates a template. `2` replaces a template boot disk. `3` writes a standalone qcow2. The menu rows have no notes. On a terminal the line under a menu is `highlight selection(s) and press enter`. Guest prep runs on every image this tool downloads. A disk already on the host is left alone.
+
+**A replaced boot disk stays where it is.** Storage and format are read from that disk. Those questions are not asked. A free VMID is refused. A new template still asks for storage, and an existing disk's storage is the first row. A standalone image is qcow2. The storage menu lists volumes whose content includes `import`, and the file lands in that storage's `import/` directory.
+
+**The field stays empty. The default is in the brackets.** A create-template VMID looks like `Debian 13 VMID [9002]: `. Enter accepts the bracket. A yes or no that does not need a specific word looks like `Accept these defaults? (y/n) [Yes]: ` or `Delete working files in /var/tmp/pve-template-prep/cache? (y/n) [No]: `. `y` and `n` answer it. Menus still need a selection. `YES` and `DELETE` are still typed in full.
+
+**A terminal shows two progress headings.** After the cyan start line, `Converting <name> image...` is qemu-img. `Preparing <name> image for Proxmox PVE...` is one estimated line for guest prep. virt-customize's own bracketed numbers are elapsed seconds. `-v` shows that log. `-V` prints the version.
+
+**One yes covers the remaining defaults.** Enter on that question keeps root SSH, and on the create path the bridge, memory, cores, and `qm template`. `n` asks each of those. Cache cleanup is after the builds. Enter keeps the working files. Disk backups stay.
 
 ## Not in this version
 
