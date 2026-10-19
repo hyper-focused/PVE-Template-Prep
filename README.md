@@ -36,7 +36,7 @@ sudo bash install.sh
 sudo pve-template-prep
 ```
 
-The next run checks for a newer version on its own. It reads the version string on `main` and asks `Fetch it now? [y/N]`. Enter keeps this copy. `y` installs that version and starts it. `-V` or `--version` only prints the release. `-v` or `--verbose` shows the virt-customize commands instead of the progress bar.
+The next run checks for a newer version on its own. It reads the version string on `main` and asks `Fetch it now? (y/n) [No]:`. Enter keeps this copy. `y` installs that version and starts it. `-V` or `--version` only prints the release. `-v` or `--verbose` shows the virt-customize commands instead of the progress bar.
 
 `--dry-run` asks the same questions and prints the commands. It does not need root, and it does not download or change the host.
 
@@ -51,7 +51,7 @@ Somewhere else: `DEST=/somewhere bash install.sh`, or `sudo DEST=/somewhere bash
 
 `sudo` only has to set the effective uid to 0. `qm`, `pvesm`, `qemu-img`, and `virt-customize` are children of that process and stay root. They do not need their own sudoers rules. A `NOEXEC` tag on the sudoers command blocks them, and then nothing interesting happens.
 
-`pve-template-prep -V` or `--version` prints the release and exits. It does not look for a newer copy. A run prints that same line, then an installed copy checks `main`. The check reads the version string and sends nothing else. A newer version asks `Fetch it now? [y/N]`. Enter keeps this copy. `y` runs `install.sh` into this install directory and starts that version. That includes a patch bump: a release added, a release removed, or a bugfix. A git checkout does not ask. If GitHub cannot be read, the questions start anyway. `PVE_PREP_SKIP_UPDATE=1` skips the check. Each release then prints a cyan line naming what it is building. On a terminal, `Converting <name> image...` is followed by the qemu-img progress, then `Preparing <name> image for Proxmox PVE...` and one progress line. virt-customize's own bracketed numbers are elapsed seconds, so that command log stays hidden. `-v` or `--verbose` shows it. A pipe shows it too. A white line names what finished.
+`pve-template-prep -V` or `--version` prints the release and exits. It does not look for a newer copy. A run prints that same line, then an installed copy checks `main`. The check reads the version string and sends nothing else. A newer version asks `Fetch it now? (y/n) [No]:`. Enter keeps this copy. `y` runs `install.sh` into this install directory and starts that version. That includes a patch bump: a release added, a release removed, or a bugfix. A git checkout does not ask. If GitHub cannot be read, the questions start anyway. `PVE_PREP_SKIP_UPDATE=1` skips the check. Each release then prints a cyan line naming what it is building. On a terminal, `Converting <name> image...` is followed by the qemu-img progress, then `Preparing <name> image for Proxmox PVE...` and one progress line. virt-customize's own bracketed numbers are elapsed seconds, so that command log stays hidden. `-v` or `--verbose` shows it. A pipe shows it too. A white line names what finished.
 
 There are no distro or release flags. The questions are the interface. Run the dry-run before the real one.
 
@@ -99,11 +99,11 @@ Each question says what that step does before it asks. Empty input accepts the d
 | 4 | One VMID per release, for a new template or an update. Standalone skips this. A list or a range is rejected. | Next free ID from 9001, on the create-template path |
 | 5 | Import storage for a standalone image. A new template asks `VM Disk Storage Path`. An update does not ask. | The first import storage. On a replace, the current disk's storage |
 | 6 | Volume format when a new template is created on directory, NFS, or CIFS. A standalone image is qcow2. An update keeps that disk's format. | qcow2 |
-| 7 | Accept the defaults that apply: root SSH, and in template mode the bridge, memory, cores, and `qm template`. Guest prep always runs. | Yes. `n` asks each one. |
-| 8 | Back up the disks that will be replaced. One answer for the whole list. Skipped when nothing is being replaced. | Yes. `n` deletes them with no copy. |
+| 7 | Accept the defaults that apply: root SSH, and on the create path the bridge, memory, cores, and `qm template`. Guest prep always runs. The field is `(y/n) [Yes]:`. | Yes. `n` asks each one. |
+| 8 | Back up the disks that will be replaced. One answer for the whole list. Skipped when nothing is being replaced. The field is `(y/n) [Yes]:`. | Yes. `n` deletes them with no copy. |
 | 9 | Read the summary. A backup ends on `YES`. No backup ends on `DELETE`. | |
 
-When guest prep is on, the summary also says `root-ssh=yes` or `root-ssh=no`. After the builds, one question deletes the working files in the prep cache. Enter keeps them. `y` deletes them. Disk backups stay. A failed release asks too, and Enter keeps the download.
+When guest prep is on, the summary also says `root-ssh=yes` or `root-ssh=no`. After the builds, one question deletes the working files in the prep cache: `Delete working files in /var/tmp/pve-template-prep/cache? (y/n) [No]:`. Enter keeps them. `y` deletes them. Disk backups stay. A failed release asks too, and Enter keeps the download.
 
 <details>
 <summary>The long version of those questions</summary>
@@ -117,7 +117,7 @@ Releases are a checkbox: one to three. A codename such as `bookworm` works on th
 1. What to build. Enter selects **Create new Proxmox PVE VM templates**. `2` is **Update existing Proxmox PVE template VM disk images**. `3` is **Create standalone Proxmox PVE VM disk images**. The menu does not describe the rows.
 2. Distro. The question is `Please choose a distro`.
 3. Releases, by number, comma-separated. **The numbers are the menu, not the version.** A codename still works (`bookworm`, `noble`). The question is `Please choose release(s).` On a terminal the line under the menu is `highlight selection(s) and press enter`. Space still marks a release.
-4. VMIDs, one question per release, on the create and update paths. Standalone skips this. The question names the release (`VMID for Debian 13. Enter uses 9002.` on create). The field is empty. The default is in brackets (`[9002]`). Enter accepts it. Typing replaces it. One number. A value that cannot be used is asked again, and the next prompt says why.
+4. VMIDs, one question per release, on the create and update paths. Standalone skips this. On create, the prompt is `Select new/existing VMID for new Debian 13 VM Template.` An existing template VMID is replaced completely. Enter uses the first free ID over 9000. The field is `Debian 13 VMID [9002]: ` and it is empty. The default is only in the brackets. Typing replaces it. One number. A value that cannot be used is asked again, and the next prompt says why.
    - Create: Enter assigns the next free ID from 9001. IDs already in use are skipped, quietly, including a hole such as a taken 9002. Two releases that both take the default become 9001 and 9002, or 9003 and 9004 when those first two are taken. A typed ID that is already in use has to be a template. The template is deleted and replaced. A normal VM is refused. A linked clone is refused. A template that still has linked clones is refused, including a clone on another node.
    - Update: the prompt asks for an existing template VMID. A new boot disk is created for that template. Every release needs a VMID. A free VMID is refused. A normal VM is refused, and the next prompt says so. A linked clone is refused the same way.
 5. Where it goes. A standalone image lists storages whose `storage.cfg` content includes `import`, and writes `<distro>-<release>-pve.qcow2` into that storage's `import/` directory. The file is qcow2. Format is not asked. Proxmox chooses the volume format when that file is imported later. Updating a template boot disk uses the storage that disk is already on, and the format that disk already has. Those questions are not asked. A new template asks `VM Disk Storage Path`. When that VMID already exists, its disk's storage is first in the list. Enter keeps it. The field is not prefilled. A number picks from the list. A storage id that is not in the list is asked again.

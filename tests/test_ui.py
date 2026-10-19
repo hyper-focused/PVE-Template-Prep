@@ -263,18 +263,17 @@ class WidgetInterviewTest(unittest.TestCase):
                 self.assertEqual(instruction, "highlight selection(s) and press enter")
             return checks.pop(0)
 
+        seen_texts: list[str] = []
+
         def text(message, default="", instruction=None):
             self.assertTrue(message)
-            if message.startswith("VMID for ") and "[" in message:
+            seen_texts.append(message)
+            if " VMID [" in message or "(y/n) [" in message:
                 self.assertEqual(default, "")
             return texts.pop(0)
 
-        confirms_out = list(confirms)
-        seen_confirms: list[str] = []
-
         def confirm_capture(message, default=True):
-            seen_confirms.append(message)
-            return confirms_out.pop(0)
+            raise AssertionError(message)
 
         def list_storages():
             return ["dir-templates"]
@@ -305,14 +304,14 @@ class WidgetInterviewTest(unittest.TestCase):
                 vmids_in_use=vmids_in_use,
                 vm_has_disks=vm_has_disks,
             )
-        return job, "".join(written), seen_confirms
+        return job, "".join(written), seen_texts
 
     def test_checkbox_order_and_hardware_change(self) -> None:
-        job, blob, confirms = self._run(
+        job, blob, asked = self._run(
             selects=["template", "debian", "dir-templates", "qcow2"],
             checks=[["13", "12"]],
-            texts=["", "", "vmbr1", "4096", "4", "YES"],
-            confirms=[False, True, False, True],
+            texts=["", "", "n", "", "n", "vmbr1", "4096", "4", "", "YES"],
+            confirms=[],
             in_use=set(),
             disks=set(),
         )
@@ -328,16 +327,16 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertNotIn("  1) ", blob)
         self.assertIn("Space marks", ui._CHECK_KEYS)
         self.assertIn("Space or Enter", ui._SELECT_KEYS)
-        self.assertFalse(any(line.startswith("Guest prep:") for line in confirms))
+        self.assertNotIn("Guest prep:", blob)
         self.assertTrue(job.prep)
-        self.assertFalse(any("00-enableroot.conf" in line for line in confirms))
-        self.assertTrue(any(line.startswith("Allow root SSH") for line in confirms))
+        self.assertFalse(any("00-enableroot.conf" in line for line in asked))
+        self.assertTrue(any("Allow root SSH with a password? (y/n) [Yes]:" in line for line in asked))
         self.assertTrue(job.permit_root)
-        self.assertTrue(any("vmbr0" in line for line in confirms))
-        self.assertTrue(any("qm template" in line for line in confirms))
-        self.assertFalse(any("pve-template-prep/cache" in line for line in confirms))
-        self.assertTrue(any(line.startswith("Accept these defaults?") for line in confirms))
-        self.assertFalse(any(line.endswith("[Y/n]") for line in confirms))
+        self.assertTrue(any("Keep this hardware? (y/n) [Yes]:" in line for line in asked))
+        self.assertTrue(any("qm template? (y/n) [Yes]:" in line for line in asked))
+        self.assertFalse(any("pve-template-prep/cache" in line for line in asked))
+        self.assertTrue(any("Accept these defaults? (y/n) [Yes]:" in line for line in asked))
+        self.assertFalse(any(line.endswith("[Y/n]") for line in asked))
         self.assertTrue(job.make_template)
         self.assertFalse(job.clean_cache)
 
@@ -346,8 +345,8 @@ class WidgetInterviewTest(unittest.TestCase):
             self._run(
                 selects=["template", "debian", "dir-templates", "qcow2"],
                 checks=[["12"]],
-                texts=["910", "X"],
-                confirms=[True, False],
+                texts=["910", "", "n", "X"],
+                confirms=[],
                 in_use={910},
                 disks={910},
             )

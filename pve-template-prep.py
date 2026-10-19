@@ -427,7 +427,7 @@ def _consider_update(script: Path) -> int | None:
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     if not interactive:
         return None
-    print("Fetch it now? [y/N]")
+    print("Fetch it now? (y/n) [No]: ", end="")
     try:
         answer = input()
     except EOFError:

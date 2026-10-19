@@ -539,8 +539,8 @@ def _vmid_parse_reason(exc: ValueError) -> str:
 
 def _vmid_field(label: str, suggested: int | None) -> str:
     if suggested is None:
-        return f"VMID for {label}: "
-    return f"VMID for {label} [{suggested}]: "
+        return f"{label} VMID: "
+    return f"{label} VMID [{suggested}]: "
 
 
 def _named_releases(distro: str, releases: tuple[str, ...], releases_for):
@@ -597,18 +597,17 @@ def _duplicate_reason(names: dict[int, str], vmid: int) -> str | None:
 def _template_intro(read_line, write, label: str, default: int | None, checked: bool) -> None:
     if ui.enabled(read_line):
         _blank(write)
+    lines = [
+        f"Select new/existing VMID for new {label} VM Template.",
+        "If the VMID for an existing template is used, that template will be completely replaced.",
+    ]
+    if default is not None:
+        lines.append("Press enter to use the first available VMID over 9000.")
+    _say(read_line, write, "\n".join(lines) + "\n", "header")
     if default is None:
-        _say(read_line, write, f"VMID for {label}.\n", "header")
         write(f"No free VMID from {DEFAULT_VMID} in the next {_PROBE_LIMIT} IDs.\n")
-    else:
-        _say(read_line, write, f"VMID for {label}. Enter uses {default}.\n", "header")
     if not checked:
         write("Could not check which VMIDs are free. An existing VM will not be replaced.\n")
-        return
-    write(
-        "In use: it has to be a template, and it is replaced. "
-        "A normal VM or a linked clone is refused.\n"
-    )
 
 
 def _ask_template_vmids(read_line, write, named, vmids_in_use, guest_role=None):
@@ -810,19 +809,22 @@ def _ask_image_vmids(
     return tuple(chosen), frozenset(), tuple(placed), tuple(formats)
 
 
+def _yn_prompt(body: str, default: bool) -> str:
+    """Question, then (y/n) and the bracket default. The field stays empty."""
+    word = "Yes" if default else "No"
+    text = body.rstrip("\n")
+    if "\n" in text:
+        head, _, last = text.rpartition("\n")
+        last = last.rstrip().removesuffix(":").rstrip()
+        return f"{head}\n{last} (y/n) [{word}]: "
+    return f"{text.rstrip().removesuffix(':').rstrip()} (y/n) [{word}]: "
+
+
 def _ask_bool(read_line, write, prompt: str, default: bool) -> bool:
-    if ui.enabled(read_line):
-        _begin_widget(write)
-        message = prompt.strip()
-        for suffix in ("[Y/n]", "[y/N]"):
-            if message.endswith(suffix):
-                message = message[: -len(suffix)].strip()
-        answer = ui.confirm(message, default=default)
-        if answer is None:
-            raise PromptAbort("exit")
-        return answer
+    """Yes or no. Enter accepts the bracket. y and n answer it."""
+    field = _yn_prompt(prompt, default)
     while True:
-        raw = _ask(read_line, write, prompt).lower()
+        raw = _ask_text(read_line, write, field).lower()
         if raw == "":
             return default
         if raw in {"y", "yes"}:
@@ -849,7 +851,7 @@ def _ask_hardware(read_line, write) -> tuple[str, int, int]:
         write,
         f"Bridge {DEFAULT_BRIDGE}, memory {DEFAULT_MEMORY_MB} MB, cores {DEFAULT_CORES}.\n"
         "q35, virtio-scsi, SeaBIOS, serial, guest agent. Change those later with qm set.\n"
-        "Enter keeps the three. n changes them. [Y/n]\n",
+        "Keep this hardware?\n",
         True,
     )
     if accept:
@@ -912,15 +914,14 @@ def _ask_make_template(read_line, write, count: int) -> bool:
     return _ask_bool(
         read_line,
         write,
-        f"Convert the new {noun} with qm template?\n"
-        "Enter converts to a template. n leaves a normal VM. [Y/n]\n",
+        f"Convert the new {noun} with qm template?\n",
         True,
     )
 
 
 _ROOT_SSH_PROMPT = (
-    "Allow root SSH with a password? Cloud-init user must be root.\n"
-    "Enter allows it. n leaves the image default. [Y/n]\n"
+    "Cloud-init user must be root.\n"
+    "Allow root SSH with a password?\n"
 )
 
 
@@ -947,13 +948,12 @@ def _usual_defaults_prompt(*, hardware: bool, convert: bool) -> str:
     else:
         listed = ", ".join(items[:-1]) + ", and " + items[-1]
     lines = [
-        "Accept these defaults?",
         listed[0].upper() + listed[1:] + ".",
         "Cloud-init user must be root.",
     ]
     if hardware and not convert:
         lines.append("A new VM at an unused VMID is still created with qm template.")
-    lines.append("Enter accepts them. n asks each one. [Y/n]")
+    lines.append("Accept these defaults?")
     return "\n".join(lines) + "\n"
 
 
@@ -997,15 +997,14 @@ def ask_cache_cleanup(read_line, write, *, cache: str, failed: bool) -> bool:
     """
     if failed:
         prompt = (
-            f"A release failed. Working files are still in {cache}.\n"
-            "Enter keeps them, including the download. "
-            "y deletes the working files. Disk backups stay. [y/N]\n"
+            f"A release failed. Working files are still in {cache}, including the download.\n"
+            "Disk backups stay.\n"
+            f"Delete working files in {cache}?\n"
         )
     else:
         prompt = (
-            f"Delete working files in {cache}?\n"
             "Disk backups in that directory stay.\n"
-            "Enter keeps them. y deletes them. [y/N]\n"
+            f"Delete working files in {cache}?\n"
         )
     return _ask_bool(read_line, write, prompt, False)
 
@@ -1323,9 +1322,8 @@ def interview(
         backup = _ask_bool(
             read_line,
             write,
-            "Back up these disks into the cache first? "
-            f"The copy stays in {DEFAULT_CACHE}.\n"
-            "Enter copies them. n deletes with no copy. [Y/n]\n",
+            f"The copy stays in {DEFAULT_CACHE}. No deletes them with no copy.\n"
+            "Back up these disks into the cache first?\n",
             True,
         )
     backup_vmids = frozenset(replace_ids) if backup else frozenset()

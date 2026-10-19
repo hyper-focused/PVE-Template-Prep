@@ -146,7 +146,7 @@ class StartupTests(unittest.TestCase):
         ):
             self.assertIsNone(mod._consider_update(script))
         self.assertIn(f"{remote} is available (this is {__version__}).", buf.getvalue())
-        self.assertIn("Fetch it now? [y/N]", buf.getvalue())
+        self.assertIn("Fetch it now? (y/n) [No]: ", buf.getvalue())
 
     def test_unreachable_main_does_not_ask(self) -> None:
         mod = self._main_module()
