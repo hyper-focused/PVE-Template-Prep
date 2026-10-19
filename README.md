@@ -1,6 +1,6 @@
 # pve-template-prep
 
-One interview. Up to three releases of one distro. A disk image, a template VM, or a stopped VM that already exists.
+One interview. Up to three releases of one distro. A disk image, or a template VM.
 
 Proxmox will let you click the cloud-image ritual until the mouse files a complaint. This asks once.
 
@@ -8,13 +8,12 @@ Proxmox will let you click the cloud-image ritual until the mouse files a compla
 | --- | --- | --- |
 | Template | A new VM named `<distro>-<release>-cloud` | Next free VMID from 9001, then `qm template` |
 | Disk image | `<distro>-<release>-pve.img` or `.qcow2` in a directory | Publishes the files and leaves every VM alone |
-| Stopped VM | Guest prep on the OS disk in place | You type a VMID that already exists |
 
 > [!IMPORTANT]
 > Nothing is built until the last screen. A backup ends when you type `YES`. A delete with no backup ends when you type `DELETE`. Red text is that delete.
 
 > [!CAUTION]
-> Replacing a template, replacing its boot disk, or prepping a stopped VM fails when the guest is a linked clone, or when a template still has linked clones. A clone on another node counts. If that check cannot be read, the guest is left alone. A normal VM cannot take the place of a template.
+> Replacing a template, or replacing its boot disk, fails when the guest is a linked clone, or when a template still has linked clones. A clone on another node counts. If that check cannot be read, the guest is left alone. A normal VM cannot take the place of a template.
 
 ## Install
 
@@ -55,13 +54,13 @@ Somewhere else: `DEST=/somewhere bash install.sh`, or `sudo DEST=/somewhere bash
 
 There are no distro or release flags. The questions are the interface. Run the dry-run before the real one.
 
-The cache is mode `0700`, owned by root. At the end of a run, Enter keeps the working files. `y` deletes them after every release succeeds. A failed release also keeps the download, even if you asked to clean up. A dry-run deletes nothing. `virt-customize --install` fetches packages from inside the image. A live run needs outbound network.
+The cache is mode `0700`, owned by root. After the builds finish, one question asks whether to delete the working files. Enter keeps them. `y` deletes them. A disk backup in that directory is never deleted. A failed release asks the same question and says the download is still there. Enter keeps it. A dry-run asks and does not delete. `virt-customize --install` fetches packages from inside the image. A live run needs outbound network.
 
 </details>
 
 ## Root password SSH
 
-When guest prep is on, the next question can let root log in over SSH with a password. Enter writes `/etc/ssh/sshd_config.d/00-enableroot.conf` on every family. `n` leaves the image default. Guest prep off skips the question.
+Guest prep always runs. Root can log in over SSH with a password. Enter on the defaults turns that on with the other defaults. `n` asks it by itself, and Enter on that question writes `/etc/ssh/sshd_config.d/00-enableroot.conf` on every family. `n` there leaves the image default.
 
 ```
 PasswordAuthentication yes
@@ -95,19 +94,15 @@ Each question says what that step does before it asks. Empty input accepts the d
 | --- | --- | --- |
 | 1 | Distro | |
 | 2 | One to three releases. The number is the menu, not the version. Debian `1, 2` is 12 and 13. Fedora `1, 2` is 43 and 44. | |
-| 3 | `1` template, `2` disk image, `3` stopped VM | Template |
+| 3 | `1` template, `2` disk image | Template |
 | 4 | One VMID per release. A list or a range is rejected. | Next free ID from 9001, in template mode |
-| 5 | A directory for a published image, or `VM Disk Storage Path` for a VM | |
+| 5 | A directory for a published image. A full template replace asks `VM Disk Storage Path`. Enter keeps the current disk's storage. A boot-disk replace does not ask. | The current storage, when that VMID exists |
 | 6 | Volume format on directory, NFS, and CIFS. `1` qcow2, `2` raw. ZFS, LVM, LVM-thin, RBD, and iSCSI skip this. | qcow2 |
-| 7 | Guest prep | Yes |
-| 8 | Root password SSH. Skipped when guest prep is off. | Yes. Removal is [above](#root-password-ssh). |
-| 9 | Hardware, in template mode: bridge, memory, cores | `vmbr0`, 2048 MB, 2 cores |
-| 10 | `qm template`, in template mode | Convert |
-| 11 | Delete the working files in the prep cache | Keep them. `y` deletes them. Disk backups stay. |
-| 12 | Back up the disks that will be replaced. One answer for the whole list. Skipped when nothing is being replaced. | Yes. `n` deletes them with no copy. |
-| 13 | Read the summary. A backup ends on `YES`. No backup ends on `DELETE`. | |
+| 7 | Accept the defaults that apply: root SSH, and in template mode the bridge, memory, cores, and `qm template`. Guest prep always runs. | Yes. `n` asks each one. |
+| 8 | Back up the disks that will be replaced. One answer for the whole list. Skipped when nothing is being replaced. | Yes. `n` deletes them with no copy. |
+| 9 | Read the summary. A backup ends on `YES`. No backup ends on `DELETE`. | |
 
-When guest prep is on, the summary also says `root-ssh=yes` or `root-ssh=no`.
+When guest prep is on, the summary also says `root-ssh=yes` or `root-ssh=no`. After the builds, one question deletes the working files in the prep cache. Enter keeps them. `y` deletes them. Disk backups stay. A failed release asks too, and Enter keeps the download.
 
 <details>
 <summary>The long version of those questions</summary>
@@ -121,34 +116,29 @@ Releases are a checkbox: one to three. A codename such as `bookworm` works on th
 1. Distro, by number.
 2. Releases, by number, comma-separated. **The numbers are the menu, not the version.** A codename still works (`bookworm`, `noble`).
 3. What to build. Enter selects the template.
-4. VMIDs, one question per release. The question names the release (`VMID for Debian 13. Enter uses 9002.`). One number. A value that cannot be used is asked again, and the next prompt says why.
+4. VMIDs, one question per release. The question names the release (`VMID for Debian 13. Enter uses 9002.`). The field is empty. The default is in brackets (`[9002]`). Enter accepts it. Typing replaces it. One number. A value that cannot be used is asked again, and the next prompt says why.
    - Template: Enter assigns the next free ID from 9001. IDs already in use are skipped, quietly, including a hole such as a taken 9002. Two releases that both take the default become 9001 and 9002, or 9003 and 9004 when those first two are taken. A typed ID that is already in use has to be a template. The template is deleted and replaced. A normal VM is refused. A linked clone is refused. A template that still has linked clones is refused, including a clone on another node.
    - Disk image only: Enter on the first release publishes a file for every selected release and does not touch a VM. Each later release needs its own VMID. An existing VMID has to be a template. Its boot disk is replaced. The same refusals apply. A VMID that is not in use asks you to try another ID, or to create a new VM template at that ID.
-   - Stopped-VM prep: each release asks for a VMID that already exists. There is no free-ID default. A template is refused. A linked clone is refused.
-5. Where it goes. A published disk image asks for the file format, then a directory. `1` raw (`.img`, full size), `2` QEMU qcow2. Enter selects raw. The directory is a path, not a storage id. A template, an insert, or a stopped VM asks for `VM Disk Storage Path`. A number picks from the detected list. A storage id that is not in that list is asked again.
-6. Volume format, after that storage, when the disk will be imported. That answer is `qm importdisk --format`. The skipped storage types say the volume will be raw. CIFS is a file share, including when the volume is raw. There is no block CIFS type. A stopped VM does not ask.
-7. Guest prep. The prompt says what it changes. Enter means yes. `n` skips `virt-customize`.
-8. Root password SSH, asked only when guest prep is on. Enter writes the drop-in. `n` leaves the image default. The cloud-init user must be `root`. The question does not repeat the revert command. That stays in [Root password SSH](#root-password-ssh).
-9. Template mode: bridge, memory, and cores. Enter keeps `vmbr0`, 2048 MB, and 2 cores. `n` changes those three. Machine type is `q35`, the SCSI controller is virtio-scsi, the display is a serial console, and the guest agent is on. The rest can be changed later with `qm set`.
-10. Template mode: convert the new VM with `qm template`. Enter converts. `n` leaves a normal VM. A template is cloned, not booted.
-11. Delete the working files in `/var/tmp/pve-template-prep/cache` when the run finishes. This is the prep cache, not the rest of `/var/tmp`. A disk backup in that directory is never deleted.
-12. Disks that will be replaced. One question, after the other options. Enter copies every one of them into the cache. `n` does not. A VMID with no OS disk is named, and the question is still asked. A new VMID, a published file, and stopped-VM prep skip this. A published file that already exists is renamed aside. That path does not ask.
-13. Read the summary, then one gate.
+5. Where it goes. A published disk image asks for the file format, then a directory. `1` raw (`.img`, full size), `2` QEMU qcow2. Enter selects raw. The directory is a path, not a storage id. Replacing a template boot disk uses the storage that disk is already on. That question is not asked. A wrong answer would import the new disk somewhere else and break the template. A full template replace asks `VM Disk Storage Path`. When that VMID already exists, its disk's storage is first in the list. Enter keeps it. The field is not prefilled. A number picks from the list. A storage id that is not in the list is asked again.
+6. Volume format, when a disk will be imported onto directory, NFS, or CIFS. That answer is `qm importdisk --format`. ZFS, LVM, LVM-thin, RBD, and iSCSI stay raw and do not ask. CIFS is a file share, including when the volume is raw. There is no block CIFS type. A boot-disk replace follows the storage the disk is already on, so a block disk stays raw.
+7. Accept these defaults. Guest prep is not a question. It is applied on every image this tool builds. Enter accepts the defaults this path still asks: root password SSH, and in template mode the bridge, memory, cores, and `qm template`. The cloud-init user must be `root`. `n` asks each one. A published file, or a boot-disk replace, asks only the root question. The root question does not repeat the revert command. That stays in [Root password SSH](#root-password-ssh). Hardware and `qm template` are template mode. A new template created from disk-image mode still asks the hardware, and that VM is still created with `qm template`. Bridge, memory, and cores stay `vmbr0`, 2048 MB, and 2 cores unless you change them. Machine type is `q35`, the SCSI controller is virtio-scsi, the display is a serial console, and the guest agent flag is on. The rest can be changed later with `qm set`. `n` on `qm template` leaves a normal VM. A template is cloned, not booted.
+8. Disks that will be replaced. One question, after the other options. Enter copies every one of them into the cache. `n` does not. A VMID with no OS disk is named, and the question is still asked. A new VMID and a published file skip this. A published file that already exists is renamed aside. That path does not ask.
+9. Read the summary, then one gate.
    - Backup: the screen lists the VMIDs and asks for `YES`. `X` exits. There is no second confirm.
    - No backup, template mode: **the templates listed below will be permanently deleted.** Type `DELETE`. `X` exits.
    - No backup, disk image: **the existing disk for the templates listed below will be permanently deleted.** The template config stays. Type `DELETE`. `X` exits.
    - Nothing to replace: type `YES`.
    Nothing on the host has been built until that word.
 
+After the builds, the cache question. Enter keeps the working files in `/var/tmp/pve-template-prep/cache`. `y` deletes them. This is the prep cache, not the rest of `/var/tmp`. A disk backup in that directory is never deleted. A failed release says the download is still there. Enter keeps it. A dry-run asks and does not delete.
+
 </details>
 
-## The three paths
+## The two paths
 
-**Image.** A directory path, not a storage id. A ZFS or LVM id will not do, however convincing the GUI is about it. An existing VMID has to be a template. Its boot disk is replaced and the rest of the config stays. A normal VM is refused. Needs `qemu-img`.
+**Image.** A directory path, not a storage id. A ZFS or LVM id will not do, however convincing the GUI is about it. An existing VMID has to be a template. Its boot disk is replaced on the storage that disk is already on, and the rest of the config stays. Storage is not asked. A normal VM is refused. Needs `qemu-img`.
 
-**Template.** The image is customized as a file, then imported. Enter runs `qm template`. `n` leaves a normal VM with the same disk, cloud-init drive, and boot order. This path builds a new VM. It does not keep the old firewall and options. Needs `qemu-img`, `qm`, and `pvesm`.
-
-**Existing.** No download. The VM is stopped, and it is not already a template. A linked clone is refused. `pvesm path` has to be a regular file. A zvol or an LVM volume is refused. Needs `qm`, `pvesm`, and, if prep is on, `virt-customize`.
+**Template.** The image is customized as a file, then imported. Enter runs `qm template`. `n` leaves a normal VM with the same disk, cloud-init drive, and boot order. This path builds a new VM. It does not keep the old firewall and options. You are asked for the storage. When the VMID already exists, Enter keeps the storage its disk is on. Needs `qemu-img`, `qm`, and `pvesm`.
 
 One release failing does not cancel the rest, unless a template was destroyed and its replacement did not finish. Then the run stops. Exit status is 0 only when every selected release succeeds.
 
@@ -163,9 +153,9 @@ Enter never lands on a VMID that is already in use. Replacing one means you type
 
 Template mode replaces a whole template. A normal VM is not destroyed. The guest has to be stopped. A running guest is left alone. The check, and the disk copy when you asked for one, run before the new image is downloaded. `qemu-img convert` writes the copy into the cache. On a terminal that command prints its own progress. The copy counts only when that command exits 0 and the file is not empty. The line is `VM disk copy completed, building new template images now...`. A failed copy leaves the template alone and does not build the new image. Skipping the backup requires typing `DELETE`. `X` exits. If that destroy succeeds and the replacement does not finish, the run stops. **The download is kept in that case**, even when you asked to delete it. The disk backup is kept either way. Cleanup does not remove it.
 
-**A linked clone is not changed, on any of the three actions.** A template that still has linked clones is not destroyed, and its disk is not replaced. A linked clone is a disk that still depends on the template base volume. A full clone does not. Clones on other cluster nodes count. Shared storage is where those show up. The check reads every guest config under `/etc/pve/nodes` and the storage volume list. If either one cannot be read, the guest is left alone. Stopped-VM prep refuses a template and refuses a guest that is itself a linked clone.
+**A linked clone is not changed, on either action.** A template that still has linked clones is not destroyed, and its disk is not replaced. A linked clone is a disk that still depends on the template base volume. A full clone does not. Clones on other cluster nodes count. Shared storage is where those show up. The check reads every guest config under `/etc/pve/nodes` and the storage volume list. If either one cannot be read, the guest is left alone.
 
-Disk-image mode does not destroy the template. The boot disk is replaced and the rest of the config stays. Backup copies the old disk into the cache first. It is not left attached. Existing mode never destroys a VM, never inserts a downloaded image, and does not prep a template or a linked clone.
+Disk-image mode does not destroy the template. The boot disk is replaced on its current storage and the rest of the config stays. Backup copies the old disk into the cache first. It is not left attached.
 
 The last screen lists every VMID that will be replaced, after the summary has already named bridge, memory, and cores. Read it.
 
@@ -173,7 +163,7 @@ The last screen lists every VMID that will be replaced, after the summary has al
 
 ## Guest prep
 
-Default yes. Image and template mode apply it to the downloaded file before publish or import. Existing mode applies it to the OS disk after the hardware settings.
+Always, on an image this tool builds. There is no skip, and there is no in-place prep of a disk it did not build. Image and template builds apply it to the downloaded file before publish or import.
 
 - Serial console
 - `net.ifnames=0`, so the guest gets a stable `eth0` and not whatever `enp0s18` the kernel felt like that day
@@ -181,6 +171,7 @@ Default yes. Image and template mode apply it to the downloaded file before publ
 - growpart
 - chrony
 - Reset machine-id and SSH host keys
+- Clear shell history, logs, DHCP leases, `/tmp`, the systemd random seed, and persistent NIC rules
 - Root password SSH, when that question is accepted. The file and how to remove it are under [Root password SSH](#root-password-ssh).
 
 Debian and Ubuntu: mask AppArmor, purge snapd. A cloud template does not need a snap of anything.

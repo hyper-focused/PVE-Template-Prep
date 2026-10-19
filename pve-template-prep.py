@@ -14,25 +14,23 @@ from types import SimpleNamespace
 
 from pve_prep import __version__
 from pve_prep import update as tool_update
-from pve_prep.build import opening, prep_existing, run_fetched
+from pve_prep.build import opening, run_fetched
 from pve_prep.catalog import normalize_release, releases_for
 from pve_prep.customize import apply as customize_apply
 from pve_prep.customize import argv as customize_argv
 from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, publish
 from pve_prep.job import Job, action_for
-from pve_prep.prompts import PromptAbort, interview
+from pve_prep.prompts import PromptAbort, ask_cache_cleanup, interview
 from pve_prep.ui import arm, tone
 from pve_prep.vm import (
     VmDestroyedError,
     VmError,
     config_has_os_disk,
     create_template,
-    existing_hw_commands,
-    existing_prep_commands,
     insert_disk,
+    os_disk_storage,
     is_linked_clone,
     is_template,
-    parse_qm_status,
     prepare_replace,
     refuse_replace_target,
     vmid_config_missing,
@@ -52,20 +50,6 @@ def default_run(argv: list[str]) -> SimpleNamespace:
         stdout=proc.stdout or "",
         stderr=proc.stderr or "",
     )
-
-
-def _stderr_tail(result) -> str:
-    text = (getattr(result, "stderr", "") or "").strip()
-    if not text:
-        return f"exit {getattr(result, 'returncode', 1)}"
-    return text.splitlines()[-1][:400]
-
-
-def _checked(argv: list[str], run) -> SimpleNamespace:
-    result = run([str(part) for part in argv])
-    if result.returncode != 0:
-        raise RuntimeError(_stderr_tail(result))
-    return result
 
 
 def vmids_in_use(vmids: tuple[int, ...]) -> set[int] | None:
@@ -166,11 +150,33 @@ def storage_kinds() -> dict[str, str]:
         return {}
 
 
+def storage_kind(storage: str) -> str:
+    """pvesm type for one storage id. Empty when status cannot be read."""
+    return storage_kinds().get(storage, "")
+
+
+def disk_storage(vmid: int) -> str | None:
+    """Storage id of the boot OS disk.
+
+    None when qm config cannot be read. Empty when the guest has no OS disk.
+    """
+    try:
+        proc = subprocess.run(
+            ["qm", "config", str(vmid)],
+            text=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return os_disk_storage(proc.stdout or "")
+
+
 def preflight(job: Job) -> None:
     """Require root and the host tools this mode actually calls.
 
-    Not used for --dry-run. Existing disks are already on storage, so
-    qemu-img is only required for image and template builds.
+    Not used for --dry-run. A published file does not need qm.
     """
     if os.geteuid() != 0:
         raise SystemExit("run as root on the PVE host (sudo is fine)")
@@ -179,7 +185,7 @@ def preflight(job: Job) -> None:
         needed.append("qemu-img")
     if job.prep:
         needed.append("virt-customize")
-    if job.mode in {"template", "existing"} or (job.mode == "image" and job.vmids):
+    if job.mode == "template" or (job.mode == "image" and job.vmids):
         needed.extend(["qm", "pvesm"])
     for tool in needed:
         if shutil.which(tool) is None:
@@ -223,12 +229,7 @@ def _tools() -> SimpleNamespace:
         prepare_replace=prepare_replace,
         run=default_run,
         storage_rejects=_storage_rejects_images,
-        checked=_checked,
-        parse_qm_status=parse_qm_status,
-        is_template=is_template,
-        is_linked_clone=is_linked_clone,
-        existing_prep_commands=existing_prep_commands,
-        existing_hw_commands=existing_hw_commands,
+        storage_kind=storage_kind,
     )
 
 
@@ -247,11 +248,7 @@ def run_one(job: Job, release: str, vmid: int | None) -> None:
     _announce(opening(action, label, job, vmid), "cyan")
     print()
     tools = _tools()
-    if action == "existing":
-        prep_existing(job, vmid, spec, tools)
-        done = f"{label} VM prepared"
-    else:
-        done = run_fetched(job, spec, vmid, label, tools)
+    done = run_fetched(job, spec, vmid, label, tools)
     print()
     _announce(done, "body")
 
@@ -264,22 +261,31 @@ def _pairs(job: Job) -> list[tuple[str, int | None]]:
     return list(zip(job.releases, job.vmids, strict=True))
 
 
-def _clear_requested_cache(job: Job, failed: bool) -> bool:
-    """Delete working files in the prep cache after a successful live run.
+def _settle_cache(job: Job, failed: bool, read_line) -> bool:
+    """Ask about working files once the run is over.
 
-    Disk backups are never deleted. Returns True when the operator asked
-    for a delete and it did not happen.
+    Enter keeps them. y deletes them. Disk backups stay. A failed release
+    still asks, and Enter keeps the download. Dry-run asks and does not
+    delete. EOF keeps the files. Returns True when a delete was asked for
+    and did not happen.
     """
-    if not job.clean_cache:
-        return False
     cache = job.cache_dir
+    print()
+    try:
+        delete = ask_cache_cleanup(read_line, _write, cache=cache, failed=failed)
+    except PromptAbort:
+        delete = False
     if job.dry_run:
-        print(f"dry-run: would delete the working files in {cache}")
-        print("disk backups would stay")
+        if delete:
+            print(f"dry-run: would delete the working files in {cache}")
+            print("disk backups would stay")
+        else:
+            print(f"dry-run: leaving {cache} alone")
         return False
-    if failed:
+    if not delete:
         print(f"cache kept: {cache}")
-        print("a release failed, so the downloaded image stays. Disk backups are kept either way")
+        if failed:
+            print("a release failed, so the download stays. Disk backups are kept either way")
         return False
     try:
         clear_cache(cache)
@@ -311,9 +317,10 @@ def main(argv: list[str] | None = None) -> int:
     failed_update = _consider_update(Path(__file__).resolve())
     if failed_update:
         return failed_update
+    reader = arm(_read_line)
     try:
         job = interview(
-            arm(_read_line),
+            reader,
             _write,
             dry_run=args.dry_run,
             list_storages=list_storages,
@@ -323,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
             vmids_in_use=vmids_in_use,
             vm_has_disks=vm_has_disks,
             guest_role=guest_role,
+            disk_storage=disk_storage,
         )
     except PromptAbort:
         print("aborted")
@@ -348,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FAIL {release}: {exc}")
             failed = True
     print("done")
-    if _clear_requested_cache(job, failed):
+    if _settle_cache(job, failed, reader):
         failed = True
     return 1 if failed else 0
 

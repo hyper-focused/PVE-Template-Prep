@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from pve_prep.job import Job, action_for, parse_vmid, published_name, vm_name  # noqa: E402
+from pve_prep.job import Job, action_for, parse_vmid, published_name, storage_for, vm_name  # noqa: E402
 
 
 class PublishedNameTest(unittest.TestCase):
@@ -76,11 +76,19 @@ class ActionForTest(unittest.TestCase):
         created = _job(template_vmids=frozenset({910}))
         self.assertEqual(action_for(created, 910), "template")
 
-    def test_template_and_existing_stay_on_their_functions(self) -> None:
+    def test_template_stays_on_its_function(self) -> None:
         template = _job(mode="template", make_template=True)
         self.assertEqual(action_for(template, 910), "template")
-        existing = _job(mode="existing")
-        self.assertEqual(action_for(existing, 910), "existing")
+
+    def test_in_place_prep_is_not_a_mode(self) -> None:
+        with self.assertRaises(ValueError):
+            action_for(_job(mode="existing"), 910)
+
+    def test_kept_disk_storage_wins(self) -> None:
+        kept = _job(storage="local", kept_storage=((910, "nfs-templates"),))
+        self.assertEqual(storage_for(kept, 910), "nfs-templates")
+        self.assertEqual(storage_for(kept, 911), "local")
+        self.assertEqual(storage_for(_job(), 910), "dir-templates")
 
 
 if __name__ == "__main__":

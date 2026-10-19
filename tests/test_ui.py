@@ -261,6 +261,8 @@ class WidgetInterviewTest(unittest.TestCase):
 
         def text(message, default="", instruction=None):
             self.assertTrue(message)
+            if message.startswith("VMID for ") and "[" in message:
+                self.assertEqual(default, "")
             return texts.pop(0)
 
         confirms_out = list(confirms)
@@ -306,7 +308,7 @@ class WidgetInterviewTest(unittest.TestCase):
             selects=["debian", "template", "dir-templates", "qcow2"],
             checks=[["13", "12"]],
             texts=["", "", "vmbr1", "4096", "4", "YES"],
-            confirms=[True, True, False, True, False],
+            confirms=[False, True, False, True],
             in_use=set(),
             disks=set(),
         )
@@ -322,13 +324,15 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertNotIn("  1) ", blob)
         self.assertIn("Space marks", ui._CHECK_KEYS)
         self.assertIn("Space or Enter", ui._SELECT_KEYS)
-        self.assertTrue(any(line.startswith("Guest prep") for line in confirms))
+        self.assertFalse(any(line.startswith("Guest prep:") for line in confirms))
+        self.assertTrue(job.prep)
         self.assertFalse(any("00-enableroot.conf" in line for line in confirms))
         self.assertTrue(any(line.startswith("Allow root SSH") for line in confirms))
         self.assertTrue(job.permit_root)
         self.assertTrue(any("vmbr0" in line for line in confirms))
         self.assertTrue(any("qm template" in line for line in confirms))
-        self.assertTrue(any("pve-template-prep/cache" in line for line in confirms))
+        self.assertFalse(any("pve-template-prep/cache" in line for line in confirms))
+        self.assertTrue(any(line.startswith("Accept these defaults?") for line in confirms))
         self.assertFalse(any(line.endswith("[Y/n]") for line in confirms))
         self.assertTrue(job.make_template)
         self.assertFalse(job.clean_cache)
@@ -339,13 +343,13 @@ class WidgetInterviewTest(unittest.TestCase):
                 selects=["debian", "template", "dir-templates", "qcow2"],
                 checks=[["12"]],
                 texts=["910", "X"],
-                confirms=[True, True, True, True, False, False],
+                confirms=[True, False],
                 in_use={910},
                 disks={910},
             )
 
     def test_plain_reader_never_calls_a_widget(self) -> None:
-        answers = ["1", "1, 2", "2", "", "1", "/tmp/images", "", "", "", "yes"]
+        answers = ["1", "1, 2", "2", "", "1", "/tmp/images", "", "yes"]
 
         def read_line() -> str:
             if not answers:

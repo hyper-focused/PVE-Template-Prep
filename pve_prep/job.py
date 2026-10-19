@@ -14,10 +14,10 @@ _MAX_VMID = 999_999_999
 class Job:
     distro: str
     releases: tuple[str, ...]
-    mode: str  # image | template | existing
-    disk_format: str  # raw | qcow2  (existing keeps "raw")
+    mode: str  # image | template
+    disk_format: str  # raw | qcow2
     dest_dir: str  # image mode directory, else ""
-    storage: str  # template/existing storage id, else ""
+    storage: str  # storage chosen for a new VM, else ""
     cache_dir: str
     collision: str  # backup | overwrite | skip
     vmids: tuple[int, ...]  # aligned with releases; empty for image
@@ -37,6 +37,8 @@ class Job:
     template_vmids: frozenset[int] = frozenset()
     # Guest prep writes /etc/ssh/sshd_config.d/00-enableroot.conf when this is true.
     permit_root: bool = False
+    # Boot disks that stay on their current storage. (vmid, storage id).
+    kept_storage: tuple[tuple[int, str], ...] = ()
 
 
 def published_name(distro: str, release: str, disk_format: str) -> str:
@@ -66,14 +68,21 @@ def _parse_id(token: str) -> int:
     return value
 
 
+def storage_for(job: Job, vmid: int | None) -> str:
+    """Storage this release uses. A kept boot disk wins over the asked storage."""
+    if vmid is not None:
+        for kept_id, storage in job.kept_storage:
+            if kept_id == vmid and storage:
+                return storage
+    return job.storage
+
+
 def action_for(job: Job, vmid: int | None) -> str:
     """Which build function this release calls.
 
-    file, insert, template, or existing. Image mode can create a template
-    for a VMID that was not in use. The other releases keep their own action.
+    file, insert, or template. Image mode can create a template for a VMID
+    that was not in use. The other releases keep their own action.
     """
-    if job.mode == "existing":
-        return "existing"
     if job.mode == "template":
         return "template"
     if job.mode != "image":

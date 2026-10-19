@@ -65,7 +65,14 @@ class ArgvTests(unittest.TestCase):
             self.assertIn("99-grow.cfg", text)
             self.assertIn("ssh_host_", text)
             self.assertIn("machine-id", text)
+            self.assertIn(".bash_history", text)
+            self.assertIn("/var/log", text)
+            self.assertIn("random-seed", text)
+            self.assertIn("70-persistent-net.rules", text)
             self.assertNotIn("00-enableroot.conf", text)
+            commands = _commands(argv("disk.img", family))
+            clean = next(cmd for cmd in commands if ".bash_history" in cmd)
+            self.assertGreater(commands.index(clean), commands.index(next(cmd for cmd in commands if "ssh_host_" in cmd)))
             self.assertNotIn("PermitRootLogin", text)
 
     def test_root_ssh_drop_in_is_one_command_on_both_families(self) -> None:
@@ -80,6 +87,10 @@ class ArgvTests(unittest.TestCase):
             self.assertIn("chcon --reference=/etc/ssh/sshd_config", text)
             self.assertIn("restorecon -F /etc/ssh/sshd_config.d/00-enableroot.conf", text)
             self.assertIn("|| true", text)
+            commands = _commands(argv("disk.img", family, permit_root=True))
+            clean = next(i for i, cmd in enumerate(commands) if ".bash_history" in cmd)
+            root_at = next(i for i, cmd in enumerate(commands) if "00-enableroot.conf" in cmd)
+            self.assertLess(clean, root_at)
 
     def test_unknown_family(self) -> None:
         with self.assertRaises(ValueError):

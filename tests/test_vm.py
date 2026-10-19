@@ -15,7 +15,6 @@ from pve_prep.vm import (
     cluster_config_links,
     config_has_os_disk,
     create_template,
-    existing_prep_commands,
     insert_disk,
     parse_imported_volid,
     parse_linked_clone_owners,
@@ -27,9 +26,10 @@ from pve_prep.vm import (
     parse_storage_ids,
     parse_storage_kinds,
     volume_formats,
-    select_os_disk,
+    import_volume_format,
+    os_disk_storage,
+    select_boot_disk,
     template_commands,
-    with_discard_ssd,
 )
 
 
@@ -109,6 +109,11 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
         self.assertEqual(volume_formats("rbd"), ("raw",))
         self.assertEqual(volume_formats(""), ("qcow2", "raw"))
 
+    def test_block_import_stays_raw(self) -> None:
+        self.assertEqual(import_volume_format("qcow2", "zfspool"), "raw")
+        self.assertEqual(import_volume_format("qcow2", "nfs"), "qcow2")
+        self.assertEqual(import_volume_format("raw", "dir"), "raw")
+
     def test_parse_qm_status_token_or_empty(self) -> None:
         self.assertEqual(parse_qm_status("status: stopped\n"), "stopped")
         self.assertEqual(parse_qm_status("stopped"), "stopped")
@@ -153,29 +158,6 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
         self.assertIsNone(parse_os_disk(ide, STORAGE))
         self.assertIsNone(parse_os_disk("scsi0: local-lvm:vm-100-disk-0\n", "local"))
         self.assertIsNone(parse_os_disk("boot: order=scsi0\n", STORAGE))
-
-    def test_with_discard_ssd_adds_flags_once(self) -> None:
-        volid = "store:vm-1-disk-0"
-        self.assertEqual(
-            with_discard_ssd(volid, ""),
-            "store:vm-1-disk-0,discard=on,ssd=1",
-        )
-        self.assertEqual(
-            with_discard_ssd(volid, "iothread=1,size=3G"),
-            "store:vm-1-disk-0,iothread=1,size=3G,discard=on,ssd=1",
-        )
-        self.assertEqual(
-            with_discard_ssd(volid, "discard=on,ssd=1"),
-            "store:vm-1-disk-0,discard=on,ssd=1",
-        )
-        self.assertEqual(
-            with_discard_ssd(volid, "discard=on,iothread=1,ssd=1"),
-            "store:vm-1-disk-0,discard=on,iothread=1,ssd=1",
-        )
-        self.assertEqual(
-            with_discard_ssd(volid, "ssd=1,discard=on,discard=on,ssd=1"),
-            "store:vm-1-disk-0,ssd=1,discard=on",
-        )
 
     def test_parse_imported_volid(self) -> None:
         self.assertEqual(
@@ -265,38 +247,6 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
         self.assertEqual(len(cmds), 5)
         self.assertNotIn(["qm", "template", "910"], cmds)
 
-    def test_existing_prep_commands_sets_discard_on_os_disk(self) -> None:
-        cfg = "\n".join(
-            [
-                "scsi0: NFS-SATA-SSD1:vm-901-disk-0,iothread=1,size=3G",
-                "ide2: NFS-SATA-SSD1:cloudinit,media=cdrom",
-            ]
-        )
-        cmds, volid = existing_prep_commands(cfg, vmid=901, storage=STORAGE)
-        self.assertEqual(volid, "NFS-SATA-SSD1:vm-901-disk-0")
-        self.assertEqual(cmds[0], ["qm", "set", "901", "--agent", "enabled=1"])
-        self.assertEqual(cmds[1], ["qm", "set", "901", "--rng0", "source=/dev/urandom"])
-        self.assertEqual(
-            cmds[2],
-            ["qm", "set", "901", "--serial0", "socket", "--vga", "serial0"],
-        )
-        self.assertEqual(
-            cmds[3],
-            [
-                "qm",
-                "set",
-                "901",
-                "--scsi0",
-                "NFS-SATA-SSD1:vm-901-disk-0,iothread=1,size=3G,discard=on,ssd=1",
-            ],
-        )
-        with self.assertRaises(VmError):
-            existing_prep_commands(
-                "ide2: NFS-SATA-SSD1:cloudinit,media=cdrom\n",
-                vmid=901,
-                storage=STORAGE,
-            )
-
     def test_boot_order_picks_the_boot_disk(self) -> None:
         cfg = "\n".join(
             [
@@ -305,12 +255,13 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
                 "scsi1: NFS-SATA-SSD1:vm-901-disk-0,size=3G",
             ]
         )
-        bus, volid = select_os_disk(cfg, STORAGE)
-        self.assertEqual((bus, volid), ("scsi1", "NFS-SATA-SSD1:vm-901-disk-0"))
-        _cmds, chosen = existing_prep_commands(cfg, vmid=901, storage=STORAGE)
-        self.assertEqual(chosen, "NFS-SATA-SSD1:vm-901-disk-0")
+        self.assertEqual(
+            select_boot_disk(cfg),
+            ("scsi1", "NFS-SATA-SSD1:vm-901-disk-0"),
+        )
+        self.assertEqual(os_disk_storage(cfg), "NFS-SATA-SSD1")
 
-    def test_boot_disk_on_another_storage_is_refused(self) -> None:
+    def test_os_disk_storage_follows_the_boot_disk(self) -> None:
         cfg = "\n".join(
             [
                 "boot: order=scsi0",
@@ -318,8 +269,9 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
                 "scsi1: NFS-SATA-SSD1:vm-901-disk-1",
             ]
         )
-        with self.assertRaises(VmError):
-            select_os_disk(cfg, STORAGE)
+        self.assertEqual(select_boot_disk(cfg), ("scsi0", "other:vm-901-disk-0"))
+        self.assertEqual(os_disk_storage(cfg), "other")
+        self.assertEqual(os_disk_storage("ide2: local:cloudinit,media=cdrom\n"), "")
 
     def test_storage_content_parser(self) -> None:
         text = "\n".join(

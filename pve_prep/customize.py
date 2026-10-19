@@ -41,6 +41,27 @@ _EL_COMMANDS = (
     "dnf clean all || yum clean all || true",
 )
 
+# Last, after package install and the config writes. Not virt-sysprep:
+# that second boot would also delete users, CA certs, and sshd config.
+# This does not touch sshd_config.d, cloud.cfg.d, or account databases.
+_CLEAN_IDENTITY = (
+    "find /root /home -maxdepth 3 \\( "
+    "-name .bash_history -o -name .zsh_history -o -name .ash_history -o "
+    "-name .python_history -o -name .lesshst -o -name .viminfo -o "
+    "-name .wget-hsts -o -name .mysql_history \\) -delete 2>/dev/null || true; "
+    "find /var/log -type f -delete 2>/dev/null || true; "
+    "find /tmp /var/tmp -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true; "
+    "rm -rf /var/lib/dhclient /var/lib/dhcp /var/crash /var/spool/mail /var/mail "
+    "/var/lib/yum/uuid /etc/smolt/hw-uuid /etc/sysconfig/rhn/hw-uuid "
+    "/var/lib/systemd/random-seed /var/lib/rpm/__db* 2>/dev/null || true; "
+    "rm -f /etc/udev/rules.d/70-persistent-net.rules "
+    "/etc/udev/rules.d/70-persistent-cd.rules "
+    "/etc/passwd- /etc/group- /etc/shadow- /etc/gshadow- /etc/subuid- /etc/subgid- "
+    "/var/run/utmp || true; "
+    "sed -i -e '/^HWADDR=/d' -e '/^MACADDR=/d' "
+    "/etc/sysconfig/network-scripts/ifcfg-* 2>/dev/null || true"
+)
+
 _SHARED_COMMANDS = (
     "mkdir -p /etc/cloud/cloud.cfg.d",
     r'printf "%s\n" "growpart:" "  mode: auto" "  devices: [\"/\"]" "resize_rootfs: true" > /etc/cloud/cloud.cfg.d/99-grow.cfg',
@@ -53,6 +74,7 @@ _SHARED_COMMANDS = (
     "rm -rf /var/lib/cloud/instances",
     "truncate -s 0 /etc/machine-id",
     "rm -f /etc/ssh/ssh_host_*",
+    _CLEAN_IDENTITY,
 )
 
 # First match wins, so this has to sort before 50-cloud-init and 60-cloudimg.

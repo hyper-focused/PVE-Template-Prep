@@ -52,11 +52,10 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
 
     vm = _stub("pve_prep.vm")
     vm.create_template = mock.MagicMock(name="create_template")
-    vm.parse_qm_status = mock.MagicMock(name="parse_qm_status")
-    vm.existing_prep_commands = mock.MagicMock(name="existing_prep_commands")
     vm.parse_storage_ids = mock.MagicMock(name="parse_storage_ids")
     vm.parse_storage_kinds = real_vm.parse_storage_kinds
     vm.volume_formats = real_vm.volume_formats
+    vm.import_volume_format = real_vm.import_volume_format
     vm.VmError = real_vm.VmError
     vm.VmDestroyedError = real_vm.VmDestroyedError
     vm.is_template = real_vm.is_template
@@ -67,8 +66,8 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     vm.parse_storage_content = real_vm.parse_storage_content
     vm.storage_lacks_images = real_vm.storage_lacks_images
     vm.vmid_config_missing = real_vm.vmid_config_missing
-    vm.existing_hw_commands = real_vm.existing_hw_commands
     vm.config_has_os_disk = real_vm.config_has_os_disk
+    vm.os_disk_storage = real_vm.os_disk_storage
     vm.insert_disk = mock.MagicMock(name="insert_disk")
 
 
@@ -163,28 +162,6 @@ def _template_job(*, destroy=frozenset({910}), dry_run=True):
     )
 
 
-def _existing_job(*, dry_run=False, prep=True, vmid=910):
-    from pve_prep.job import DEFAULT_CACHE, Job
-
-    return Job(
-        distro="debian",
-        releases=("12",),
-        mode="existing",
-        disk_format="raw",
-        dest_dir="",
-        storage="dir-templates",
-        cache_dir=DEFAULT_CACHE,
-        collision="backup",
-        vmids=(vmid,),
-        prep=prep,
-        bridge="vmbr0",
-        memory_mb=2048,
-        cores=2,
-        dry_run=dry_run,
-        destroy_vmids=frozenset(),
-    )
-
-
 class OrchestratorTest(unittest.TestCase):
     def setUp(self) -> None:
         MOD.fetch_verified = mock.MagicMock(return_value=Path("/tmp/src.qcow2"))
@@ -193,8 +170,6 @@ class OrchestratorTest(unittest.TestCase):
         MOD.customize_apply = mock.MagicMock()
         MOD.create_template = mock.MagicMock()
         MOD.releases_for = mock.MagicMock(side_effect=_specs)
-        MOD.parse_qm_status = mock.MagicMock(return_value="stopped")
-        MOD.existing_prep_commands = mock.MagicMock()
         MOD.parse_storage_ids = mock.MagicMock(return_value=[])
         MOD.default_run = ORIGINAL_RUN
         MOD.clear_cache = mock.MagicMock(name="clear_cache")
@@ -347,6 +322,22 @@ class OrchestratorTest(unittest.TestCase):
         MOD.publish.assert_not_called()
         MOD.create_template.assert_not_called()
 
+    def test_image_insert_keeps_the_disk_storage_and_stays_raw_on_block(self) -> None:
+        job = replace(
+            _image_job(releases=("12",), dry_run=True),
+            vmids=(910,),
+            storage="local",
+            disk_format="qcow2",
+            collision="overwrite",
+            kept_storage=((910, "vm-data"),),
+        )
+        MOD.insert_disk = mock.MagicMock(return_value="vm-data:vm-910-disk-0")
+        MOD.storage_kind = lambda storage: "zfspool" if storage == "vm-data" else "dir"
+        MOD.run_one(job, "12", 910)
+        kwargs = MOD.insert_disk.call_args.kwargs
+        self.assertEqual(kwargs["storage"], "vm-data")
+        self.assertEqual(kwargs["volume_format"], "raw")
+
     def test_image_missing_vmid_creates_a_template(self) -> None:
         job = replace(
             _image_job(releases=("13",), dry_run=True),
@@ -437,7 +428,11 @@ class OrchestratorTest(unittest.TestCase):
 
         MOD.fetch_verified = fetch
         buf = io.StringIO()
-        with mock.patch.object(MOD, "interview", return_value=job), redirect_stdout(buf):
+        with (
+            mock.patch.object(MOD, "interview", return_value=job),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=False),
+            redirect_stdout(buf),
+        ):
             code = MOD.main([])
         text = buf.getvalue()
         self.assertEqual(code, 1)
@@ -490,15 +485,18 @@ class OrchestratorTest(unittest.TestCase):
             vm_has_disks,
             storage_kinds=None,
             guest_role=None,
+            disk_storage=None,
         ):
             seen["dry_run"] = dry_run
             seen["storages"] = list_storages()
+            seen["disk_storage"] = disk_storage
             return _image_job(releases=("12",), dry_run=True)
 
         MOD.fetch_verified = lambda *args, **kwargs: Path("/tmp/src.qcow2")
         buf = io.StringIO()
         with (
             mock.patch.object(MOD, "interview", fake_interview),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=False),
             mock.patch.object(MOD.subprocess, "run", side_effect=OSError("no pvesm")),
             redirect_stdout(buf),
         ):
@@ -506,6 +504,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(seen["dry_run"])
         self.assertEqual(seen["storages"], [])
+        self.assertIs(seen["disk_storage"], MOD.disk_storage)
         self.assertIn("Debian 12 disk image created at /tmp/images/debian-12-pve.img", buf.getvalue())
         MOD.clear_cache.assert_not_called()
 
@@ -514,7 +513,6 @@ class OrchestratorTest(unittest.TestCase):
             cache = str(Path(tmp) / "pve-template-prep" / "cache")
             job = replace(
                 _image_job(releases=("12",), dry_run=False),
-                clean_cache=True,
                 cache_dir=cache,
             )
             MOD.fetch_verified = lambda *args, **kwargs: Path("/tmp/src.qcow2")
@@ -522,10 +520,14 @@ class OrchestratorTest(unittest.TestCase):
             with (
                 mock.patch.object(MOD, "interview", return_value=job),
                 mock.patch.object(MOD, "preflight"),
+                mock.patch.object(MOD, "ask_cache_cleanup", return_value=True) as ask,
                 redirect_stdout(buf),
             ):
                 code = MOD.main([])
         self.assertEqual(code, 0)
+        ask.assert_called_once()
+        self.assertEqual(ask.call_args.kwargs["cache"], cache)
+        self.assertFalse(ask.call_args.kwargs["failed"])
         MOD.clear_cache.assert_called_once_with(cache)
         self.assertIn(
             "Debian 12 disk image created at /tmp/images/debian-12-pve.img",
@@ -535,7 +537,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("disk backups stay", buf.getvalue())
 
     def test_main_keeps_the_cache_when_a_release_fails(self) -> None:
-        job = replace(_image_job(releases=("12",), dry_run=False), clean_cache=True)
+        job = _image_job(releases=("12",), dry_run=False)
 
         def fetch(*args, **kwargs):
             raise RuntimeError("boom")
@@ -545,20 +547,46 @@ class OrchestratorTest(unittest.TestCase):
         with (
             mock.patch.object(MOD, "interview", return_value=job),
             mock.patch.object(MOD, "preflight"),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=False) as ask,
             redirect_stdout(buf),
         ):
             code = MOD.main([])
         self.assertEqual(code, 1)
+        self.assertTrue(ask.call_args.kwargs["failed"])
         MOD.clear_cache.assert_not_called()
         self.assertIn("cache kept:", buf.getvalue())
         self.assertIn("a release failed", buf.getvalue())
         self.assertIn("Disk backups are kept either way", buf.getvalue())
 
+    def test_main_failure_can_still_delete_working_files(self) -> None:
+        job = _image_job(releases=("12",), dry_run=False)
+
+        def fetch(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        MOD.fetch_verified = fetch
+        buf = io.StringIO()
+        with (
+            mock.patch.object(MOD, "interview", return_value=job),
+            mock.patch.object(MOD, "preflight"),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=True),
+            redirect_stdout(buf),
+        ):
+            code = MOD.main([])
+        self.assertEqual(code, 1)
+        MOD.clear_cache.assert_called_once_with(job.cache_dir)
+        self.assertIn(f"deleted the working files in {job.cache_dir}", buf.getvalue())
+        self.assertIn("disk backups stay", buf.getvalue())
+
     def test_main_dry_run_does_not_delete_the_cache(self) -> None:
-        job = replace(_image_job(releases=("12",), dry_run=True), clean_cache=True)
+        job = _image_job(releases=("12",), dry_run=True)
         MOD.fetch_verified = lambda *args, **kwargs: Path("/tmp/src.qcow2")
         buf = io.StringIO()
-        with mock.patch.object(MOD, "interview", return_value=job), redirect_stdout(buf):
+        with (
+            mock.patch.object(MOD, "interview", return_value=job),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=True),
+            redirect_stdout(buf),
+        ):
             code = MOD.main([])
         self.assertEqual(code, 0)
         MOD.clear_cache.assert_not_called()
@@ -600,13 +628,9 @@ class OrchestratorTest(unittest.TestCase):
             MOD.preflight(_image_job(dry_run=False, prep=True))
             image_tools = list(seen)
             seen.clear()
-            MOD.preflight(_existing_job(dry_run=False, prep=False))
-            existing_tools = list(seen)
-            seen.clear()
             MOD.preflight(_template_job(dry_run=False))
             template_tools = list(seen)
         self.assertEqual(image_tools, ["qemu-img", "virt-customize"])
-        self.assertEqual(existing_tools, ["qm", "pvesm"])
         self.assertEqual(template_tools, ["qemu-img", "virt-customize", "qm", "pvesm"])
 
     def test_main_live_calls_preflight(self) -> None:
@@ -617,105 +641,6 @@ class OrchestratorTest(unittest.TestCase):
             self.assertRaises(SystemExit),
         ):
             MOD.main([])
-
-    def test_existing_dry_run_does_not_touch_host(self) -> None:
-        called = mock.Mock(side_effect=AssertionError("dry-run called the host"))
-        MOD.default_run = called
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            MOD.run_one(_existing_job(dry_run=True), "12", 910)
-        text = buf.getvalue()
-        self.assertIn("existing VMID 910 storage dir-templates guest-prep=yes", text)
-        self.assertIn("virt-customize", text)
-        self.assertNotIn("00-enableroot.conf", text)
-        self.assertIn("--agent", text)
-        called.assert_not_called()
-        MOD.fetch_verified.assert_not_called()
-
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            MOD.run_one(replace(_existing_job(dry_run=True), permit_root=True), "12", 910)
-        self.assertIn("00-enableroot.conf", buf.getvalue())
-        self.assertIn("PermitRootLogin yes", buf.getvalue())
-        self.assertIn("PasswordAuthentication yes", buf.getvalue())
-
-    def test_existing_live_apply_then_hardware(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            disk = Path(tmp) / "vm-910-disk-0.raw"
-            disk.write_bytes(b"not a real disk")
-            calls: list[list[str]] = []
-
-            def run(argv):
-                calls.append(list(argv))
-                if argv[:2] == ["qm", "status"]:
-                    return SimpleNamespace(returncode=0, stdout="status: stopped\n", stderr="")
-                if argv[:2] == ["qm", "config"]:
-                    return SimpleNamespace(returncode=0, stdout="scsi0: dir-templates:910/vm-910-disk-0.raw\n", stderr="")
-                if argv[:2] == ["pvesm", "path"]:
-                    return SimpleNamespace(returncode=0, stdout=f"{disk}\n", stderr="")
-                return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-            MOD.default_run = run
-            MOD.parse_qm_status = lambda _text: "stopped"
-
-            def prep_commands(config, *, vmid, storage):
-                self.assertEqual(storage, "dir-templates")
-                self.assertIn("scsi0:", config)
-                return (
-                    [["qm", "set", str(vmid), "--agent", "enabled=1"]],
-                    "dir-templates:910/vm-910-disk-0.raw",
-                )
-
-            MOD.existing_prep_commands = prep_commands
-            MOD.run_one(_existing_job(dry_run=False, prep=True), "12", 910)
-            self.assertEqual(calls[0][:2], ["qm", "status"])
-            self.assertEqual(calls[1][:2], ["qm", "config"])
-            self.assertEqual(calls[2][:3], ["pvesm", "path", "dir-templates:910/vm-910-disk-0.raw"])
-            self.assertEqual(calls[3], ["qm", "set", "910", "--agent", "enabled=1"])
-            MOD.customize_apply.assert_called_once_with(
-                str(disk), "deb", permit_root=False, dry_run=False
-            )
-            MOD.fetch_verified.assert_not_called()
-
-    def test_existing_running_fails(self) -> None:
-        def run(argv):
-            return SimpleNamespace(returncode=0, stdout="status: running\n", stderr="")
-
-        MOD.default_run = run
-        MOD.parse_qm_status = lambda _text: "running"
-        with self.assertRaises(RuntimeError) as caught:
-            MOD.run_one(_existing_job(dry_run=False), "12", 910)
-        self.assertIn("SKIP 910 status=running (stop it first)", str(caught.exception))
-        MOD.customize_apply.assert_not_called()
-
-    def test_existing_nonzero_includes_stderr_tail(self) -> None:
-        def run(argv):
-            return SimpleNamespace(returncode=2, stdout="", stderr="noise\nno such VMID\n")
-
-        MOD.default_run = run
-        with self.assertRaises(RuntimeError) as caught:
-            MOD.run_one(_existing_job(dry_run=False, prep=False), "12", 910)
-        self.assertIn("no such VMID", str(caught.exception))
-
-    def test_existing_rejects_non_regular_disk(self) -> None:
-        def run(argv):
-            if argv[:2] == ["qm", "status"]:
-                return SimpleNamespace(returncode=0, stdout="status: stopped\n", stderr="")
-            if argv[:2] == ["qm", "config"]:
-                return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
-            return SimpleNamespace(returncode=0, stdout="/no/such/vm-disk.raw\n", stderr="")
-
-        MOD.default_run = run
-        MOD.parse_qm_status = lambda _text: "stopped"
-        MOD.existing_prep_commands = lambda config, *, vmid, storage: (
-            [],
-            "dir-templates:910/vm-910-disk-0.raw",
-        )
-        with self.assertRaises(RuntimeError) as caught:
-            MOD.run_one(_existing_job(dry_run=False, prep=True), "12", 910)
-        self.assertIn("disk is not a regular file", str(caught.exception))
-        MOD.customize_apply.assert_not_called()
-
 
 if __name__ == "__main__":
     unittest.main()

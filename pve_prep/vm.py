@@ -48,6 +48,15 @@ def volume_formats(storage_type: str) -> tuple[str, ...]:
     return ("qcow2", "raw")
 
 
+def import_volume_format(asked: str, storage_type: str) -> str:
+    """Format importdisk may allocate. Block storage stays raw."""
+    if volume_formats(storage_type) == ("raw",):
+        return "raw"
+    if asked in {"qcow2", "raw"}:
+        return asked
+    return "qcow2"
+
+
 def parse_storage_ids(pvesm_status_text: str) -> list[str]:
     """Return storage names whose pvesm status is active."""
     return list(parse_storage_kinds(pvesm_status_text))
@@ -470,25 +479,12 @@ def select_boot_disk(config_text: str) -> tuple[str, str] | None:
     return next(iter(disks.values()))
 
 
-def select_os_disk(config_text: str, storage: str) -> tuple[str, str] | None:
-    """OS disk named by boot order. Falls back to the first disk when boot is absent."""
-    disks: dict[str, tuple[str, str]] = {}
-    for bus_key, volid, _options in _iter_os_disks(config_text, storage):
-        disks.setdefault(bus_key, (bus_key, volid))
-    order = boot_devices(config_text)
-    if order is None:
-        if not disks:
-            return None
-        return next(iter(disks.values()))
-    for bus in order:
-        if bus in disks:
-            return disks[bus]
-    if order:
-        names = ", ".join(order)
-        raise VmError(f"boot order has no OS disk on {storage}: {names}")
-    if not disks:
-        return None
-    return next(iter(disks.values()))
+def os_disk_storage(config_text: str) -> str:
+    """Storage id of the boot OS disk. Empty when the guest has no OS disk."""
+    found = select_boot_disk(config_text)
+    if found is None:
+        return ""
+    return _storage_of(found[1])
 
 
 def storage_lacks_images(cfg_text: str, storage: str) -> bool:
@@ -535,29 +531,6 @@ def unused_volumes(config_text: str) -> list[tuple[str, str]]:
         if _UNUSED_KEY.fullmatch(key):
             found.append((key, rest.split(",", 1)[0].strip()))
     return found
-
-
-def with_discard_ssd(volid: str, rest_after_vol: str) -> str:
-    """Return volid plus options, with discard=on and ssd=1 present once."""
-    options = [part.strip() for part in rest_after_vol.split(",") if part.strip()]
-    kept: list[str] = []
-    seen_discard = False
-    seen_ssd = False
-    for opt in options:
-        if opt == "discard=on":
-            if seen_discard:
-                continue
-            seen_discard = True
-        elif opt == "ssd=1":
-            if seen_ssd:
-                continue
-            seen_ssd = True
-        kept.append(opt)
-    if not seen_discard:
-        kept.append("discard=on")
-    if not seen_ssd:
-        kept.append("ssd=1")
-    return ",".join([volid, *kept])
 
 
 def parse_imported_volid(config_text: str) -> str | None:
@@ -640,31 +613,6 @@ def template_commands(
     if make_template:
         commands.append(["qm", "template", vid])
     return commands
-
-
-def existing_hw_commands(*, vmid: int, bus_key: str, disk_value: str) -> list[list[str]]:
-    """Return qm set argv lists for agent, rng, serial console, and the OS disk."""
-    vid = str(vmid)
-    return [
-        ["qm", "set", vid, "--agent", "enabled=1"],
-        ["qm", "set", vid, "--rng0", "source=/dev/urandom"],
-        ["qm", "set", vid, "--serial0", "socket", "--vga", "serial0"],
-        ["qm", "set", vid, f"--{bus_key}", disk_value],
-    ]
-
-
-def _options_after(config_text: str, bus_key: str, volid: str) -> str:
-    for raw in config_text.splitlines():
-        parsed = _key_rest(raw)
-        if parsed is None:
-            continue
-        key, rest = parsed
-        if key != bus_key:
-            continue
-        volume, _sep, options = rest.partition(",")
-        if volume == volid:
-            return options
-    return ""
 
 
 def _detail(result: object) -> str:
@@ -1161,19 +1109,3 @@ def insert_disk(
         volume_format=volume_format,
         copies_done=copies_done,
     )
-
-
-def existing_prep_commands(
-    config_text: str,
-    *,
-    vmid: int,
-    storage: str,
-) -> tuple[list[list[str]], str]:
-    """Return hardware qm commands and the OS volid for an existing VM."""
-    disk = select_os_disk(config_text, storage)
-    if disk is None:
-        raise VmError(f"VM {vmid} has no OS disk on {storage}")
-    bus_key, volid = disk
-    disk_value = with_discard_ssd(volid, _options_after(config_text, bus_key, volid))
-    commands = existing_hw_commands(vmid=vmid, bus_key=bus_key, disk_value=disk_value)
-    return commands, volid

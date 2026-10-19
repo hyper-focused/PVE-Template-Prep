@@ -6,11 +6,10 @@ are shared. Distro and release stay arguments, not copies of this module.
 
 from __future__ import annotations
 
-import shlex
 from pathlib import Path
 
-from pve_prep.job import action_for, converts_to_template, published_name, vm_name
-from pve_prep.vm import qemu_img_convert_argv
+from pve_prep.job import action_for, converts_to_template, published_name, storage_for, vm_name
+from pve_prep.vm import import_volume_format, qemu_img_convert_argv
 
 
 def opening(action: str, label: str, job, vmid: int | None) -> str:
@@ -21,7 +20,7 @@ def opening(action: str, label: str, job, vmid: int | None) -> str:
         return f"Creating {label} disk image"
     if action == "insert":
         return f"Creating {label} VM disk image"
-    return f"Preparing {label} VM"
+    raise ValueError(f"unknown action {action}")
 
 
 def _finish_file(label: str, dest: Path, result) -> str:
@@ -106,20 +105,32 @@ def publish_file(job, spec, label: str, tools) -> str:
     return _finish_file(label, dest, tools.publish(work, dest, job.collision, dry_run=job.dry_run))
 
 
+def _storage_kind(tools, storage: str) -> str:
+    kind_of = getattr(tools, "storage_kind", None)
+    if kind_of is None:
+        return ""
+    try:
+        return str(kind_of(storage) or "")
+    except Exception:
+        return ""
+
+
 def insert_image(job, spec, vmid: int, label: str, tools) -> str:
     # The cache copy stays qcow2. importdisk allocates the volume format.
+    # A kept boot disk is imported onto its own storage. Block storage stays raw.
+    storage = storage_for(job, vmid)
     backup = vmid in job.backup_vmids
     _stage_replace(job, vmid, tools, backup=backup)
     work = _prepare(job, spec, tools, cache_format="qcow2")
     policy = "backup" if backup else "overwrite"
     inserted = tools.insert_disk(
         vmid=vmid,
-        storage=job.storage,
+        storage=storage,
         image_path=str(work),
         disk_policy=policy,
         dry_run=job.dry_run,
         backup_dir=job.cache_dir,
-        volume_format=job.disk_format,
+        volume_format=import_volume_format(job.disk_format, _storage_kind(tools, storage)),
         copies_done=backup and not job.dry_run,
         run=tools.run,
     )
@@ -146,7 +157,7 @@ def create_guest(job, spec, vmid: int, label: str, tools) -> str:
         backup_disks=False,
         backup_dir=job.cache_dir,
         make_template=converts_to_template(job, vmid),
-        volume_format=job.disk_format,
+        volume_format=import_volume_format(job.disk_format, _storage_kind(tools, job.storage)),
         run=tools.run,
     )
     return _finish_template(label, job, vmid)
@@ -158,8 +169,11 @@ def run_fetched(job, spec, vmid: int | None, label: str, tools) -> str:
     if action != "file":
         if vmid is None:
             raise RuntimeError("VMID is required")
-        if tools.storage_rejects(job.storage):
-            raise RuntimeError(f"storage {job.storage} does not accept images")
+        storage = storage_for(job, vmid) if action == "insert" else job.storage
+        if not storage:
+            raise RuntimeError("storage is required")
+        if tools.storage_rejects(storage):
+            raise RuntimeError(f"storage {storage} does not accept images")
     if action == "file":
         return publish_file(job, spec, label, tools)
     if action == "insert":
@@ -167,64 +181,3 @@ def run_fetched(job, spec, vmid: int | None, label: str, tools) -> str:
     if action == "template":
         return create_guest(job, spec, vmid, label, tools)
     raise RuntimeError(f"unknown action {action}")
-
-
-def _first_path_line(text: str) -> str:
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped:
-            return stripped
-    return ""
-
-
-def prep_existing(job, vmid: int | None, spec, tools) -> None:
-    """Prep a stopped VM in place. Does not download an image."""
-    if vmid is None:
-        raise RuntimeError("VMID is required")
-    prep = "yes" if job.prep else "no"
-    # Dry-run stays off the host. The live disk path is unknown, so the token is literal.
-    if job.dry_run:
-        print(f"existing VMID {vmid} storage {job.storage} guest-prep={prep}")
-        if job.prep:
-            print()
-            print(
-                shlex.join(
-                    tools.customize_argv(
-                        "<os-disk>", spec.family, permit_root=job.permit_root
-                    )
-                )
-            )
-            print()
-        for command in tools.existing_hw_commands(
-            vmid=vmid,
-            bus_key="scsi0",
-            disk_value="<os-disk>,discard=on,ssd=1",
-        ):
-            print(" ".join(command))
-        return
-    status_res = tools.checked(["qm", "status", vmid], tools.run)
-    status = str(tools.parse_qm_status(status_res.stdout)).strip()
-    if status != "stopped":
-        raise RuntimeError(f"SKIP {vmid} status={status} (stop it first)")
-    config_res = tools.checked(["qm", "config", vmid], tools.run)
-    if tools.is_template(config_res.stdout):
-        raise RuntimeError(
-            f"VM {vmid} is a template; existing mode does not rewrite templates"
-        )
-    if tools.is_linked_clone(config_res.stdout):
-        raise RuntimeError(f"VM {vmid} is a linked clone; it was not changed")
-    commands, volid = tools.existing_prep_commands(
-        config_res.stdout, vmid=vmid, storage=job.storage
-    )
-    path_res = tools.checked(["pvesm", "path", str(volid)], tools.run)
-    disk = _first_path_line(path_res.stdout)
-    if not disk or not Path(disk).is_file():
-        raise RuntimeError("disk is not a regular file")
-    for command in commands:
-        if not command:
-            continue
-        tools.checked(list(command), tools.run)
-    if job.prep:
-        tools.customize_apply(
-            disk, spec.family, permit_root=job.permit_root, dry_run=job.dry_run
-        )
