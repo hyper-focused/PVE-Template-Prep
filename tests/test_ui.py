@@ -251,12 +251,16 @@ class WidgetInterviewTest(unittest.TestCase):
 
         read_line.use_questionary = True
 
-        def select(message, choices, default=None):
+        def select(message, choices, default=None, instruction=None):
             if any(len(item) > 2 and item[2] for item in choices):
                 self.assertTrue(choices[1][2])
+            if message in {"Build", "Please choose a distro", "Import storage"}:
+                self.assertEqual(instruction, "highlight selection(s) and press enter")
             return selects.pop(0)
 
         def checkbox(message, choices, instruction=None, validate=None):
+            if message.startswith("Please choose release"):
+                self.assertEqual(instruction, "highlight selection(s) and press enter")
             return checks.pop(0)
 
         def text(message, default="", instruction=None):
@@ -305,7 +309,7 @@ class WidgetInterviewTest(unittest.TestCase):
 
     def test_checkbox_order_and_hardware_change(self) -> None:
         job, blob, confirms = self._run(
-            selects=["debian", "template", "dir-templates", "qcow2"],
+            selects=["template", "debian", "dir-templates", "qcow2"],
             checks=[["13", "12"]],
             texts=["", "", "vmbr1", "4096", "4", "YES"],
             confirms=[False, True, False, True],
@@ -319,7 +323,7 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertEqual(job.cores, 4)
         self.assertEqual(job.storage, "dir-templates")
         self.assertEqual(job.disk_format, "qcow2")
-        self.assertIn("Releases.", blob)
+        self.assertIn("Please choose release(s).", blob)
         self.assertNotIn("codename", blob)
         self.assertNotIn("  1) ", blob)
         self.assertIn("Space marks", ui._CHECK_KEYS)
@@ -340,7 +344,7 @@ class WidgetInterviewTest(unittest.TestCase):
     def test_delete_x_still_aborts(self) -> None:
         with self.assertRaises(PromptAbort):
             self._run(
-                selects=["debian", "template", "dir-templates", "qcow2"],
+                selects=["template", "debian", "dir-templates", "qcow2"],
                 checks=[["12"]],
                 texts=["910", "X"],
                 confirms=[True, False],
@@ -349,7 +353,7 @@ class WidgetInterviewTest(unittest.TestCase):
             )
 
     def test_plain_reader_never_calls_a_widget(self) -> None:
-        answers = ["1", "1, 2", "2", "", "1", "/tmp/images", "", "yes"]
+        answers = ["3", "1", "1, 2", "1", "", "yes"]
 
         def read_line() -> str:
             if not answers:
@@ -375,9 +379,11 @@ class WidgetInterviewTest(unittest.TestCase):
                 normalize_release=_normalize,
                 vmids_in_use=lambda vmids: set(),
                 vm_has_disks=lambda vmid: False,
+                import_storages=lambda: [("local", "/var/lib/vz/import")],
             )
         self.assertEqual(job.mode, "image")
-        self.assertEqual(job.dest_dir, "/tmp/images")
+        self.assertEqual(job.disk_format, "qcow2")
+        self.assertEqual(job.dest_dir, "/var/lib/vz/import")
         self.assertEqual(job.vmids, ())
         self.assertTrue(job.permit_root)
         self.assertIn("Type YES: ", "".join(written))

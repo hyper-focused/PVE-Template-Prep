@@ -487,6 +487,49 @@ def os_disk_storage(config_text: str) -> str:
     return _storage_of(found[1])
 
 
+def volume_format_of(volid: str, options: str = "") -> str:
+    """raw or qcow2 from one qm disk. Empty when the format is not one of those.
+
+    format= wins over the filename. A volume with no suffix is a block
+    volume, and Proxmox allocates those as raw.
+    """
+    for part in options.split(","):
+        token = part.strip()
+        if not token.startswith("format="):
+            continue
+        value = token.split("=", 1)[1].strip().casefold()
+        if value in {"raw", "qcow2"}:
+            return value
+        return ""
+    name = volid.rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+    if name.endswith(".qcow2"):
+        return "qcow2"
+    if name.endswith(".raw"):
+        return "raw"
+    if "." not in name:
+        return "raw"
+    return ""
+
+
+def os_disk_format(config_text: str) -> str:
+    """Format of the boot OS disk. Empty when it is missing or not raw or qcow2."""
+    found = select_boot_disk(config_text)
+    if found is None:
+        return ""
+    bus, volid = found
+    options = ""
+    for raw in config_text.splitlines():
+        parsed = _key_rest(raw)
+        if parsed is None or parsed[0] != bus:
+            continue
+        line_volid, _sep, rest = parsed[1].partition(",")
+        if line_volid.strip() != volid:
+            continue
+        options = rest
+        break
+    return volume_format_of(volid, options)
+
+
 def storage_lacks_images(cfg_text: str, storage: str) -> bool:
     """True when this storage id is missing, or its content tokens omit images.
 
@@ -498,25 +541,69 @@ def storage_lacks_images(cfg_text: str, storage: str) -> bool:
     return "images" not in found[storage]
 
 
-def parse_storage_content(cfg_text: str) -> dict[str, set[str]]:
-    """Map storage id to content tokens from storage.cfg."""
+def _storage_sections(cfg_text: str):
+    """Yield (storage id, indented body lines) in file order."""
     current: str | None = None
-    found: dict[str, set[str]] = {}
+    body: list[str] = []
     for raw in cfg_text.splitlines():
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
             continue
         if raw[:1].isspace():
-            if current and stripped.startswith("content "):
-                tokens = stripped.split(None, 1)[1].replace(",", " ").split()
-                found[current].update(tokens)
+            if current:
+                body.append(stripped)
             continue
+        if current:
+            yield current, body
+        body = []
         if ":" not in stripped:
             current = None
             continue
         _kind, _, name = stripped.partition(":")
         current = name.strip()
-        found.setdefault(current, set())
+    if current:
+        yield current, body
+
+
+def parse_storage_content(cfg_text: str) -> dict[str, set[str]]:
+    """Map storage id to content tokens from storage.cfg."""
+    found: dict[str, set[str]] = {}
+    for name, body in _storage_sections(cfg_text):
+        tokens: set[str] = set()
+        for stripped in body:
+            if stripped.startswith("content "):
+                tokens.update(stripped.split(None, 1)[1].replace(",", " ").split())
+        found[name] = tokens
+    return found
+
+
+def parse_storage_paths(cfg_text: str) -> dict[str, str]:
+    """Map storage id to its path. Ids without a path are omitted."""
+    found: dict[str, str] = {}
+    for name, body in _storage_sections(cfg_text):
+        for stripped in body:
+            if stripped.startswith("path "):
+                path = stripped.split(None, 1)[1].strip()
+                if path:
+                    found[name] = path
+    return found
+
+
+def import_directories(cfg_text: str) -> list[tuple[str, str]]:
+    """Storages whose content includes import, as (id, {path}/import).
+
+    File order. A storage with import content and no path is skipped.
+    """
+    content = parse_storage_content(cfg_text)
+    paths = parse_storage_paths(cfg_text)
+    found: list[tuple[str, str]] = []
+    for storage, tokens in content.items():
+        if "import" not in tokens:
+            continue
+        path = paths.get(storage, "").strip()
+        if not path:
+            continue
+        found.append((storage, str(Path(path) / "import")))
     return found
 
 

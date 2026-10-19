@@ -4,9 +4,14 @@ The base command text matches prep-template.sh. Root password SSH is an
 extra command, written only when the interview asked for it.
 """
 
+import math
 import os
+import re
 import shlex
 import subprocess
+import sys
+import threading
+import time
 
 _DEB_PACKAGES = (
     "qemu-guest-agent,cloud-init,cloud-guest-utils,openssh-server,"
@@ -91,6 +96,172 @@ _ROOT_SSH_COMMAND = (
 )
 
 
+# virt-customize prints "[  15.6] ..." as elapsed seconds, not a fraction
+# done. The slow parts are the appliance boot and the package install, and
+# neither reports a real percentage. This creeps toward the next milestone
+# and never claims the milestone until that line actually arrives.
+_TAU = 12.0
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+# floor, cap, label. Caps are where the next real line takes over.
+_MILESTONES = {
+    "examine": (0.0, 30.0, "Examining the guest"),
+    "seed": (30.0, 34.0, "Preparing the guest"),
+    "machine": (34.0, 38.0, "Preparing the guest"),
+    "install": (38.0, 88.0, "Installing packages"),
+    "selinux": (98.0, 99.0, "SELinux relabel"),
+    "finish": (100.0, 100.0, "Finishing"),
+}
+# Run-commands share the slice after package install. They are fast.
+_COMMAND_START = 88.0
+_COMMAND_END = 97.0
+
+
+def _stdout_is_tty() -> bool:
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def _phase_of(line: str) -> str | None:
+    """Map one virt-customize status line to a phase. The shell text is dropped."""
+    text = _ANSI.sub("", line).replace("\r", " ").strip()
+    marker = "] "
+    if marker in text[:32]:
+        text = text.split(marker, 1)[1].strip()
+    if text.startswith("Examining"):
+        return "examine"
+    if text.startswith("Setting a random seed"):
+        return "seed"
+    if text.startswith("Setting the machine ID"):
+        return "machine"
+    if text.startswith("Installing packages"):
+        return "install"
+    if text.startswith("Running:"):
+        return "command"
+    if text.startswith("SELinux"):
+        return "selinux"
+    if text.startswith("Finishing"):
+        return "finish"
+    return None
+
+
+class _PrepMeter:
+    """One prep bar. Percent moves on a real phase, then creeps until the next."""
+
+    def __init__(self, commands: int) -> None:
+        self.commands = max(commands, 1)
+        self.seen = 0
+        self.kind = "examine"
+        self.floor = 0.0
+        self.cap = 30.0
+        self.phase = "Examining the guest"
+        self.phase_started = 0.0
+
+    def begin(self, now: float) -> None:
+        self.phase_started = now
+
+    def note(self, kind: str | None, now: float) -> None:
+        if kind is None:
+            return
+        if kind == "command":
+            self.kind = "command"
+            self.seen += 1
+            span = (_COMMAND_END - _COMMAND_START) / self.commands
+            self.floor = _COMMAND_START + span * (self.seen - 1)
+            self.cap = min(_COMMAND_END, _COMMAND_START + span * self.seen)
+            self.phase = "Configuring the guest"
+            self.phase_started = now
+            return
+        if kind == self.kind or kind not in _MILESTONES:
+            return
+        self.kind = kind
+        self.floor, self.cap, self.phase = _MILESTONES[kind]
+        self.phase_started = now
+
+    def snapshot(self, now: float) -> tuple[float, str]:
+        if self.floor >= 100.0:
+            return 100.0, self.phase
+        if self.cap <= self.floor:
+            return self.floor, self.phase
+        elapsed = max(0.0, now - self.phase_started)
+        crept = self.floor + (self.cap - self.floor) * (1.0 - math.exp(-elapsed / _TAU))
+        return min(self.cap - 0.01, crept), self.phase
+
+
+def _format_bar(percent: float, phase: str) -> str:
+    """Same shape as qemu-img -p, plus the phase. The shell command is not here."""
+    return f"    ({percent:6.2f}/100%)  {phase}"
+
+
+def _show_bar(*, verbose: bool, progress: bool | None) -> bool:
+    if verbose:
+        return False
+    if progress is None:
+        return _stdout_is_tty()
+    return progress
+
+
+def _run_with_bar(command: list[str], env: dict[str, str], commands: int) -> tuple[int, str]:
+    """Run virt-customize. One updating line. Captured log is returned, not printed."""
+    proc = subprocess.Popen(
+        command,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    captured: list[str] = []
+    meter = _PrepMeter(commands)
+    meter.begin(time.monotonic())
+    lock = threading.Lock()
+    done = threading.Event()
+
+    def _read() -> None:
+        try:
+            stream = proc.stdout
+            if stream is None:
+                return
+            for line in stream:
+                captured.append(line)
+                kind = _phase_of(line)
+                with lock:
+                    meter.note(kind, time.monotonic())
+        finally:
+            done.set()
+
+    reader = threading.Thread(target=_read, daemon=True)
+    reader.start()
+    last = ""
+    try:
+        while True:
+            with lock:
+                percent, phase = meter.snapshot(time.monotonic())
+            rendered = _format_bar(percent, phase)
+            if rendered != last:
+                sys.stdout.write("\r\033[K" + rendered)
+                sys.stdout.flush()
+                last = rendered
+            if proc.poll() is not None and done.is_set():
+                break
+            time.sleep(0.15)
+    except KeyboardInterrupt:
+        proc.terminate()
+        raise
+    reader.join(timeout=2)
+    code = proc.returncode
+    if code is None:
+        code = proc.wait()
+    if code == 0:
+        sys.stdout.write("\r\033[K" + _format_bar(100.0, "Finishing") + "\n")
+    else:
+        sys.stdout.write("\n")
+    sys.stdout.flush()
+    return code, "".join(captured)
+
+
 def argv(image: str, family: str, *, permit_root: bool = False) -> list[str]:
     """Full argv starting with 'virt-customize', '-a', image, then --install and --run-command pairs.
 
@@ -113,15 +284,21 @@ def apply(
     permit_root: bool = False,
     dry_run: bool = False,
     run=None,
+    verbose: bool = False,
+    label: str = "",
+    progress: bool | None = None,
 ) -> None:
     """Build argv, set env LIBGUESTFS_BACKEND from the current environment or 'direct' if unset.
 
     dry_run: print the argv as one line (shlex.join) and return without run.
+    On a terminal, and unless verbose, one progress line replaces the command log.
+    verbose or a pipe lets virt-customize print its own lines.
     run(argv, env) -> object with returncode. Default: subprocess.run(..., check=False).
-    Nonzero raises RuntimeError including the return code. Do not use shell=True.
+    The progress bar does not use run. Nonzero raises RuntimeError including the
+    return code, and the captured log is printed first. Do not use shell=True.
     """
     command = argv(image, family, permit_root=permit_root)
-    # Blank lines keep the green virt-customize block off the status lines.
+    # Blank lines keep the prep block off the status lines.
     print()
     try:
         if dry_run:
@@ -129,6 +306,17 @@ def apply(
             return
         env = os.environ.copy()
         env.setdefault("LIBGUESTFS_BACKEND", "direct")
+        if _show_bar(verbose=verbose, progress=progress):
+            if label:
+                print(f"Preparing {label} image for Proxmox PVE...")
+            commands = sum(1 for part in command if part == "--run-command")
+            code, log = _run_with_bar(command, env, commands)
+            if code != 0:
+                if log.strip():
+                    sys.stdout.write(log if log.endswith("\n") else log + "\n")
+                    sys.stdout.flush()
+                raise RuntimeError(f"virt-customize failed with return code {code}")
+            return
         runner = _run_subprocess if run is None else run
         result = runner(command, env)
         if result.returncode != 0:

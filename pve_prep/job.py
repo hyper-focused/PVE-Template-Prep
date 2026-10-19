@@ -39,6 +39,10 @@ class Job:
     permit_root: bool = False
     # Boot disks that stay on their current storage. (vmid, storage id).
     kept_storage: tuple[tuple[int, str], ...] = ()
+    # CLI -v. Guest prep prints virt-customize's command log instead of one bar.
+    verbose: bool = False
+    # Boot disks whose import format is the one already in the VM config.
+    kept_format: tuple[tuple[int, str], ...] = ()
 
 
 def published_name(distro: str, release: str, disk_format: str) -> str:
@@ -75,6 +79,15 @@ def storage_for(job: Job, vmid: int | None) -> str:
             if kept_id == vmid and storage:
                 return storage
     return job.storage
+
+
+def format_for(job: Job, vmid: int | None) -> str:
+    """Import format. A kept boot disk wins over the format asked for a new VM."""
+    if vmid is not None:
+        for kept_id, disk_format in job.kept_format:
+            if kept_id == vmid and disk_format in {"raw", "qcow2"}:
+                return disk_format
+    return job.disk_format
 
 
 def action_for(job: Job, vmid: int | None) -> str:

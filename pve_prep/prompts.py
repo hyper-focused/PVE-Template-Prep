@@ -93,9 +93,12 @@ def _begin_widget(write) -> None:
     write(ui.rule() + "\n")
 
 
+_MENU_HINT = "highlight selection(s) and press enter"
+
+
 def _pick(read_line, write, message: str, choices, *, default=None):
     _begin_widget(write)
-    picked = ui.select(message, choices, default=default)
+    picked = ui.select(message, choices, default=default, instruction=_MENU_HINT)
     if picked is None:
         raise PromptAbort("exit")
     return picked
@@ -115,11 +118,14 @@ def _ask_choice(read_line, write, prompt: str, mapping: dict[str, str], default_
 def _ask_distro(read_line, write) -> str:
     if ui.enabled(read_line):
         _blank(write)
-        _say(read_line, write, "Distro.\n", "header")
-        write("One distro. Guest prep follows its family.\n")
-        return _pick(read_line, write, "Distro", [(name, name) for name in DISTROS])
-    write("One distro. Guest prep follows its family.\n")
-    write("Distro:\n")
+        _say(read_line, write, "Please choose a distro.\n", "header")
+        return _pick(
+            read_line,
+            write,
+            "Please choose a distro",
+            [(name, name) for name in DISTROS],
+        )
+    write("Please choose a distro:\n")
     for index, name in enumerate(DISTROS, start=1):
         write(f"  {index}) {name}\n")
     mapping = {str(index): name for index, name in enumerate(DISTROS, start=1)}
@@ -159,13 +165,14 @@ def _ask_releases(read_line, write, distro: str, releases_for, normalize_release
     limit = min(MAX_RELEASES, len(specs))
     if ui.enabled(read_line):
         _blank(write)
-        _say(read_line, write, f"Releases. Pick 1 to {limit}.\n", "header")
+        _say(read_line, write, "Please choose release(s).\n", "header")
         order = [str(spec.release) for spec in specs]
         while True:
             _begin_widget(write)
             picked = ui.checkbox(
-                "Releases",
+                "Please choose release(s).",
                 rows,
+                instruction=_MENU_HINT,
                 validate=_release_limit,
             )
             if picked is None:
@@ -178,7 +185,7 @@ def _ask_releases(read_line, write, distro: str, releases_for, normalize_release
                 write(f"pick 1 to {MAX_RELEASES} releases\n")
                 continue
             return tuple(chosen)
-    write("Releases:\n")
+    write("Please choose release(s):\n")
     for index, (title, _release) in enumerate(rows, start=1):
         write(f"  {index}) {title}\n")
     write(f"Select the releases you want ({limit} available, pick 1 to {limit}).\n")
@@ -220,16 +227,9 @@ def _ask_releases(read_line, write, distro: str, releases_for, normalize_release
 
 
 _BUILD_ROWS = (
-    (
-        "Complete PVE VM template",
-        "template",
-        "Create the VM, import the disk, then qm template.",
-    ),
-    (
-        "PVE VM disk image only",
-        "image",
-        "Write a file, or replace a template boot disk.",
-    ),
+    ("Create new Proxmox PVE VM templates", "template"),
+    ("Update existing Proxmox PVE template VM disk images", "update"),
+    ("Create standalone Proxmox PVE VM disk images", "standalone"),
 )
 
 
@@ -241,20 +241,19 @@ def _ask_build(read_line, write) -> str:
             read_line,
             write,
             "Build",
-            [(title, value, False, detail) for title, value, detail in _BUILD_ROWS],
+            [(title, value) for title, value in _BUILD_ROWS],
             default="template",
         )
     write("Build:\n")
-    for index, (title, _value, detail) in enumerate(_BUILD_ROWS, start=1):
+    for index, (title, _value) in enumerate(_BUILD_ROWS, start=1):
         write(f"  {index}) {title}\n")
-        write(f"     {detail}\n")
     return _ask_choice(
         read_line,
         write,
         "Select [1]: ",
-        {"1": "template", "2": "image"},
+        {"1": "template", "2": "update", "3": "standalone"},
         "1",
-        "pick 1 template or 2 disk image",
+        "pick 1, 2, or 3",
     )
 
 
@@ -277,34 +276,6 @@ _STORAGE_LABEL = {
 def _storage_label(storage_type: str) -> str:
     kind = (storage_type or "").strip().casefold()
     return _STORAGE_LABEL.get(kind, kind or "this storage")
-
-
-def _ask_file_format(read_line, write) -> str:
-    """Format of a published file. There is no Proxmox storage involved."""
-    if ui.enabled(read_line):
-        _blank(write)
-        _say(read_line, write, "Image file format.\n", "header")
-        return _pick(
-            read_line,
-            write,
-            "Format",
-            [
-                ("raw (.img, full size)", "raw"),
-                ("QEMU qcow2 (sparse)", "qcow2"),
-            ],
-            default="raw",
-        )
-    write("Image file format.\n")
-    write("  1) raw (.img, full size)\n")
-    write("  2) QEMU qcow2 (sparse)\n")
-    return _ask_choice(
-        read_line,
-        write,
-        "Select format [1]: ",
-        {"1": "raw", "2": "qcow2"},
-        "1",
-        "pick 1 raw or 2 qcow2",
-    )
 
 
 def _ask_volume_format(read_line, write, storage: str, storage_type: str) -> str:
@@ -435,17 +406,48 @@ def _ask_storage(
         return raw
 
 
-def _ask_directory(read_line, write) -> str:
+def _ask_import_storage(read_line, write, import_storages) -> str:
+    """Import directory for the qcow2 files. No import storage aborts."""
+    rows: list[tuple[str, str]] = []
+    if import_storages is not None:
+        try:
+            raw_rows = list(import_storages() or [])
+        except Exception:
+            raw_rows = []
+        for item in raw_rows:
+            storage, directory = item
+            storage = str(storage).strip()
+            directory = str(directory).strip()
+            if storage and directory:
+                rows.append((storage, directory))
+    if not rows:
+        if ui.enabled(read_line):
+            _blank(write)
+        _say(read_line, write, "No storage has import content.\n", "header")
+        raise PromptAbort("no import storage")
     if ui.enabled(read_line):
         _blank(write)
-    _say(read_line, write, "Directory for the finished image file.\n", "header")
-    write("This is a path, not a storage id.\n")
-    prompt = "Image directory: "
-    while True:
-        raw = _ask_text(read_line, write, prompt)
-        if raw:
-            return raw
-        prompt = "A directory is required.\nImage directory: "
+        _say(read_line, write, "Import storage.\n", "header")
+        picked = _pick(
+            read_line,
+            write,
+            "Import storage",
+            [(storage, storage) for storage, _directory in rows],
+        )
+        return dict(rows)[picked]
+    write("Import storage:\n")
+    for index, (storage, _directory) in enumerate(rows, start=1):
+        write(f"  {index}) {storage}\n")
+    mapping = {str(index): storage for index, (storage, _directory) in enumerate(rows, start=1)}
+    picked = _ask_choice(
+        read_line,
+        write,
+        "Select [1]: ",
+        mapping,
+        "1",
+        f"pick 1-{len(rows)}",
+    )
+    return dict(rows)[picked]
 
 
 def _next_free(vmids_in_use, reserved: set[int]) -> tuple[int | None, bool]:
@@ -510,12 +512,18 @@ def _replace_reason(vmid: int, role: str) -> str | None:
     if role == "template":
         return None
     if role == "vm":
-        return f"VMID {vmid} is a VM, not a template. Type a template VMID."
+        return (
+            f"VMID {vmid} is a normal VM, not a template. "
+            "It will not be changed. Type a template VMID."
+        )
     if role == "clone":
-        return f"VMID {vmid} is a linked clone. It will not be changed. Type another VMID."
+        return (
+            f"VMID {vmid} is a linked clone. "
+            "It will not be changed. Type a template VMID."
+        )
     return (
         f"VMID {vmid} has linked clones, or the check could not be read. "
-        "Type another VMID."
+        "It will not be changed. Type another template VMID."
     )
 
 
@@ -658,49 +666,15 @@ def _ask_template_vmids(read_line, write, named, vmids_in_use, guest_role=None):
     return tuple(chosen), frozenset(destroy)
 
 
-def _image_intro(read_line, write, label: str, *, offer_publish: bool, several: bool) -> None:
+def _image_intro(read_line, write, label: str) -> None:
     if ui.enabled(read_line):
         _blank(write)
-    if offer_publish and several:
-        header = (
-            f"VMID for {label}. Enter publishes a file for every selected release "
-            "and leaves every VM alone.\n"
-        )
-    elif offer_publish:
-        header = f"VMID for {label}. Enter publishes a file and leaves every VM alone.\n"
-    else:
-        header = f"VMID for {label}.\n"
-    _say(read_line, write, header, "header")
-    write(
-        "In use: it has to be a template. The boot disk is replaced. "
-        "A normal VM or a linked clone is refused.\n"
-    )
-
-
-def _ask_missing_vmid(read_line, write, vmid: int) -> str:
-    """A disk-image VMID that does not exist. Returns again or template."""
-    again = "Try another VMID"
-    create = f"Create a new VM template at {vmid}"
-    detail = f"VMID {vmid} is not in use. There is no VM there to receive a disk.\n"
-    if ui.enabled(read_line):
-        _blank(write)
-        write(detail)
-        return _pick(
-            read_line,
-            write,
-            f"VMID {vmid}",
-            [(again, "again"), (create, "template")],
-        )
-    write(detail)
-    write(f"  1) {again}\n")
-    write(f"  2) {create}\n")
-    return _ask_choice(
+    _say(
         read_line,
         write,
-        "Select: ",
-        {"1": "again", "2": "template"},
-        None,
-        "pick 1 to try another VMID, or 2 to create a template",
+        f"Please enter an existing {label} template VMID. "
+        "A new VM boot disk will be created.\n",
+        "header",
     )
 
 
@@ -723,10 +697,36 @@ def _insert_storage_problem(vmid: int, found: str | None) -> str | None:
     return None
 
 
-def _keep_insert(disk_storage, vmid: int, placed: list[tuple[int, str]]) -> str | None:
+def _lookup_disk_format(disk_format_of, vmid: int) -> str | None:
+    """raw or qcow2, empty when the disk has neither, None when it cannot be read."""
+    try:
+        found = disk_format_of(vmid)
+    except Exception:
+        return None
+    if found is None:
+        return None
+    return str(found).strip().casefold()
+
+
+def _insert_format_problem(vmid: int, found: str | None) -> str | None:
+    if found is None:
+        return f"Could not read the disk format for VMID {vmid}. Type another VMID."
+    if found not in {"raw", "qcow2"}:
+        return f"VMID {vmid} disk format is not raw or qcow2. Type another VMID."
+    return None
+
+
+def _keep_insert(
+    disk_storage,
+    disk_format_of,
+    vmid: int,
+    placed: list[tuple[int, str]],
+    formats: list[tuple[int, str]],
+) -> str | None:
     """Record a kept boot disk. None accepts. A string asks for another VMID.
 
-    No callback means the interview still asks for a storage id.
+    No storage callback means the interview still asks for a storage id.
+    No format callback means the interview still asks for a volume format.
     """
     if disk_storage is None:
         return None
@@ -734,37 +734,43 @@ def _keep_insert(disk_storage, vmid: int, placed: list[tuple[int, str]]) -> str 
     problem = _insert_storage_problem(vmid, found)
     if problem:
         return problem
+    if disk_format_of is not None:
+        fmt = _lookup_disk_format(disk_format_of, vmid)
+        problem = _insert_format_problem(vmid, fmt)
+        if problem:
+            return problem
+        formats.append((vmid, str(fmt)))
     placed.append((vmid, str(found)))
     return None
 
 
-def _ask_image_vmids(read_line, write, named, vmids_in_use, guest_role=None, disk_storage=None):
-    """One existing VMID per release.
+def _ask_image_vmids(
+    read_line,
+    write,
+    named,
+    vmids_in_use,
+    guest_role=None,
+    disk_storage=None,
+    disk_format_of=None,
+):
+    """One existing template VMID per release.
 
-    Enter on the first release publishes a file for every release.
-    A VMID that is not in use can create a new template at that ID.
-    Returns (vmids, template VMID set, kept boot-disk storage).
-    Backup is decided later, once.
+    A free VMID is refused. Enter does not publish a file.
+    Returns (vmids, template VMID set, kept storage, kept format).
+    The template set stays empty. A new template is the other build choice.
     """
     chosen: list[int] = []
-    templates: list[int] = []
     names: dict[int, str] = {}
     placed: list[tuple[int, str]] = []
-    several = len(named) > 1
-    for index, (_release, label) in enumerate(named):
-        offer_publish = index == 0
-        _image_intro(read_line, write, label, offer_publish=offer_publish, several=several)
-        if offer_publish:
-            base = f"VMID for {label}, or Enter to publish files: "
-        else:
-            base = _vmid_field(label, None)
+    formats: list[tuple[int, str]] = []
+    for _release, label in named:
+        _image_intro(read_line, write, label)
+        base = f"{label} template VMID: "
         reason = ""
         while True:
             vmid = _read_one_vmid(read_line, write, base, reason=reason)
             reason = ""
             if vmid is None:
-                if offer_publish:
-                    return (), frozenset(), ()
                 reason = "A VMID is required."
                 continue
             duplicate = _duplicate_reason(names, vmid)
@@ -778,7 +784,7 @@ def _ask_image_vmids(read_line, write, named, vmids_in_use, guest_role=None, dis
                 if refused:
                     reason = refused
                     continue
-                problem = _keep_insert(disk_storage, vmid, placed)
+                problem = _keep_insert(disk_storage, disk_format_of, vmid, placed, formats)
                 if problem:
                     reason = problem
                     continue
@@ -787,25 +793,21 @@ def _ask_image_vmids(read_line, write, named, vmids_in_use, guest_role=None, dis
                 chosen.append(vmid)
                 break
             if vmid not in occupied:
-                if _ask_missing_vmid(read_line, write, vmid) == "again":
-                    continue
-                names[vmid] = label
-                chosen.append(vmid)
-                templates.append(vmid)
-                break
+                reason = f"VMID {vmid} is not in use. Type a template VMID."
+                continue
             role = _guest_role(guest_role, vmid, default="template")
             refused = _replace_reason(vmid, role)
             if refused:
                 reason = refused
                 continue
-            problem = _keep_insert(disk_storage, vmid, placed)
+            problem = _keep_insert(disk_storage, disk_format_of, vmid, placed, formats)
             if problem:
                 reason = problem
                 continue
             names[vmid] = label
             chosen.append(vmid)
             break
-    return tuple(chosen), frozenset(templates), tuple(placed)
+    return tuple(chosen), frozenset(), tuple(placed), tuple(formats)
 
 
 def _ask_bool(read_line, write, prompt: str, default: bool) -> bool:
@@ -1090,6 +1092,18 @@ def _one_storage(pairs: tuple[tuple[int, str], ...]) -> str:
     return ""
 
 
+def _formats_cover(inserts, kept_format: tuple[tuple[int, str], ...]) -> bool:
+    found = {vmid for vmid, fmt in kept_format if fmt in {"raw", "qcow2"}}
+    return bool(inserts) and set(inserts) <= found
+
+
+def _one_format(pairs: tuple[tuple[int, str], ...]) -> str:
+    """One format for the job field. Imports still use each VMID's own."""
+    if not pairs:
+        return "qcow2"
+    return pairs[0][1]
+
+
 def _format_for_storages(read_line, write, storages: list[str], kinds: dict[str, str]) -> str:
     """One format question for the file storages. All block stays raw."""
     file_storage = ""
@@ -1145,18 +1159,21 @@ def _image_storage(
     vmids,
     template_vmids,
     kept: tuple[tuple[int, str], ...],
+    kept_format: tuple[tuple[int, str], ...],
     disk_storage,
 ):
     """Storage and format for an image run that names VMIDs.
 
-    A replaced boot disk keeps the storage read from its config. A new VM
-    in the same run still asks. Without a disk read, the old question stays.
+    A replaced boot disk keeps the storage and the format read from its
+    config. A new VM in the same run still asks. Without a disk read, the
+    old questions stay.
     """
     inserts = [vmid for vmid in vmids if vmid not in template_vmids]
     known = {vmid for vmid, _name in kept}
+    covered = _formats_cover(inserts, kept_format)
     if disk_storage is None or not inserts or not set(inserts) <= known:
         storage = _ask_storage(read_line, write, list_storages)
-        return storage, volume_format_for(storage), ()
+        return storage, volume_format_for(storage), (), ()
     if template_vmids:
         storage = _ask_storage(
             read_line,
@@ -1169,11 +1186,18 @@ def _image_storage(
                 "This choice is for the new VM.\n"
             ),
         )
-        return storage, volume_format_for(storage), kept
+        asked = volume_format_for(storage)
+        return storage, asked, kept, kept_format if covered else ()
+    formats = dict(kept_format)
     for vmid, name in kept:
-        write(f"VMID {vmid} is on {name}.\n")
+        if covered:
+            write(f"VMID {vmid} is on {name}. The volume is {formats[vmid]}.\n")
+        else:
+            write(f"VMID {vmid} is on {name}.\n")
+    if covered:
+        return _one_storage(kept), _one_format(kept_format), kept, kept_format
     names = [name for _vmid, name in kept]
-    return _one_storage(kept), _format_for_storages(read_line, write, names, kinds), kept
+    return _one_storage(kept), _format_for_storages(read_line, write, names, kinds), kept, ()
 
 
 def interview(
@@ -1189,6 +1213,8 @@ def interview(
     storage_kinds=None,
     guest_role=None,
     disk_storage=None,
+    disk_format_of=None,
+    import_storages=None,
 ) -> Job:
     """Walk the operator through one job.
 
@@ -1198,9 +1224,10 @@ def interview(
     """
     if ui.enabled(read_line):
         write = _paint_body(write)
+    build = _ask_build(read_line, write)
     distro = _ask_distro(read_line, write)
     releases = _ask_releases(read_line, write, distro, releases_for, normalize_release)
-    mode = _ask_build(read_line, write)
+    mode = "template" if build == "template" else "image"
     count = len(releases)
 
     kinds: dict[str, str] = {}
@@ -1216,7 +1243,8 @@ def interview(
     named = _named_releases(distro, releases, releases_for)
     template_vmids: frozenset[int] = frozenset()
     kept: tuple[tuple[int, str], ...] = ()
-    if mode == "template":
+    kept_format: tuple[tuple[int, str], ...] = ()
+    if build == "template":
         vmids, destroy_vmids = _ask_template_vmids(
             read_line, write, named, vmids_in_use, guest_role
         )
@@ -1230,31 +1258,41 @@ def interview(
             notes=notes,
         )
         disk_format = volume_format_for(storage)
-    elif mode == "image":
-        vmids, template_vmids, kept = _ask_image_vmids(
-            read_line, write, named, vmids_in_use, guest_role, disk_storage
+    elif build == "update":
+        vmids, template_vmids, kept, kept_format = _ask_image_vmids(
+            read_line,
+            write,
+            named,
+            vmids_in_use,
+            guest_role,
+            disk_storage,
+            disk_format_of,
         )
         destroy_vmids = frozenset()
-        if vmids:
-            dest_dir = ""
-            storage, disk_format, kept = _image_storage(
-                read_line,
-                write,
-                list_storages,
-                volume_format_for,
-                kinds,
-                vmids,
-                template_vmids,
-                kept,
-                disk_storage,
-            )
-        else:
-            disk_format = _ask_file_format(read_line, write)
-            dest_dir = _ask_directory(read_line, write)
-            storage = ""
-            kept = ()
+        dest_dir = ""
+        storage, disk_format, kept, kept_format = _image_storage(
+            read_line,
+            write,
+            list_storages,
+            volume_format_for,
+            kinds,
+            vmids,
+            template_vmids,
+            kept,
+            kept_format,
+            disk_storage,
+        )
+    elif build == "standalone":
+        vmids = ()
+        template_vmids = frozenset()
+        kept = ()
+        kept_format = ()
+        destroy_vmids = frozenset()
+        dest_dir = _ask_import_storage(read_line, write, import_storages)
+        storage = ""
+        disk_format = "qcow2"
     else:
-        raise ValueError(f"unknown mode {mode}")
+        raise ValueError(f"unknown build {build}")
 
     hardware = mode == "template" or bool(template_vmids)
     convert = mode == "template"
@@ -1305,12 +1343,13 @@ def interview(
         line_mode = "template" if vmid in template_vmids else mode
         line_template = True if vmid in template_vmids else make_template
         line_storage = dict(kept).get(vmid, storage) if vmid is not None else storage
+        line_format = dict(kept_format).get(vmid, disk_format) if vmid is not None else disk_format
         write(
             _summary_line(
                 distro,
                 release,
                 line_mode,
-                disk_format,
+                line_format,
                 dest_dir,
                 line_storage,
                 vmid,
@@ -1374,4 +1413,5 @@ def interview(
         template_vmids=template_vmids,
         permit_root=permit_root,
         kept_storage=kept,
+        kept_format=kept_format,
     )

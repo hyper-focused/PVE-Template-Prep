@@ -22,11 +22,13 @@ from pve_prep.vm import (
     parse_qm_status,
     vmid_config_missing,
     parse_storage_content,
+    import_directories,
     storage_lacks_images,
     parse_storage_ids,
     parse_storage_kinds,
     volume_formats,
     import_volume_format,
+    os_disk_format,
     os_disk_storage,
     select_boot_disk,
     template_commands,
@@ -273,6 +275,19 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
         self.assertEqual(os_disk_storage(cfg), "other")
         self.assertEqual(os_disk_storage("ide2: local:cloudinit,media=cdrom\n"), "")
 
+    def test_os_disk_format_follows_the_boot_disk(self) -> None:
+        qcow = "boot: order=scsi0\nscsi0: nfs:910/vm-910-disk-0.qcow2,size=3G\n"
+        raw = "boot: order=scsi0\nscsi0: nfs:910/vm-910-disk-0.raw,size=3G\n"
+        explicit = "scsi0: nfs:910/vm-910-disk-0.qcow2,format=raw,size=3G\n"
+        block = "scsi0: vm-data:vm-910-disk-0,size=3G\n"
+        weird = "scsi0: nfs:910/vm-910-disk-0.vmdk,format=vmdk\n"
+        self.assertEqual(os_disk_format(qcow), "qcow2")
+        self.assertEqual(os_disk_format(raw), "raw")
+        self.assertEqual(os_disk_format(explicit), "raw")
+        self.assertEqual(os_disk_format(block), "raw")
+        self.assertEqual(os_disk_format(weird), "")
+        self.assertEqual(os_disk_format("ide2: local:cloudinit,media=cdrom\n"), "")
+
     def test_storage_content_parser(self) -> None:
         text = "\n".join(
             [
@@ -301,6 +316,27 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
         self.assertFalse(storage_lacks_images(text, "NFS-SATA-SSD2"))
         self.assertTrue(storage_lacks_images(text, "local"))
         self.assertTrue(storage_lacks_images(text, "missing"))
+
+    def test_import_directories_skip_storages_without_import(self) -> None:
+        text = "\n".join(
+            [
+                "zfspool: vm-data",
+                "\tpool rpool/data",
+                "\tcontent images,rootdir",
+                "dir: local",
+                "\tpath /var/lib/vz",
+                "\tcontent iso,vztmpl,backup",
+                "nfs: nfs-templates",
+                "\tpath /mnt/pve/nfs-templates",
+                "\tcontent images,import",
+                "dir: snippets-only",
+                "\tcontent import",
+            ]
+        )
+        self.assertEqual(
+            import_directories(text),
+            [("nfs-templates", "/mnt/pve/nfs-templates/import")],
+        )
 
 
 class CreateTemplateTests(unittest.TestCase):

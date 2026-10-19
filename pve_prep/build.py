@@ -8,8 +8,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pve_prep.job import action_for, converts_to_template, published_name, storage_for, vm_name
-from pve_prep.vm import import_volume_format, qemu_img_convert_argv
+from pve_prep.job import (
+    action_for,
+    converts_to_template,
+    format_for,
+    published_name,
+    storage_for,
+    vm_name,
+)
+from pve_prep.vm import import_volume_format, qemu_img_convert_argv, stdout_is_tty
 
 
 def opening(action: str, label: str, job, vmid: int | None) -> str:
@@ -87,20 +94,28 @@ def _stage_replace(job, vmid: int, tools, *, backup: bool) -> None:
             print("No OS disk to copy. Building the new template image now...")
 
 
-def _prepare(job, spec, tools, *, cache_format: str) -> Path:
+def _prepare(job, spec, tools, *, cache_format: str, label: str) -> Path:
     src = tools.fetch_verified(spec, Path(job.cache_dir), dry_run=job.dry_run)
     work = Path(job.cache_dir) / (published_name(job.distro, spec.release, cache_format) + ".work")
+    # qemu-img -p draws the bar. The label is the only name that bar gets.
+    if not job.dry_run and stdout_is_tty():
+        print(f"Converting {label} image...")
     tools.convert(src, work, cache_format, dry_run=job.dry_run)
     if job.prep:
         # apply() wants a str. shlex.join rejects a Path on dry-run.
         tools.customize_apply(
-            str(work), spec.family, permit_root=job.permit_root, dry_run=job.dry_run
+            str(work),
+            spec.family,
+            permit_root=job.permit_root,
+            dry_run=job.dry_run,
+            verbose=job.verbose,
+            label=label,
         )
     return work
 
 
 def publish_file(job, spec, label: str, tools) -> str:
-    work = _prepare(job, spec, tools, cache_format=job.disk_format)
+    work = _prepare(job, spec, tools, cache_format=job.disk_format, label=label)
     dest = Path(job.dest_dir) / published_name(job.distro, spec.release, job.disk_format)
     return _finish_file(label, dest, tools.publish(work, dest, job.collision, dry_run=job.dry_run))
 
@@ -121,7 +136,7 @@ def insert_image(job, spec, vmid: int, label: str, tools) -> str:
     storage = storage_for(job, vmid)
     backup = vmid in job.backup_vmids
     _stage_replace(job, vmid, tools, backup=backup)
-    work = _prepare(job, spec, tools, cache_format="qcow2")
+    work = _prepare(job, spec, tools, cache_format="qcow2", label=label)
     policy = "backup" if backup else "overwrite"
     inserted = tools.insert_disk(
         vmid=vmid,
@@ -130,7 +145,7 @@ def insert_image(job, spec, vmid: int, label: str, tools) -> str:
         disk_policy=policy,
         dry_run=job.dry_run,
         backup_dir=job.cache_dir,
-        volume_format=import_volume_format(job.disk_format, _storage_kind(tools, storage)),
+        volume_format=import_volume_format(format_for(job, vmid), _storage_kind(tools, storage)),
         copies_done=backup and not job.dry_run,
         run=tools.run,
     )
@@ -143,7 +158,7 @@ def create_guest(job, spec, vmid: int, label: str, tools) -> str:
     backup = replacing and vmid in job.backup_vmids
     if replacing:
         _stage_replace(job, vmid, tools, backup=backup)
-    work = _prepare(job, spec, tools, cache_format="qcow2")
+    work = _prepare(job, spec, tools, cache_format="qcow2", label=label)
     tools.create_template(
         vmid=vmid,
         name=vm_name(job.distro, spec.release),

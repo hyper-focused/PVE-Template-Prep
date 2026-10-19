@@ -1,13 +1,14 @@
 # pve-template-prep
 
-One interview. Up to three releases of one distro. A disk image, or a template VM.
+One interview. Up to three releases of one distro. A new template, an updated template disk, or a standalone qcow2.
 
 Proxmox will let you click the cloud-image ritual until the mouse files a complaint. This asks once.
 
 | Build | What lands | Enter does this |
 | --- | --- | --- |
-| Template | A new VM named `<distro>-<release>-cloud` | Next free VMID from 9001, then `qm template` |
-| Disk image | `<distro>-<release>-pve.img` or `.qcow2` in a directory | Publishes the files and leaves every VM alone |
+| Create new Proxmox PVE VM templates | A new VM named `<distro>-<release>-cloud` | Next free VMID from 9001, then `qm template` |
+| Update existing Proxmox PVE template VM disk images | The boot disk of a template that already exists | That template's VMID. Storage and format stay |
+| Create standalone Proxmox PVE VM disk images | `<distro>-<release>-pve.qcow2` in that storage's `import/` directory | The first storage whose content includes `import` |
 
 > [!IMPORTANT]
 > Nothing is built until the last screen. A backup ends when you type `YES`. A delete with no backup ends when you type `DELETE`. Red text is that delete.
@@ -35,7 +36,7 @@ sudo bash install.sh
 sudo pve-template-prep
 ```
 
-The next run checks for a newer version on its own. It reads the version string on `main` and asks `Fetch it now? [y/N]`. Enter keeps this copy. `y` installs that version and starts it. `--version` only prints the release.
+The next run checks for a newer version on its own. It reads the version string on `main` and asks `Fetch it now? [y/N]`. Enter keeps this copy. `y` installs that version and starts it. `-V` or `--version` only prints the release. `-v` or `--verbose` shows the virt-customize commands instead of the progress bar.
 
 `--dry-run` asks the same questions and prints the commands. It does not need root, and it does not download or change the host.
 
@@ -50,7 +51,7 @@ Somewhere else: `DEST=/somewhere bash install.sh`, or `sudo DEST=/somewhere bash
 
 `sudo` only has to set the effective uid to 0. `qm`, `pvesm`, `qemu-img`, and `virt-customize` are children of that process and stay root. They do not need their own sudoers rules. A `NOEXEC` tag on the sudoers command blocks them, and then nothing interesting happens.
 
-`pve-template-prep --version` prints the release and exits. It does not look for a newer copy. A run prints that same line, then an installed copy checks `main`. The check reads the version string and sends nothing else. A newer version asks `Fetch it now? [y/N]`. Enter keeps this copy. `y` runs `install.sh` into this install directory and starts that version. That includes a patch bump: a release added, a release removed, or a bugfix. A git checkout does not ask. If GitHub cannot be read, the questions start anyway. `PVE_PREP_SKIP_UPDATE=1` skips the check. Each release then prints a cyan line naming what it is building, the green virt-customize output with a blank line on either side, and a white line naming what finished.
+`pve-template-prep -V` or `--version` prints the release and exits. It does not look for a newer copy. A run prints that same line, then an installed copy checks `main`. The check reads the version string and sends nothing else. A newer version asks `Fetch it now? [y/N]`. Enter keeps this copy. `y` runs `install.sh` into this install directory and starts that version. That includes a patch bump: a release added, a release removed, or a bugfix. A git checkout does not ask. If GitHub cannot be read, the questions start anyway. `PVE_PREP_SKIP_UPDATE=1` skips the check. Each release then prints a cyan line naming what it is building. On a terminal, `Converting <name> image...` is followed by the qemu-img progress, then `Preparing <name> image for Proxmox PVE...` and one progress line. virt-customize's own bracketed numbers are elapsed seconds, so that command log stays hidden. `-v` or `--verbose` shows it. A pipe shows it too. A white line names what finished.
 
 There are no distro or release flags. The questions are the interface. Run the dry-run before the real one.
 
@@ -92,12 +93,12 @@ Each question says what that step does before it asks. Empty input accepts the d
 
 | | Question | Enter |
 | --- | --- | --- |
-| 1 | Distro | |
-| 2 | One to three releases. The number is the menu, not the version. Debian `1, 2` is 12 and 13. Fedora `1, 2` is 43 and 44. | |
-| 3 | `1` template, `2` disk image | Template |
-| 4 | One VMID per release. A list or a range is rejected. | Next free ID from 9001, in template mode |
-| 5 | A directory for a published image. A full template replace asks `VM Disk Storage Path`. Enter keeps the current disk's storage. A boot-disk replace does not ask. | The current storage, when that VMID exists |
-| 6 | Volume format on directory, NFS, and CIFS. `1` qcow2, `2` raw. ZFS, LVM, LVM-thin, RBD, and iSCSI skip this. | qcow2 |
+| 1 | What to build. `1` create a template, `2` update a template disk, `3` standalone qcow2 | Create a template |
+| 2 | Distro | |
+| 3 | One to three releases. The number is the menu, not the version. Debian `1, 2` is 12 and 13. Fedora `1, 2` is 43 and 44. | |
+| 4 | One VMID per release, for a new template or an update. Standalone skips this. A list or a range is rejected. | Next free ID from 9001, on the create-template path |
+| 5 | Import storage for a standalone image. A new template asks `VM Disk Storage Path`. An update does not ask. | The first import storage. On a replace, the current disk's storage |
+| 6 | Volume format when a new template is created on directory, NFS, or CIFS. A standalone image is qcow2. An update keeps that disk's format. | qcow2 |
 | 7 | Accept the defaults that apply: root SSH, and in template mode the bridge, memory, cores, and `qm template`. Guest prep always runs. | Yes. `n` asks each one. |
 | 8 | Back up the disks that will be replaced. One answer for the whole list. Skipped when nothing is being replaced. | Yes. `n` deletes them with no copy. |
 | 9 | Read the summary. A backup ends on `YES`. No backup ends on `DELETE`. | |
@@ -113,15 +114,15 @@ On a terminal the menus use one dark palette. A pipe, `NO_COLOR`, or `TERM=dumb`
 
 Releases are a checkbox: one to three. A codename such as `bookworm` works on the numbered path. A `vendor/` tree that will not import keeps that numbered path too.
 
-1. Distro, by number.
-2. Releases, by number, comma-separated. **The numbers are the menu, not the version.** A codename still works (`bookworm`, `noble`).
-3. What to build. Enter selects the template.
-4. VMIDs, one question per release. The question names the release (`VMID for Debian 13. Enter uses 9002.`). The field is empty. The default is in brackets (`[9002]`). Enter accepts it. Typing replaces it. One number. A value that cannot be used is asked again, and the next prompt says why.
-   - Template: Enter assigns the next free ID from 9001. IDs already in use are skipped, quietly, including a hole such as a taken 9002. Two releases that both take the default become 9001 and 9002, or 9003 and 9004 when those first two are taken. A typed ID that is already in use has to be a template. The template is deleted and replaced. A normal VM is refused. A linked clone is refused. A template that still has linked clones is refused, including a clone on another node.
-   - Disk image only: Enter on the first release publishes a file for every selected release and does not touch a VM. Each later release needs its own VMID. An existing VMID has to be a template. Its boot disk is replaced. The same refusals apply. A VMID that is not in use asks you to try another ID, or to create a new VM template at that ID.
-5. Where it goes. A published disk image asks for the file format, then a directory. `1` raw (`.img`, full size), `2` QEMU qcow2. Enter selects raw. The directory is a path, not a storage id. Replacing a template boot disk uses the storage that disk is already on. That question is not asked. A wrong answer would import the new disk somewhere else and break the template. A full template replace asks `VM Disk Storage Path`. When that VMID already exists, its disk's storage is first in the list. Enter keeps it. The field is not prefilled. A number picks from the list. A storage id that is not in the list is asked again.
-6. Volume format, when a disk will be imported onto directory, NFS, or CIFS. That answer is `qm importdisk --format`. ZFS, LVM, LVM-thin, RBD, and iSCSI stay raw and do not ask. CIFS is a file share, including when the volume is raw. There is no block CIFS type. A boot-disk replace follows the storage the disk is already on, so a block disk stays raw.
-7. Accept these defaults. Guest prep is not a question. It is applied on every image this tool builds. Enter accepts the defaults this path still asks: root password SSH, and in template mode the bridge, memory, cores, and `qm template`. The cloud-init user must be `root`. `n` asks each one. A published file, or a boot-disk replace, asks only the root question. The root question does not repeat the revert command. That stays in [Root password SSH](#root-password-ssh). Hardware and `qm template` are template mode. A new template created from disk-image mode still asks the hardware, and that VM is still created with `qm template`. Bridge, memory, and cores stay `vmbr0`, 2048 MB, and 2 cores unless you change them. Machine type is `q35`, the SCSI controller is virtio-scsi, the display is a serial console, and the guest agent flag is on. The rest can be changed later with `qm set`. `n` on `qm template` leaves a normal VM. A template is cloned, not booted.
+1. What to build. Enter selects **Create new Proxmox PVE VM templates**. `2` is **Update existing Proxmox PVE template VM disk images**. `3` is **Create standalone Proxmox PVE VM disk images**. The menu does not describe the rows.
+2. Distro. The question is `Please choose a distro`.
+3. Releases, by number, comma-separated. **The numbers are the menu, not the version.** A codename still works (`bookworm`, `noble`). The question is `Please choose release(s).` On a terminal the line under the menu is `highlight selection(s) and press enter`. Space still marks a release.
+4. VMIDs, one question per release, on the create and update paths. Standalone skips this. The question names the release (`VMID for Debian 13. Enter uses 9002.` on create). The field is empty. The default is in brackets (`[9002]`). Enter accepts it. Typing replaces it. One number. A value that cannot be used is asked again, and the next prompt says why.
+   - Create: Enter assigns the next free ID from 9001. IDs already in use are skipped, quietly, including a hole such as a taken 9002. Two releases that both take the default become 9001 and 9002, or 9003 and 9004 when those first two are taken. A typed ID that is already in use has to be a template. The template is deleted and replaced. A normal VM is refused. A linked clone is refused. A template that still has linked clones is refused, including a clone on another node.
+   - Update: the prompt asks for an existing template VMID. A new boot disk is created for that template. Every release needs a VMID. A free VMID is refused. A normal VM is refused, and the next prompt says so. A linked clone is refused the same way.
+5. Where it goes. A standalone image lists storages whose `storage.cfg` content includes `import`, and writes `<distro>-<release>-pve.qcow2` into that storage's `import/` directory. The file is qcow2. Format is not asked. Proxmox chooses the volume format when that file is imported later. Updating a template boot disk uses the storage that disk is already on, and the format that disk already has. Those questions are not asked. A new template asks `VM Disk Storage Path`. When that VMID already exists, its disk's storage is first in the list. Enter keeps it. The field is not prefilled. A number picks from the list. A storage id that is not in the list is asked again.
+6. Volume format, when a new template will be imported onto directory, NFS, or CIFS. That answer is `qm importdisk --format`. ZFS, LVM, LVM-thin, RBD, and iSCSI stay raw and do not ask. CIFS is a file share, including when the volume is raw. There is no block CIFS type. An update uses the format that disk already has, raw or qcow2, and does not ask. Importing the other format breaks the VM config. A standalone image does not ask. It is qcow2.
+7. Accept these defaults. Guest prep is not a question. It is applied on every image this tool builds. Enter accepts the defaults this path still asks: root password SSH, and on the create path the bridge, memory, cores, and `qm template`. The cloud-init user must be `root`. `n` asks each one. A standalone file, or an update, asks only the root question. The root question does not repeat the revert command. That stays in [Root password SSH](#root-password-ssh). Hardware and `qm template` are the create path. Bridge, memory, and cores stay `vmbr0`, 2048 MB, and 2 cores unless you change them. Machine type is `q35`, the SCSI controller is virtio-scsi, the display is a serial console, and the guest agent flag is on. The rest can be changed later with `qm set`. `n` on `qm template` leaves a normal VM. A template is cloned, not booted.
 8. Disks that will be replaced. One question, after the other options. Enter copies every one of them into the cache. `n` does not. A VMID with no OS disk is named, and the question is still asked. A new VMID and a published file skip this. A published file that already exists is renamed aside. That path does not ask.
 9. Read the summary, then one gate.
    - Backup: the screen lists the VMIDs and asks for `YES`. `X` exits. There is no second confirm.
@@ -134,20 +135,22 @@ After the builds, the cache question. Enter keeps the working files in `/var/tmp
 
 </details>
 
-## The two paths
+## The three paths
 
-**Image.** A directory path, not a storage id. A ZFS or LVM id will not do, however convincing the GUI is about it. An existing VMID has to be a template. Its boot disk is replaced on the storage that disk is already on, and the rest of the config stays. Storage is not asked. A normal VM is refused. Needs `qemu-img`.
+**Create new Proxmox PVE VM templates.** The image is customized as a file, then imported. Enter runs `qm template`. `n` leaves a normal VM with the same disk, cloud-init drive, and boot order. This path builds a new VM. It does not keep the old firewall and options. You are asked for the storage. When the VMID already exists, Enter keeps the storage its disk is on. Needs `qemu-img`, `qm`, and `pvesm`.
 
-**Template.** The image is customized as a file, then imported. Enter runs `qm template`. `n` leaves a normal VM with the same disk, cloud-init drive, and boot order. This path builds a new VM. It does not keep the old firewall and options. You are asked for the storage. When the VMID already exists, Enter keeps the storage its disk is on. Needs `qemu-img`, `qm`, and `pvesm`.
+**Update existing Proxmox PVE template VM disk images.** An existing template VMID is required. Its boot disk is replaced on the storage that disk is already on, in the format that disk already uses. Storage and format are not asked. A free VMID is refused. A normal VM is refused. Needs `qemu-img`, `qm`, and `pvesm`.
+
+**Create standalone Proxmox PVE VM disk images.** A qcow2 file, `<distro>-<release>-pve.qcow2`, written into a storage `import/` directory. The menu lists only storages whose content includes `import`. Format is not asked. When that file is imported in Proxmox, the volume format is chosen there. Needs `qemu-img`. Does not need `qm`.
 
 One release failing does not cancel the rest, unless a template was destroyed and its replacement did not finish. Then the run stops. Exit status is 0 only when every selected release succeeds.
 
 <details>
 <summary>Import format, backups, and linked clones</summary>
 
-Any storage that accepts `images` works for a template. ZFS, LVM, LVM-thin, RBD, and iSCSI allocate a raw volume. Directory, NFS, and CIFS pass `--format qcow2` or `--format raw`. The working copy in the cache stays qcow2 until that import, so a raw volume does not expand there first. A published raw file still does. The guest name is `<distro>-<release>-cloud`. Guest prep also needs `virt-customize`.
+Any storage that accepts `images` works for a new template. ZFS, LVM, LVM-thin, RBD, and iSCSI allocate a raw volume. Directory, NFS, and CIFS pass `--format qcow2` or `--format raw`. The working copy in the cache stays qcow2 until that import, so a raw volume does not expand there first. A standalone file is already qcow2. The guest name is `<distro>-<release>-cloud`. Guest prep also needs `virt-customize`.
 
-A template VMID in image mode is how you refresh a template without rebuilding it. Firewall, options, and the rest of the config stay. The boot disk is replaced, and the guest is still a template when it is done. **Linked clones block that.** A clone on another node counts when the disk is on shared storage. A normal VM is refused.
+An update refreshes a template without rebuilding it. Firewall, options, and the rest of the config stay. The boot disk is replaced, and the guest is still a template when it is done. **Linked clones block that.** A clone on another node counts when the disk is on shared storage. A normal VM is refused.
 
 Enter never lands on a VMID that is already in use. Replacing one means you typed that ID.
 

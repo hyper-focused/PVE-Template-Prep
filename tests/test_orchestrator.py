@@ -62,12 +62,15 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     vm.is_linked_clone = real_vm.is_linked_clone
     vm.prepare_replace = mock.MagicMock(name="prepare_replace", return_value=1)
     vm.qemu_img_convert_argv = real_vm.qemu_img_convert_argv
+    vm.stdout_is_tty = real_vm.stdout_is_tty
     vm.refuse_replace_target = real_vm.refuse_replace_target
     vm.parse_storage_content = real_vm.parse_storage_content
     vm.storage_lacks_images = real_vm.storage_lacks_images
     vm.vmid_config_missing = real_vm.vmid_config_missing
     vm.config_has_os_disk = real_vm.config_has_os_disk
     vm.os_disk_storage = real_vm.os_disk_storage
+    vm.os_disk_format = real_vm.os_disk_format
+    vm.import_directories = real_vm.import_directories
     vm.insert_disk = mock.MagicMock(name="insert_disk")
 
 
@@ -192,12 +195,14 @@ class OrchestratorTest(unittest.TestCase):
             self.assertEqual(disk_format, "raw")
             self.assertFalse(dry_run)
 
-        def apply(path, family, permit_root=False, dry_run=False):
+        def apply(path, family, permit_root=False, dry_run=False, verbose=False, label=""):
             order.append("apply")
             self.assertEqual(path, "/var/tmp/pve-template-prep/cache/debian-12-pve.img.work")
             self.assertEqual(family, "deb")
             self.assertFalse(permit_root)
             self.assertFalse(dry_run)
+            self.assertFalse(verbose)
+            self.assertEqual(label, "Debian 12")
 
         def publish(work, dest, collision, dry_run=False):
             order.append("publish")
@@ -338,6 +343,22 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(kwargs["storage"], "vm-data")
         self.assertEqual(kwargs["volume_format"], "raw")
 
+    def test_image_insert_keeps_the_disk_format_on_file_storage(self) -> None:
+        job = replace(
+            _image_job(releases=("12",), dry_run=True, disk_format="qcow2"),
+            vmids=(910,),
+            storage="nfs-templates",
+            collision="overwrite",
+            kept_storage=((910, "nfs-templates"),),
+            kept_format=((910, "raw"),),
+        )
+        MOD.insert_disk = mock.MagicMock(return_value="nfs-templates:910/vm-910-disk-0.raw")
+        MOD.storage_kind = lambda storage: "nfs" if storage == "nfs-templates" else "dir"
+        MOD.run_one(job, "12", 910)
+        kwargs = MOD.insert_disk.call_args.kwargs
+        self.assertEqual(kwargs["storage"], "nfs-templates")
+        self.assertEqual(kwargs["volume_format"], "raw")
+
     def test_image_missing_vmid_creates_a_template(self) -> None:
         job = replace(
             _image_job(releases=("13",), dry_run=True),
@@ -449,16 +470,33 @@ class OrchestratorTest(unittest.TestCase):
         MOD.convert.assert_called_once()
 
     def test_version_flag_and_startup_line(self) -> None:
-        buf = io.StringIO()
-        with mock.patch.object(MOD, "interview", side_effect=AssertionError("asked")):
-            with redirect_stdout(buf), self.assertRaises(SystemExit) as caught:
-                MOD.main(["--version"])
-        self.assertEqual(caught.exception.code, 0)
-        self.assertEqual(buf.getvalue(), f"pve-template-prep {pve_prep.__version__}\n")
+        for flag in ("--version", "-V"):
+            buf = io.StringIO()
+            with mock.patch.object(MOD, "interview", side_effect=AssertionError("asked")):
+                with redirect_stdout(buf), self.assertRaises(SystemExit) as caught:
+                    MOD.main([flag])
+            self.assertEqual(caught.exception.code, 0)
+            self.assertEqual(buf.getvalue(), f"pve-template-prep {pve_prep.__version__}\n")
         self.assertEqual(pve_prep.__version__, "1.2.0")
         import pve_prep.download as download
 
         self.assertEqual(download._HEADERS["User-Agent"], f"pve-prep/{pve_prep.__version__}")
+
+    def test_verbose_flag_reaches_the_job(self) -> None:
+        seen: dict[str, bool] = {}
+        job = _image_job(releases=("12",), dry_run=True)
+
+        def run_one(got, _release, _vmid) -> None:
+            seen["verbose"] = got.verbose
+
+        with (
+            mock.patch.object(MOD, "interview", return_value=job),
+            mock.patch.object(MOD, "run_one", run_one),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=False),
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(MOD.main(["-v"]), 0)
+        self.assertTrue(seen["verbose"])
 
     def test_main_abort(self) -> None:
         with mock.patch.object(MOD, "interview", side_effect=MOD.PromptAbort("no")):
@@ -486,10 +524,14 @@ class OrchestratorTest(unittest.TestCase):
             storage_kinds=None,
             guest_role=None,
             disk_storage=None,
+            disk_format_of=None,
+            import_storages=None,
         ):
             seen["dry_run"] = dry_run
             seen["storages"] = list_storages()
             seen["disk_storage"] = disk_storage
+            seen["disk_format_of"] = disk_format_of
+            seen["import_storages"] = import_storages
             return _image_job(releases=("12",), dry_run=True)
 
         MOD.fetch_verified = lambda *args, **kwargs: Path("/tmp/src.qcow2")
@@ -505,6 +547,8 @@ class OrchestratorTest(unittest.TestCase):
         self.assertTrue(seen["dry_run"])
         self.assertEqual(seen["storages"], [])
         self.assertIs(seen["disk_storage"], MOD.disk_storage)
+        self.assertIs(seen["disk_format_of"], MOD.disk_format)
+        self.assertIs(seen["import_storages"], MOD.import_storages)
         self.assertIn("Debian 12 disk image created at /tmp/images/debian-12-pve.img", buf.getvalue())
         MOD.clear_cache.assert_not_called()
 

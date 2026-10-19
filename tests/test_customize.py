@@ -5,7 +5,7 @@ import os
 import unittest
 from contextlib import contextmanager, redirect_stdout
 
-from pve_prep.customize import apply, argv
+from pve_prep.customize import _PrepMeter, _format_bar, _phase_of, apply, argv
 
 
 def _commands(args: list[str]) -> list[str]:
@@ -160,6 +160,49 @@ class ApplyTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as caught:
             apply("disk.img", "deb", run=fake_run)
         self.assertIn("7", str(caught.exception))
+
+    def test_bar_names_the_phase_and_hides_the_shell(self) -> None:
+        shell = "[  36.4] Running: find /root -name .bash_history -delete"
+        self.assertEqual(_phase_of(shell), "command")
+        self.assertEqual(
+            _phase_of("[  15.6] Installing packages: qemu-guest-agent cloud-init"),
+            "install",
+        )
+        self.assertEqual(_phase_of("[   0.0] Examining the guest ..."), "examine")
+        meter = _PrepMeter(18)
+        start = 1000.0
+        meter.begin(start)
+        percent, phase = meter.snapshot(start + 10)
+        self.assertGreater(percent, 10)
+        self.assertLess(percent, 30)
+        self.assertEqual(phase, "Examining the guest")
+        meter.note("install", start + 15)
+        percent, phase = meter.snapshot(start + 35)
+        self.assertEqual(phase, "Installing packages")
+        self.assertGreater(percent, 60)
+        self.assertLess(percent, 88)
+        meter.note(_phase_of(shell), start + 40)
+        shown = _format_bar(*meter.snapshot(start + 40))
+        self.assertIn("Configuring the guest", shown)
+        self.assertNotIn("bash_history", shown)
+        self.assertNotIn("Running", shown)
+
+    def test_verbose_keeps_the_runner(self) -> None:
+        calls: list[list[str]] = []
+
+        class Result:
+            returncode = 0
+
+        def fake_run(command: list[str], env: dict[str, str]) -> Result:
+            calls.append(command)
+            return Result()
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            apply("disk.img", "el", verbose=True, progress=True, run=fake_run)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("Preparing", buf.getvalue())
+        self.assertNotIn("/100%", buf.getvalue())
 
 
 if __name__ == "__main__":

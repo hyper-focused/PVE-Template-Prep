@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from pve_prep.job import Job, action_for, parse_vmid, published_name, storage_for, vm_name  # noqa: E402
+from pve_prep.job import Job, action_for, format_for, parse_vmid, published_name, storage_for, vm_name  # noqa: E402
 
 
 class PublishedNameTest(unittest.TestCase):
@@ -87,6 +87,10 @@ class ActionForTest(unittest.TestCase):
     def test_kept_disk_storage_wins(self) -> None:
         kept = _job(storage="local", kept_storage=((910, "nfs-templates"),))
         self.assertEqual(storage_for(kept, 910), "nfs-templates")
+        formatted = _job(disk_format="qcow2", kept_format=((910, "raw"),))
+        self.assertEqual(format_for(formatted, 910), "raw")
+        self.assertEqual(format_for(formatted, 911), "qcow2")
+        self.assertEqual(format_for(_job(), 910), "raw")
         self.assertEqual(storage_for(kept, 911), "local")
         self.assertEqual(storage_for(_job(), 910), "dir-templates")
 

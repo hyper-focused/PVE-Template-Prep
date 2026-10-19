@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +29,7 @@ from pve_prep.vm import (
     config_has_os_disk,
     create_template,
     insert_disk,
+    os_disk_format,
     os_disk_storage,
     is_linked_clone,
     is_template,
@@ -37,6 +39,7 @@ from pve_prep.vm import (
     storage_lacks_images,
     parse_storage_ids,
     parse_storage_kinds,
+    import_directories,
 )
 
 _APT_HINT = "apt-get install libguestfs-tools qemu-utils"
@@ -155,6 +158,23 @@ def storage_kind(storage: str) -> str:
     return storage_kinds().get(storage, "")
 
 
+def import_storages() -> list[tuple[str, str]]:
+    """Active storages that can hold an import file. (id, import directory).
+
+    An empty pvesm status keeps every import storage from storage.cfg.
+    """
+    path = Path("/etc/pve/storage.cfg")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    targets = import_directories(text)
+    active = set(list_storages())
+    if not active:
+        return targets
+    return [(storage, directory) for storage, directory in targets if storage in active]
+
+
 def disk_storage(vmid: int) -> str | None:
     """Storage id of the boot OS disk.
 
@@ -171,6 +191,24 @@ def disk_storage(vmid: int) -> str | None:
     if proc.returncode != 0:
         return None
     return os_disk_storage(proc.stdout or "")
+
+
+def disk_format(vmid: int) -> str | None:
+    """raw or qcow2 of the boot OS disk.
+
+    None when qm config cannot be read. Empty when the format is not raw or qcow2.
+    """
+    try:
+        proc = subprocess.run(
+            ["qm", "config", str(vmid)],
+            text=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return os_disk_format(proc.stdout or "")
 
 
 def preflight(job: Job) -> None:
@@ -303,6 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Download, prep, and publish PVE cloud images or templates.",
     )
     parser.add_argument(
+        "-V",
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -311,6 +350,12 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run",
         action="store_true",
         help="print actions and do not change the host",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="show each virt-customize command instead of the progress bar",
     )
     args = parser.parse_args(argv)
     print(f"{parser.prog} {__version__}")
@@ -331,10 +376,14 @@ def main(argv: list[str] | None = None) -> int:
             vm_has_disks=vm_has_disks,
             guest_role=guest_role,
             disk_storage=disk_storage,
+            disk_format_of=disk_format,
+            import_storages=import_storages,
         )
     except PromptAbort:
         print("aborted")
         return 1
+    if args.verbose:
+        job = replace(job, verbose=True)
     if not job.dry_run:
         preflight(job)
     failed = False
