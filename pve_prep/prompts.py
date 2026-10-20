@@ -20,7 +20,7 @@ from pve_prep.job import (
     published_name,
     vm_name,
 )
-from pve_prep.vm import volume_formats
+from pve_prep.vm import is_file_storage
 
 DEFAULT_BRIDGE = "vmbr0"
 DEFAULT_MEMORY_MB = 2048
@@ -278,31 +278,62 @@ def _storage_label(storage_type: str) -> str:
     return _STORAGE_LABEL.get(kind, kind or "this storage")
 
 
-def _ask_volume_format(read_line, write, storage: str, storage_type: str) -> str:
-    """Format allocated on this storage. Block storage is raw and is not asked."""
-    formats = volume_formats(storage_type)
-    if formats == ("raw",):
-        if ui.enabled(read_line):
-            _blank(write)
-        label = _storage_label(storage_type)
-        write(f"{storage} is {label}. The volume will be raw.\n")
-        return "raw"
+def _storage_refusal(storage: str, kinds: dict[str, str]) -> str | None:
+    """Why this storage cannot hold a disk image. None when it can.
+
+    An empty kinds map means pvesm could not be read. The interview goes on,
+    and the run refuses anything that is not file storage.
+    """
+    if not kinds:
+        return None
+    kind = kinds.get(storage, "")
+    if is_file_storage(kind):
+        return None
+    if not kind:
+        return f"{storage} is not an active storage."
+    return f"{storage} is {_storage_label(kind)}. Disk images go on file storage only."
+
+
+def _file_storage_ids(read_line, write, list_storages, kinds: dict[str, str]) -> list[str]:
+    """Active file storages. ZFS, LVM, RBD, and iSCSI are named and left out.
+
+    A host with storages and none of them file storage ends the interview.
+    """
+    try:
+        found = [str(item).strip() for item in list(list_storages() or []) if str(item).strip()]
+    except Exception:
+        found = []
+    kept = [storage for storage in found if _storage_refusal(storage, kinds) is None]
+    skipped = [storage for storage in found if storage not in kept]
+    if skipped:
+        shown = ", ".join(
+            f"{storage} ({_storage_label(kinds.get(storage, ''))})" for storage in skipped
+        )
+        write(f"Not listed: {shown}. Disk images go on file storage only.\n")
+    if found and not kept:
+        _say(read_line, write, "No file storage accepts the VM disk.\n", "header")
+        raise PromptAbort("no file storage")
+    return kept
+
+
+def _ask_format(read_line, write, heading: str) -> str:
+    """qcow2 or raw. Enter selects qcow2. The file extension is the format."""
     if ui.enabled(read_line):
         _blank(write)
-        _say(read_line, write, f"Volume format on {storage}.\n", "header")
+        _say(read_line, write, heading, "header")
         return _pick(
             read_line,
             write,
             "Format",
             [
-                ("QEMU qcow2 (sparse)", "qcow2"),
-                ("raw (full size)", "raw"),
+                ("QEMU qcow2 (.qcow2)", "qcow2"),
+                ("raw (.raw)", "raw"),
             ],
             default="qcow2",
         )
-    write(f"Volume format on {storage}.\n")
-    write("  1) QEMU qcow2 (sparse)\n")
-    write("  2) raw (full size)\n")
+    write(heading)
+    write("  1) QEMU qcow2 (.qcow2)\n")
+    write("  2) raw (.raw)\n")
     return _ask_choice(
         read_line,
         write,
@@ -311,6 +342,26 @@ def _ask_volume_format(read_line, write, storage: str, storage_type: str) -> str
         "1",
         "pick 1 qcow2 or 2 raw",
     )
+
+
+def _ask_volume_format(read_line, write, storage: str, storage_type: str) -> str:
+    """Format importdisk allocates on this file storage.
+
+    The storage menu has already left block storage out. An unreadable type
+    is asked anyway, and a live run refuses it if it is not file storage.
+    """
+    kind = (storage_type or "").strip()
+    if kind and not is_file_storage(kind):
+        _say(
+            read_line,
+            write,
+            f"{storage} is {_storage_label(kind)}. Disk images go on file storage only.\n",
+            "header",
+        )
+        raise PromptAbort("block storage")
+    if not kind:
+        write(f"Could not read the type of {storage}. The run refuses it unless it is file storage.\n")
+    return _ask_format(read_line, write, f"Volume format on {storage}.\n")
 
 
 def _front(storages: list[str], recommended: str) -> list[str]:
@@ -332,6 +383,8 @@ def _ask_storage(
 ) -> str:
     try:
         found = list(list_storages() or [])
+    except PromptAbort:
+        raise
     except Exception:
         found = []
     storages = _front(
@@ -406,8 +459,8 @@ def _ask_storage(
         return raw
 
 
-def _ask_import_storage(read_line, write, import_storages) -> str:
-    """Import directory for the qcow2 files. No import storage aborts."""
+def _ask_import_storage(read_line, write, import_storages) -> tuple[str, str]:
+    """(storage id, import directory) for the image files. No import storage aborts."""
     rows: list[tuple[str, str]] = []
     if import_storages is not None:
         try:
@@ -434,7 +487,7 @@ def _ask_import_storage(read_line, write, import_storages) -> str:
             "Import storage",
             [(storage, storage) for storage, _directory in rows],
         )
-        return dict(rows)[picked]
+        return picked, dict(rows)[picked]
     write("Import storage:\n")
     for index, (storage, _directory) in enumerate(rows, start=1):
         write(f"  {index}) {storage}\n")
@@ -447,7 +500,7 @@ def _ask_import_storage(read_line, write, import_storages) -> str:
         "1",
         f"pick 1-{len(rows)}",
     )
-    return dict(rows)[picked]
+    return picked, dict(rows)[picked]
 
 
 def _next_free(vmids_in_use, reserved: set[int]) -> tuple[int | None, bool]:
@@ -721,11 +774,13 @@ def _keep_insert(
     vmid: int,
     placed: list[tuple[int, str]],
     formats: list[tuple[int, str]],
+    kinds: dict[str, str],
 ) -> str | None:
     """Record a kept boot disk. None accepts. A string asks for another VMID.
 
     No storage callback means the interview still asks for a storage id.
     No format callback means the interview still asks for a volume format.
+    A boot disk on ZFS, LVM, RBD, or iSCSI is refused.
     """
     if disk_storage is None:
         return None
@@ -733,6 +788,9 @@ def _keep_insert(
     problem = _insert_storage_problem(vmid, found)
     if problem:
         return problem
+    refused = _storage_refusal(str(found), kinds)
+    if refused:
+        return f"VMID {vmid} boot disk: {refused} Type another VMID."
     if disk_format_of is not None:
         fmt = _lookup_disk_format(disk_format_of, vmid)
         problem = _insert_format_problem(vmid, fmt)
@@ -751,6 +809,7 @@ def _ask_image_vmids(
     guest_role=None,
     disk_storage=None,
     disk_format_of=None,
+    kinds: dict[str, str] | None = None,
 ):
     """One existing template VMID per release.
 
@@ -762,6 +821,7 @@ def _ask_image_vmids(
     names: dict[int, str] = {}
     placed: list[tuple[int, str]] = []
     formats: list[tuple[int, str]] = []
+    known_kinds = dict(kinds or {})
     for _release, label in named:
         _image_intro(read_line, write, label)
         base = f"{label} template VMID: "
@@ -783,7 +843,9 @@ def _ask_image_vmids(
                 if refused:
                     reason = refused
                     continue
-                problem = _keep_insert(disk_storage, disk_format_of, vmid, placed, formats)
+                problem = _keep_insert(
+                    disk_storage, disk_format_of, vmid, placed, formats, known_kinds
+                )
                 if problem:
                     reason = problem
                     continue
@@ -799,7 +861,9 @@ def _ask_image_vmids(
             if refused:
                 reason = refused
                 continue
-            problem = _keep_insert(disk_storage, disk_format_of, vmid, placed, formats)
+            problem = _keep_insert(
+                    disk_storage, disk_format_of, vmid, placed, formats, known_kinds
+                )
             if problem:
                 reason = problem
                 continue
@@ -1104,22 +1168,9 @@ def _one_format(pairs: tuple[tuple[int, str], ...]) -> str:
 
 
 def _format_for_storages(read_line, write, storages: list[str], kinds: dict[str, str]) -> str:
-    """One format question for the file storages. All block stays raw."""
-    file_storage = ""
-    file_kind = ""
-    for storage in storages:
-        kind = kinds.get(storage, "")
-        if volume_formats(kind) == ("raw",):
-            continue
-        if not file_storage:
-            file_storage = storage
-            file_kind = kind
-    if not file_storage:
-        if len(storages) == 1:
-            return _ask_volume_format(read_line, write, storages[0], kinds.get(storages[0], ""))
-        write("The volume will be raw.\n")
-        return "raw"
-    return _ask_volume_format(read_line, write, file_storage, file_kind)
+    """One format question for the kept boot disks, when their format could not be read."""
+    first = storages[0] if storages else ""
+    return _ask_volume_format(read_line, write, first, kinds.get(first, ""))
 
 
 def _replacement_storage(disk_storage, vmids, destroy) -> tuple[tuple[str, ...], str]:
@@ -1239,6 +1290,9 @@ def interview(
     def volume_format_for(storage: str) -> str:
         return _ask_volume_format(read_line, write, storage, kinds.get(storage, ""))
 
+    def file_storages() -> list[str]:
+        return _file_storage_ids(read_line, write, list_storages, kinds)
+
     named = _named_releases(distro, releases, releases_for)
     template_vmids: frozenset[int] = frozenset()
     kept: tuple[tuple[int, str], ...] = ()
@@ -1249,10 +1303,14 @@ def interview(
         )
         dest_dir = ""
         notes, recommended = _replacement_storage(disk_storage, vmids, destroy_vmids)
+        if recommended and _storage_refusal(recommended, kinds):
+            # The old template is destroyed. Its replacement goes on file storage.
+            notes = (*notes, f"{recommended} is not file storage. Pick where the new disk goes.")
+            recommended = ""
         storage = _ask_storage(
             read_line,
             write,
-            list_storages,
+            file_storages,
             recommended=recommended,
             notes=notes,
         )
@@ -1266,13 +1324,14 @@ def interview(
             guest_role,
             disk_storage,
             disk_format_of,
+            kinds,
         )
         destroy_vmids = frozenset()
         dest_dir = ""
         storage, disk_format, kept, kept_format = _image_storage(
             read_line,
             write,
-            list_storages,
+            file_storages,
             volume_format_for,
             kinds,
             vmids,
@@ -1287,9 +1346,9 @@ def interview(
         kept = ()
         kept_format = ()
         destroy_vmids = frozenset()
-        dest_dir = _ask_import_storage(read_line, write, import_storages)
+        import_id, dest_dir = _ask_import_storage(read_line, write, import_storages)
         storage = ""
-        disk_format = "qcow2"
+        disk_format = _ask_format(read_line, write, f"Image format in {import_id} import/.\n")
     else:
         raise ValueError(f"unknown build {build}")
 

@@ -46,14 +46,13 @@ class Job:
 
 
 def published_name(distro: str, release: str, disk_format: str) -> str:
-    """raw -> <distro>-<release>-pve.img ; qcow2 -> <distro>-<release>-pve.qcow2."""
-    if disk_format == "qcow2":
-        ext = "qcow2"
-    elif disk_format == "raw":
-        ext = "img"
-    else:
+    """<distro>-<release>-pve.qcow2 or .raw.
+
+    The extension is the format. Proxmox import/ reads .qcow2 and .raw, not .img.
+    """
+    if disk_format not in {"qcow2", "raw"}:
         raise ValueError(f"unknown disk format {disk_format}")
-    return f"{distro}-{release}-pve.{ext}"
+    return f"{distro}-{release}-pve.{disk_format}"
 
 
 def vm_name(distro: str, release: str) -> str:

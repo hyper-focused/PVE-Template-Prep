@@ -262,16 +262,28 @@ def _run_with_bar(command: list[str], env: dict[str, str], commands: int) -> tup
     return code, "".join(captured)
 
 
-def argv(image: str, family: str, *, permit_root: bool = False) -> list[str]:
-    """Full argv starting with 'virt-customize', '-a', image, then --install and --run-command pairs.
+def argv(
+    image: str,
+    family: str,
+    *,
+    permit_root: bool = False,
+    disk_format: str = "",
+) -> list[str]:
+    """Full argv: 'virt-customize', optional --format, '-a', image, then --install and --run-command.
 
     family is 'deb' or 'el'. ValueError on anything else.
     permit_root writes /etc/ssh/sshd_config.d/00-enableroot.conf.
+    disk_format raw or qcow2 is passed as --format, so libguestfs does not probe the file.
     """
     packages, commands = _plan(family)
     if permit_root:
         commands = commands + (_ROOT_SSH_COMMAND,)
-    command = ["virt-customize", "-a", image, "--install", packages]
+    command = ["virt-customize"]
+    if disk_format:
+        if disk_format not in {"raw", "qcow2"}:
+            raise ValueError(f"unknown disk format: {disk_format!r}")
+        command.extend(("--format", disk_format))
+    command.extend(("-a", image, "--install", packages))
     for guest_cmd in commands:
         command.extend(("--run-command", guest_cmd))
     return command
@@ -281,6 +293,7 @@ def apply(
     image: str,
     family: str,
     *,
+    disk_format: str = "",
     permit_root: bool = False,
     dry_run: bool = False,
     run=None,
@@ -297,7 +310,7 @@ def apply(
     The progress bar does not use run. Nonzero raises RuntimeError including the
     return code, and the captured log is printed first. Do not use shell=True.
     """
-    command = argv(image, family, permit_root=permit_root)
+    command = argv(image, family, permit_root=permit_root, disk_format=disk_format)
     # Blank lines keep the prep block off the status lines.
     print()
     try:

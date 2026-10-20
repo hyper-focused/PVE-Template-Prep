@@ -14,8 +14,9 @@ from pve_prep.job import Job, action_for, format_for, parse_vmid, published_name
 
 
 class PublishedNameTest(unittest.TestCase):
-    def test_raw_uses_img(self) -> None:
-        self.assertEqual(published_name("debian", "12", "raw"), "debian-12-pve.img")
+    def test_raw_uses_raw(self) -> None:
+        # Proxmox import/ reads .raw and .qcow2. A .img there is not listed.
+        self.assertEqual(published_name("debian", "12", "raw"), "debian-12-pve.raw")
 
     def test_qcow2_keeps_extension(self) -> None:
         self.assertEqual(

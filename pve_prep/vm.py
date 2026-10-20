@@ -28,33 +28,14 @@ _SKIP_MARKERS = ("cloudinit", "media=cdrom")
 Run = Callable[[list[str]], object]
 
 
-# File plugins allocate qcow2 or raw. CIFS is one of them: a share, not a block device.
-# Block plugins allocate raw only. There is no block-mode CIFS type.
+# File plugins hold a disk as a .qcow2 or .raw file. CIFS is one of them: a share,
+# not a block device. Block storage (ZFS, LVM, RBD, iSCSI) is not supported.
 _FILE_STORAGE_TYPES = frozenset({"dir", "nfs", "cifs", "btrfs", "cephfs", "glusterfs"})
-_BLOCK_STORAGE_TYPES = frozenset(
-    {"zfspool", "zfs", "lvm", "lvmthin", "rbd", "iscsi", "iscsidirect"}
-)
 
 
-def volume_formats(storage_type: str) -> tuple[str, ...]:
-    """Image formats this Proxmox storage type can allocate.
-
-    qcow2 is first on file storage so Enter selects it. Block storage is raw.
-    An unknown type offers both, and importdisk is given an explicit format.
-    """
-    kind = (storage_type or "").strip().casefold()
-    if kind in _BLOCK_STORAGE_TYPES:
-        return ("raw",)
-    return ("qcow2", "raw")
-
-
-def import_volume_format(asked: str, storage_type: str) -> str:
-    """Format importdisk may allocate. Block storage stays raw."""
-    if volume_formats(storage_type) == ("raw",):
-        return "raw"
-    if asked in {"qcow2", "raw"}:
-        return asked
-    return "qcow2"
+def is_file_storage(storage_type: str) -> bool:
+    """True when this pvesm type stores disks as files. Unknown is False."""
+    return (storage_type or "").strip().casefold() in _FILE_STORAGE_TYPES
 
 
 def parse_storage_ids(pvesm_status_text: str) -> list[str]:

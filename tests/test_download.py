@@ -108,6 +108,17 @@ class FileDigestTests(unittest.TestCase):
                 file_digest(path, "md5")
 
 
+def _seek_gap_is_a_hole(root: Path) -> bool:
+    probe = root / "probe"
+    with probe.open("wb") as out:
+        out.write(b"x")
+        out.seek(8 * 1024 * 1024)
+        out.write(b"x")
+    allocated = probe.stat().st_blocks * 512
+    probe.unlink()
+    return allocated < 4 * 1024 * 1024
+
+
 class PublishTests(unittest.TestCase):
     def test_backup_skip_and_overwrite(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -153,6 +164,42 @@ class PublishTests(unittest.TestCase):
             self.assertEqual(fresh_result.status, "written")
             self.assertFalse(fresh_result.replaced)
             self.assertEqual(fresh.read_bytes(), b"first")
+
+    def test_cross_filesystem_publish_keeps_holes(self) -> None:
+        import errno
+        import os
+
+        real_replace = os.replace
+        calls = {"n": 0}
+
+        def replace(src, dest):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError(errno.EXDEV, "cross-device link")
+            return real_replace(src, dest)
+
+        mib = 1024 * 1024
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for tail in (b"end", b""):
+                src = root / "incoming.raw"
+                with src.open("wb") as out:
+                    out.write(b"boot")
+                    out.truncate(16 * mib)
+                    if tail:
+                        out.seek(0, os.SEEK_END)
+                        out.write(tail)
+                expected = src.read_bytes()
+                dest = root / f"disk-{len(tail)}.raw"
+                calls["n"] = 0
+                with mock.patch("pve_prep.download.os.replace", side_effect=replace):
+                    publish(src, dest, "overwrite")
+                self.assertFalse(src.exists())
+                self.assertEqual(dest.read_bytes(), expected)
+                # A plain copy allocates all 16 MiB. The holes stay holes on a
+                # filesystem that makes one from a seek gap (ext4, XFS, NFS; not APFS).
+                if _seek_gap_is_a_hole(root):
+                    self.assertLess(dest.stat().st_blocks * 512, 4 * mib)
 
     def test_unknown_collision_and_dry_run(self) -> None:
         with TemporaryDirectory() as tmp:

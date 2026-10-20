@@ -352,7 +352,7 @@ class WidgetInterviewTest(unittest.TestCase):
             )
 
     def test_plain_reader_never_calls_a_widget(self) -> None:
-        answers = ["3", "1", "1, 2", "1", "", "yes"]
+        answers = ["3", "1", "1, 2", "1", "", "", "yes"]
 
         def read_line() -> str:
             if not answers:

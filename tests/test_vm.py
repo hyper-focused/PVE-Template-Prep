@@ -26,8 +26,7 @@ from pve_prep.vm import (
     storage_lacks_images,
     parse_storage_ids,
     parse_storage_kinds,
-    volume_formats,
-    import_volume_format,
+    is_file_storage,
     os_disk_format,
     os_disk_storage,
     select_boot_disk,
@@ -102,19 +101,11 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
             {"local": "dir", "NFS-SATA-SSD1": "nfs"},
         )
 
-    def test_volume_formats_follow_the_storage_type(self) -> None:
-        self.assertEqual(volume_formats("nfs"), ("qcow2", "raw"))
-        self.assertEqual(volume_formats("cifs"), ("qcow2", "raw"))
-        self.assertEqual(volume_formats("dir"), ("qcow2", "raw"))
-        self.assertEqual(volume_formats("zfspool"), ("raw",))
-        self.assertEqual(volume_formats("lvmthin"), ("raw",))
-        self.assertEqual(volume_formats("rbd"), ("raw",))
-        self.assertEqual(volume_formats(""), ("qcow2", "raw"))
-
-    def test_block_import_stays_raw(self) -> None:
-        self.assertEqual(import_volume_format("qcow2", "zfspool"), "raw")
-        self.assertEqual(import_volume_format("qcow2", "nfs"), "qcow2")
-        self.assertEqual(import_volume_format("raw", "dir"), "raw")
+    def test_only_file_storage_holds_disk_images(self) -> None:
+        for kind in ("dir", "nfs", "cifs", "btrfs", "cephfs", "glusterfs", " NFS "):
+            self.assertTrue(is_file_storage(kind), kind)
+        for kind in ("zfspool", "zfs", "lvm", "lvmthin", "rbd", "iscsi", "iscsidirect", ""):
+            self.assertFalse(is_file_storage(kind), kind)
 
     def test_parse_qm_status_token_or_empty(self) -> None:
         self.assertEqual(parse_qm_status("status: stopped\n"), "stopped")

@@ -54,8 +54,7 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     vm.create_template = mock.MagicMock(name="create_template")
     vm.parse_storage_ids = mock.MagicMock(name="parse_storage_ids")
     vm.parse_storage_kinds = real_vm.parse_storage_kinds
-    vm.volume_formats = real_vm.volume_formats
-    vm.import_volume_format = real_vm.import_volume_format
+    vm.is_file_storage = real_vm.is_file_storage
     vm.VmError = real_vm.VmError
     vm.VmDestroyedError = real_vm.VmDestroyedError
     vm.is_template = real_vm.is_template
@@ -176,6 +175,7 @@ class OrchestratorTest(unittest.TestCase):
         MOD.parse_storage_ids = mock.MagicMock(return_value=[])
         MOD.default_run = ORIGINAL_RUN
         MOD.clear_cache = mock.MagicMock(name="clear_cache")
+        MOD.storage_kind = lambda storage: "dir"
 
     def test_image_order_fetch_convert_apply_publish(self) -> None:
         order: list[str] = []
@@ -191,13 +191,16 @@ class OrchestratorTest(unittest.TestCase):
         def convert(src, work, disk_format, dry_run=False):
             order.append("convert")
             self.assertEqual(src, Path("/tmp/src.qcow2"))
-            self.assertEqual(work, Path("/var/tmp/pve-template-prep/cache/debian-12-pve.img.work"))
+            self.assertEqual(work, Path("/var/tmp/pve-template-prep/cache/debian-12-pve.raw.work"))
             self.assertEqual(disk_format, "raw")
             self.assertFalse(dry_run)
 
-        def apply(path, family, permit_root=False, dry_run=False, verbose=False, label=""):
+        def apply(
+            path, family, disk_format="", permit_root=False, dry_run=False, verbose=False, label=""
+        ):
             order.append("apply")
-            self.assertEqual(path, "/var/tmp/pve-template-prep/cache/debian-12-pve.img.work")
+            self.assertEqual(disk_format, "raw")
+            self.assertEqual(path, "/var/tmp/pve-template-prep/cache/debian-12-pve.raw.work")
             self.assertEqual(family, "deb")
             self.assertFalse(permit_root)
             self.assertFalse(dry_run)
@@ -206,8 +209,8 @@ class OrchestratorTest(unittest.TestCase):
 
         def publish(work, dest, collision, dry_run=False):
             order.append("publish")
-            self.assertEqual(work, Path("/var/tmp/pve-template-prep/cache/debian-12-pve.img.work"))
-            self.assertEqual(dest, Path("/tmp/images/debian-12-pve.img"))
+            self.assertEqual(work, Path("/var/tmp/pve-template-prep/cache/debian-12-pve.raw.work"))
+            self.assertEqual(dest, Path("/tmp/images/debian-12-pve.raw"))
             self.assertEqual(collision, "backup")
             self.assertFalse(dry_run)
             return PublishResult("skipped")
@@ -327,21 +330,31 @@ class OrchestratorTest(unittest.TestCase):
         MOD.publish.assert_not_called()
         MOD.create_template.assert_not_called()
 
-    def test_image_insert_keeps_the_disk_storage_and_stays_raw_on_block(self) -> None:
+    def test_live_insert_on_block_storage_is_refused_before_the_download(self) -> None:
         job = replace(
-            _image_job(releases=("12",), dry_run=True),
+            _image_job(releases=("12",), dry_run=False),
             vmids=(910,),
             storage="local",
             disk_format="qcow2",
             collision="overwrite",
             kept_storage=((910, "vm-data"),),
         )
-        MOD.insert_disk = mock.MagicMock(return_value="vm-data:vm-910-disk-0")
+        MOD.insert_disk = mock.MagicMock()
+        MOD.prepare_replace = mock.MagicMock()
         MOD.storage_kind = lambda storage: "zfspool" if storage == "vm-data" else "dir"
-        MOD.run_one(job, "12", 910)
-        kwargs = MOD.insert_disk.call_args.kwargs
-        self.assertEqual(kwargs["storage"], "vm-data")
-        self.assertEqual(kwargs["volume_format"], "raw")
+        with self.assertRaisesRegex(RuntimeError, "vm-data is zfspool"):
+            MOD.run_one(job, "12", 910)
+        MOD.prepare_replace.assert_not_called()
+        MOD.fetch_verified.assert_not_called()
+        MOD.insert_disk.assert_not_called()
+
+    def test_live_template_on_unreadable_storage_type_is_refused(self) -> None:
+        job = replace(_template_job(dry_run=False), releases=("12",), vmids=(910,))
+        MOD.storage_kind = lambda storage: ""
+        with self.assertRaisesRegex(RuntimeError, "an unreadable type"):
+            MOD.run_one(job, "12", 910)
+        MOD.fetch_verified.assert_not_called()
+        MOD.create_template.assert_not_called()
 
     def test_image_insert_keeps_the_disk_format_on_file_storage(self) -> None:
         job = replace(
@@ -460,7 +473,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(calls["n"], 2)
         self.assertIn("\nCreating Debian 12 disk image\n\n", text)
         self.assertIn(
-            "\n\nDebian 12 disk image created at /tmp/images/debian-12-pve.img\n",
+            "\n\nDebian 12 disk image created at /tmp/images/debian-12-pve.raw\n",
             text,
         )
         self.assertIn("\nCreating Debian 13 disk image\n\n", text)
@@ -477,7 +490,7 @@ class OrchestratorTest(unittest.TestCase):
                     MOD.main([flag])
             self.assertEqual(caught.exception.code, 0)
             self.assertEqual(buf.getvalue(), f"pve-template-prep {pve_prep.__version__}\n")
-        self.assertEqual(pve_prep.__version__, "1.2.0")
+        self.assertEqual(pve_prep.__version__, "1.3.0")
         import pve_prep.download as download
 
         self.assertEqual(download._HEADERS["User-Agent"], f"pve-prep/{pve_prep.__version__}")
@@ -549,7 +562,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIs(seen["disk_storage"], MOD.disk_storage)
         self.assertIs(seen["disk_format_of"], MOD.disk_format)
         self.assertIs(seen["import_storages"], MOD.import_storages)
-        self.assertIn("Debian 12 disk image created at /tmp/images/debian-12-pve.img", buf.getvalue())
+        self.assertIn("Debian 12 disk image created at /tmp/images/debian-12-pve.raw", buf.getvalue())
         MOD.clear_cache.assert_not_called()
 
     def test_main_deletes_the_cache_only_after_success(self) -> None:
@@ -574,7 +587,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertFalse(ask.call_args.kwargs["failed"])
         MOD.clear_cache.assert_called_once_with(cache)
         self.assertIn(
-            "Debian 12 disk image created at /tmp/images/debian-12-pve.img",
+            "Debian 12 disk image created at /tmp/images/debian-12-pve.raw",
             buf.getvalue(),
         )
         self.assertIn(f"deleted the working files in {cache}", buf.getvalue())

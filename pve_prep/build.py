@@ -16,7 +16,7 @@ from pve_prep.job import (
     storage_for,
     vm_name,
 )
-from pve_prep.vm import import_volume_format, qemu_img_convert_argv, stdout_is_tty
+from pve_prep.vm import is_file_storage, qemu_img_convert_argv, stdout_is_tty
 
 
 def opening(action: str, label: str, job, vmid: int | None) -> str:
@@ -106,6 +106,7 @@ def _prepare(job, spec, tools, *, cache_format: str, label: str) -> Path:
         tools.customize_apply(
             str(work),
             spec.family,
+            disk_format=cache_format,
             permit_root=job.permit_root,
             dry_run=job.dry_run,
             verbose=job.verbose,
@@ -130,9 +131,25 @@ def _storage_kind(tools, storage: str) -> str:
         return ""
 
 
+def _require_file_storage(job, tools, storage: str) -> None:
+    """Refuse ZFS, LVM, RBD, iSCSI, and a type that cannot be read.
+
+    A dry-run may not be able to read pvesm, so it only prints the commands.
+    """
+    if job.dry_run:
+        return
+    kind = _storage_kind(tools, storage)
+    if not is_file_storage(kind):
+        shown = kind or "an unreadable type"
+        raise RuntimeError(
+            f"storage {storage} is {shown}. Disk images go on file storage only "
+            "(directory, NFS, CIFS, btrfs, CephFS, GlusterFS)"
+        )
+
+
 def insert_image(job, spec, vmid: int, label: str, tools) -> str:
     # The cache copy stays qcow2. importdisk allocates the volume format.
-    # A kept boot disk is imported onto its own storage. Block storage stays raw.
+    # A kept boot disk is imported onto its own storage, in its own format.
     storage = storage_for(job, vmid)
     backup = vmid in job.backup_vmids
     _stage_replace(job, vmid, tools, backup=backup)
@@ -145,7 +162,7 @@ def insert_image(job, spec, vmid: int, label: str, tools) -> str:
         disk_policy=policy,
         dry_run=job.dry_run,
         backup_dir=job.cache_dir,
-        volume_format=import_volume_format(format_for(job, vmid), _storage_kind(tools, storage)),
+        volume_format=format_for(job, vmid),
         copies_done=backup and not job.dry_run,
         run=tools.run,
     )
@@ -153,7 +170,7 @@ def insert_image(job, spec, vmid: int, label: str, tools) -> str:
 
 
 def create_guest(job, spec, vmid: int, label: str, tools) -> str:
-    # The cache copy stays qcow2. A raw ZFS or LVM volume is allocated at import.
+    # The cache copy stays qcow2. importdisk writes the asked format on file storage.
     replacing = vmid in job.destroy_vmids
     backup = replacing and vmid in job.backup_vmids
     if replacing:
@@ -172,7 +189,7 @@ def create_guest(job, spec, vmid: int, label: str, tools) -> str:
         backup_disks=False,
         backup_dir=job.cache_dir,
         make_template=converts_to_template(job, vmid),
-        volume_format=import_volume_format(job.disk_format, _storage_kind(tools, job.storage)),
+        volume_format=job.disk_format,
         run=tools.run,
     )
     return _finish_template(label, job, vmid)
@@ -189,6 +206,7 @@ def run_fetched(job, spec, vmid: int | None, label: str, tools) -> str:
             raise RuntimeError("storage is required")
         if tools.storage_rejects(storage):
             raise RuntimeError(f"storage {storage} does not accept images")
+        _require_file_storage(job, tools, storage)
     if action == "file":
         return publish_file(job, spec, label, tools)
     if action == "insert":

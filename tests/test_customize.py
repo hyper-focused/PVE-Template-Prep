@@ -40,6 +40,12 @@ class ArgvTests(unittest.TestCase):
         self.assertNotIn("SELINUX", text)
         self.assertNotIn("firewalld", text)
 
+    def test_format_is_passed_before_the_disk(self) -> None:
+        args = argv("disk.raw", "deb", disk_format="raw")
+        self.assertEqual(args[:5], ["virt-customize", "--format", "raw", "-a", "disk.raw"])
+        with self.assertRaises(ValueError):
+            argv("disk.img", "deb", disk_format="vmdk")
+
     def test_el_family_commands(self) -> None:
         args = argv("disk.img", "el")
         install = args[args.index("--install") + 1]

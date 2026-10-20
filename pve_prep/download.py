@@ -20,6 +20,7 @@ from .vm import is_disk_backup, qemu_img_convert_argv
 
 _TIMEOUT = 120
 _CHUNK = 1024 * 1024
+_ZERO_CHUNK = bytes(_CHUNK)
 _HEADERS = {"User-Agent": f"pve-prep/{__version__}"}
 _ALG_LEN = {"256": 64, "512": 128}
 _BSD = re.compile(
@@ -354,6 +355,25 @@ def _backup_path(dest: Path) -> Path:
     return candidate
 
 
+def _copy_sparse(inp, out) -> None:
+    """Copy inp to out and leave all-zero chunks as holes.
+
+    A raw image is mostly zeros. A plain copy to another filesystem would
+    allocate every byte. truncate sets the length when the file ends in a hole.
+    """
+    size = 0
+    while True:
+        chunk = inp.read(_CHUNK)
+        if not chunk:
+            break
+        if chunk == _ZERO_CHUNK[: len(chunk)]:
+            out.seek(len(chunk), os.SEEK_CUR)
+        else:
+            out.write(chunk)
+        size += len(chunk)
+    out.truncate(size)
+
+
 def _move_file(src: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -365,11 +385,7 @@ def _move_file(src: Path, dest: Path) -> None:
     temporary = dest.parent / f".{dest.name}.{os.getpid()}.partial"
     try:
         with src.open("rb") as inp, temporary.open("wb") as out:
-            while True:
-                chunk = inp.read(_CHUNK)
-                if not chunk:
-                    break
-                out.write(chunk)
+            _copy_sparse(inp, out)
             out.flush()
             os.fsync(out.fileno())
         os.replace(temporary, dest)

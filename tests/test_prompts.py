@@ -115,7 +115,7 @@ class _Script:
 
 class InterviewTest(unittest.TestCase):
     def test_image_debian_two_releases(self) -> None:
-        script = _Script(["3", "1", "1, 2", "1", "", "yes"])
+        script = _Script(["3", "1", "1, 2", "1", "", "", "yes"])
         job = script.run(
             dry_run=False,
             imports=[("local", "/var/lib/vz/import"), ("vm-data", "/not/used")],
@@ -368,6 +368,7 @@ class InterviewTest(unittest.TestCase):
                 "",
                 "12",
                 "1",
+                "",
                 "1",
                 "n",
                 "yes",
@@ -907,36 +908,74 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("debian 12 -> insert VMID 910", blob)
         self.assertIn("debian 13 -> insert VMID 911", blob)
 
-    def test_zfs_storage_skips_the_format_question(self) -> None:
-        script = _Script(
-            [
-                "",
-                "1",
-                "1",
-                "",
-                "1",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "yes",
-            ]
-        )
+    def test_update_refuses_a_boot_disk_on_zfs(self) -> None:
+        script = _Script(["2", "1", "1", "910", "911", "", "", "yes"])
         job = script.run(
             dry_run=False,
-            storages=["vm-data"],
-            kinds={"vm-data": "zfspool"},
+            in_use={910, 911},
+            disks={910, 911},
+            placed={910: "vm-data", 911: "local"},
+            formats={910: "raw", 911: "qcow2"},
+            kinds={"vm-data": "zfspool", "local": "dir"},
+        )
+        self.assertEqual(job.vmids, (911,))
+        self.assertEqual(job.kept_storage, ((911, "local"),))
+        self.assertEqual(job.kept_format, ((911, "qcow2"),))
+        blob = "".join(script.written)
+        self.assertIn(
+            "VMID 910 boot disk: vm-data is ZFS. Disk images go on file storage only. "
+            "Type another VMID.",
+            blob,
+        )
+
+    def test_block_storage_is_not_listed_for_a_new_template(self) -> None:
+        script = _Script(["", "1", "1", "", "1", "2", "", "", "", "", "", "yes"])
+        job = script.run(
+            dry_run=False,
+            storages=["vm-data", "local-lvm", "local"],
+            kinds={"vm-data": "zfspool", "local-lvm": "lvmthin", "local": "dir"},
             in_use=set(),
             disks=set(),
         )
-        self.assertEqual(job.storage, "vm-data")
+        self.assertEqual(job.storage, "local")
         self.assertEqual(job.disk_format, "raw")
-        self.assertEqual(job.vmids, (9001,))
         blob = "".join(script.written)
-        self.assertIn("vm-data is ZFS. The volume will be raw.", blob)
-        self.assertNotIn("Volume format on", blob)
-        self.assertNotIn("Select format", blob)
+        self.assertIn(
+            "Not listed: vm-data (ZFS), local-lvm (LVM-thin). "
+            "Disk images go on file storage only.",
+            blob,
+        )
+        self.assertIn("  1) local\n", blob)
+        self.assertNotIn(") vm-data", blob)
+        self.assertIn("storage local raw", blob)
+
+    def test_only_block_storage_ends_the_interview(self) -> None:
+        script = _Script(["", "1", "1", ""])
+        with self.assertRaises(PromptAbort):
+            script.run(
+                dry_run=False,
+                storages=["vm-data"],
+                kinds={"vm-data": "zfspool"},
+                in_use=set(),
+                disks=set(),
+            )
+        self.assertIn("No file storage accepts the VM disk.", "".join(script.written))
+
+    def test_unreadable_storage_type_still_asks_the_format(self) -> None:
+        script = _Script(["", "1", "1", "", "1", "", "", "", "", "", "", "yes"])
+        job = script.run(dry_run=True, storages=["local"], kinds={}, in_use=set(), disks=set())
+        self.assertEqual(job.disk_format, "qcow2")
+        blob = "".join(script.written)
+        self.assertIn("Could not read the type of local.", blob)
+        self.assertIn("Volume format on local.", blob)
+
+    def test_standalone_raw_is_named_raw(self) -> None:
+        script = _Script(["3", "1", "1", "1", "2", "", "yes"])
+        job = script.run(dry_run=False, imports=[("local", "/var/lib/vz/import")])
+        self.assertEqual(job.disk_format, "raw")
+        blob = "".join(script.written)
+        self.assertIn("Image format in local import/.", blob)
+        self.assertIn("debian 12 -> image raw /var/lib/vz/import/debian-12-pve.raw", blob)
 
     def test_cifs_storage_asks_and_enter_is_qcow2(self) -> None:
         script = _Script(
@@ -966,9 +1005,8 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.disk_format, "qcow2")
         blob = "".join(script.written)
         self.assertIn("Volume format on share.", blob)
-        self.assertIn("1) QEMU qcow2 (sparse)", blob)
-        self.assertIn("2) raw (full size)", blob)
-        self.assertNotIn("share is CIFS. The volume will be raw.", blob)
+        self.assertIn("1) QEMU qcow2 (.qcow2)", blob)
+        self.assertIn("2) raw (.raw)", blob)
 
     def test_cifs_raw_is_still_a_file_format(self) -> None:
         script = _Script(
@@ -1001,7 +1039,7 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("guest-prep=yes root-ssh=yes", blob)
 
     def test_root_ssh_no_leaves_the_image_default(self) -> None:
-        script = _Script(["3", "1", "1", "1", "n", "yes"])
+        script = _Script(["3", "1", "1", "1", "", "n", "yes"])
         job = script.run(dry_run=False, imports=[("local", "/var/lib/vz/import")])
         self.assertTrue(job.prep)
         self.assertFalse(job.permit_root)
