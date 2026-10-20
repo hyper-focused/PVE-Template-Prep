@@ -4,6 +4,8 @@ One interview. Up to three releases of one distro. A new template, an updated te
 
 Proxmox will let you click the cloud-image ritual until the mouse files a complaint. This asks once.
 
+The full manual, with every question, file, exit status, and design decision, is [docs/reference.md](docs/reference.md).
+
 | Build | What lands | Enter does this |
 | --- | --- | --- |
 | Create new Proxmox PVE VM templates | A new VM named `<distro>-<release>-cloud` | Next free VMID from 9001, then `qm template` |
