@@ -166,6 +166,37 @@ for file in "${distro_files[@]}"; do
 done
 copy_tree "$src/vendor" "$DEST/vendor"
 
+# A module or distro file an older release shipped and this one does not.
+# Both directories belong to the installer, and the catalog loads every
+# distros/*.json it finds, so a leftover would still be read.
+shipped_distros=()
+for file in "${distro_files[@]}"; do
+  shipped_distros+=("${file##*/}")
+done
+prune_stale() {
+  local dir="$1" pattern="$2"
+  shift 2
+  local path name keep wanted
+  shopt -s nullglob
+  for path in "$dir"/$pattern; do
+    name="${path##*/}"
+    keep=0
+    for wanted in "$@"; do
+      if [[ "$name" == "$wanted" ]]; then
+        keep=1
+        break
+      fi
+    done
+    if [[ "$keep" -eq 0 ]]; then
+      echo "removing $path (not in this release)"
+      rm -f -- "$path"
+    fi
+  done
+  shopt -u nullglob
+}
+prune_stale "$DEST/pve_prep" "*.py" "${MODULES[@]}"
+prune_stale "$DEST/pve_prep/distros" "*.json" "${shipped_distros[@]}"
+
 confirm_path() {
   local path="$1"
   local owner bits
@@ -207,15 +238,21 @@ if [[ ! -x "$DEST/pve-template-prep.py" ]]; then
   exit 1
 fi
 
-python3 - "$DEST" <<'PY'
+python3 - "$DEST" "${MODULES[@]}" <<'PY'
 import ast
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
+expected = set(sys.argv[2:])
+installed = {path.name for path in (root / "pve_prep").glob("*.py")}
+missing = sorted(expected - installed)
+extra = sorted(installed - expected)
+if missing:
+    raise SystemExit("pve_prep is missing " + ", ".join(missing))
+if extra:
+    raise SystemExit("pve_prep has modules this release does not ship: " + ", ".join(extra))
 paths = [root / "pve-template-prep.py", *sorted((root / "pve_prep").glob("*.py"))]
-if len(list((root / "pve_prep").glob("*.py"))) != 11:
-    raise SystemExit("pve_prep is missing modules")
 vendor = root / "vendor"
 paths.extend(sorted(vendor.rglob("*.py")))
 for path in paths:

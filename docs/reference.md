@@ -162,7 +162,7 @@ Not in this version: Rocky, openSUSE, Arch, RHEL, and UEFI images. PVE 9. One di
 
 ## Installer, updates, and the cache
 
-The installer creates `/opt/pve-template-prep`, pulls `pve-template-prep.py`, `pve_prep/`, `vendor/`, `LICENSE`, and `NOTICE` from GitHub, checks that those files are root-owned and not writable by anyone else, and links the command to `/usr/local/sbin/pve-template-prep`. `vendor/` is questionary, prompt_toolkit, and wcwidth, pinned in `vendor/VERSIONS`. No pip. No `python3-venv`. It also installs `libguestfs-tools` and `qemu-utils` if they are missing. Python 3, `qm`, and `pvesm` are already on PVE 9.
+The installer creates `/opt/pve-template-prep`, pulls `pve-template-prep.py`, `pve_prep/`, `vendor/`, `LICENSE`, and `NOTICE` from GitHub, removes any `pve_prep/*.py` or `pve_prep/distros/*.json` that this release does not ship, checks the module list by name, checks that those files are root-owned and not writable by anyone else, and links the command to `/usr/local/sbin/pve-template-prep`. `vendor/` is questionary, prompt_toolkit, and wcwidth, pinned in `vendor/VERSIONS`. No pip. No `python3-venv`. It also installs `libguestfs-tools` and `qemu-utils` if they are missing. Python 3, `qm`, and `pvesm` are already on PVE 9.
 
 Somewhere else: `DEST=/somewhere bash install.sh`, or `sudo DEST=/somewhere bash install.sh`. A clone is for the unit tests. One downloaded script, with no `pve_prep/` directory beside it, will not start.
 
