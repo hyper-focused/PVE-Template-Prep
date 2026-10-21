@@ -10,13 +10,20 @@ If you've been a Proxmox PVE admin for any length of time, you're certainly fami
 
 This app was developed to solve that problem, and turn template creation into a task you can complete in a few minutes instead of a few hours. 
 
-## Install
+## What pve-template-prep does
 
-A live run is **root on the PVE node**. Read `install.sh` before you run it.
+This utility has 3 capabilities built-in:
+
+Create complete Proxmox PVE compatible template VM's using the most recent source images
+Update an existing VM template with a new disk image built using the most recent source image
+Create standalone VM disk images that can be easily imported via the Proxmox PVE web UI or via CLI
+
+## Install
 
 Already root:
 
 ```sh
+apt update && apt -y install libguest-fstools
 curl -fsSLO https://raw.githubusercontent.com/hyper-focused/PVE-Template-Prep/main/install.sh
 bash install.sh
 pve-template-prep
@@ -25,6 +32,7 @@ pve-template-prep
 With sudo:
 
 ```sh
+sudo apt update && apt -y install libguest-fstools
 curl -fsSLO https://raw.githubusercontent.com/hyper-focused/PVE-Template-Prep/main/install.sh
 sudo bash install.sh
 sudo pve-template-prep
