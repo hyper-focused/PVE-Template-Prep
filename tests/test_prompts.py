@@ -37,10 +37,10 @@ def _specs(distro: str):
     ]
 
 
-def _summary(blob: str) -> list[tuple[str, ...]]:
-    """The summary table, header row first. Cells split on runs of two or more spaces."""
+def _summary(blob: str, title: str = "Summary") -> list[tuple[str, ...]]:
+    """The table under a section heading, header row first. Cells split on runs of two or more spaces."""
     lines = blob.split("\n")
-    start = lines.index("  Summary") + 3
+    start = lines.index(f"  {title}") + 3
     rows = []
     for line in lines[start:]:
         if not line.strip():
@@ -246,10 +246,14 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("Create new Proxmox PVE VM templates", blob)
         self.assertNotIn("Create the VM, import the disk", blob)
         self.assertIn("VM Disk Storage Path:", blob)
-        self.assertIn("Enter bookworm template VMID [9001]: ", blob)
-        self.assertIn("Enter trixie template VMID [9001]: ", blob)
-        self.assertEqual(blob.count("Enter takes the first free VMID from 9001."), 1)
-        self.assertIn("Typing the VMID of an existing template replaces that template.", blob)
+        self.assertIn("bookworm VM Template ID [9001]: ", blob)
+        self.assertIn("trixie VM Template ID [9001]: ", blob)
+        self.assertEqual(blob.count("  Template VMID(s)\n"), 1)
+        self.assertEqual(
+            blob.count("Provide a VMID for each VM template or press enter to use the default."), 1
+        )
+        self.assertIn("If the VMID is in use, the existing template will be deleted and replaced.", blob)
+        self.assertLess(blob.index("  Template VMID(s)\n"), blob.index("bookworm VM Template ID [9001]: "))
         self.assertNotIn("In use:", blob)
         self.assertNotIn("including a clone on another node", blob)
         self.assertNotIn("Not in use:", blob)
@@ -269,6 +273,20 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("Guest prep: yes   Password SSH: yes   Root SSH: yes   qm template: yes", blob)
         self.assertIn("Hardware: bridge vmbr0, memory 2048 MB, cores 2", blob)
         self.assertNotIn("non-template", blob)
+        self.assertEqual(
+            _summary(blob, "Defaults"),
+            [
+                ("Setting", "Default"),
+                ("Password SSH", "yes"),
+                ("Root SSH", "yes"),
+                ("Bridge", "vmbr0"),
+                ("Memory", "2048 MB"),
+                ("Cores", "2"),
+                ("qm template", "yes"),
+            ],
+        )
+        defaults = blob[blob.index("  Defaults"):blob.index("Accept these defaults?")]
+        self.assertIn("Cloud-init user must be set to 'root'.", defaults)
 
     def test_empty_vmid_starts_at_9001_and_counts_up(self) -> None:
         script = _Script(
@@ -296,9 +314,9 @@ class InterviewTest(unittest.TestCase):
         self.assertTrue(job.make_template)
         self.assertFalse(job.clean_cache)
         blob = "".join(script.written)
-        self.assertIn("Enter takes the first free VMID from 9001.", blob)
-        self.assertIn("Enter bookworm template VMID [9001]: ", blob)
-        self.assertIn("Enter trixie template VMID [9002]: ", blob)
+        self.assertIn("Provide a VMID for each VM template or press enter to use the default.", blob)
+        self.assertIn("bookworm VM Template ID [9001]: ", blob)
+        self.assertIn("trixie VM Template ID [9002]: ", blob)
         self.assertEqual(_column(blob, "VMID"), ["9001", "9002"])
         self.assertEqual(_column(blob, "Existing"), ["new", "new"])
         self.assertIn("Your new VM templates will now be created.", blob)
@@ -331,8 +349,8 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.vmids, (9003, 9004))
         self.assertEqual(job.destroy_vmids, frozenset())
         blob = "".join(script.written)
-        self.assertIn("Enter bookworm template VMID [9003]: ", blob)
-        self.assertIn("Enter trixie template VMID [9004]: ", blob)
+        self.assertIn("bookworm VM Template ID [9003]: ", blob)
+        self.assertIn("trixie VM Template ID [9004]: ", blob)
         self.assertNotIn("Not in use:", blob)
         self.assertNotIn("Disk:", blob)
         self.assertNotIn("Replace VMID", blob)
@@ -363,8 +381,8 @@ class InterviewTest(unittest.TestCase):
         )
         self.assertEqual(job.vmids, (9001, 9003))
         blob = "".join(script.written)
-        self.assertIn("Enter bookworm template VMID [9001]: ", blob)
-        self.assertIn("Enter trixie template VMID [9003]: ", blob)
+        self.assertIn("bookworm VM Template ID [9001]: ", blob)
+        self.assertIn("trixie VM Template ID [9003]: ", blob)
 
     def test_free_vmids_skip_the_disk_prompt(self) -> None:
         script = _Script(
@@ -597,7 +615,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.destroy_vmids, frozenset())
         blob = "".join(script.written)
         self.assertNotIn("Please enter an existing", blob)
-        self.assertIn("Enter bookworm template VMID: ", blob)
+        self.assertIn("bookworm VM Template ID: ", blob)
         self.assertIn("VMID 910 is on nfs-templates. The volume is raw.", blob)
         self.assertNotIn("VM Disk Storage Path", blob)
         self.assertNotIn("Disk Format", blob)
@@ -847,8 +865,8 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.template_vmids, frozenset())
         self.assertEqual(job.collision, "overwrite")
         blob = "".join(script.written)
-        self.assertIn("Enter bookworm template VMID: ", blob)
-        self.assertIn("Enter trixie template VMID: ", blob)
+        self.assertIn("bookworm VM Template ID: ", blob)
+        self.assertIn("trixie VM Template ID: ", blob)
         self.assertIn("No backup images will be created.", blob)
         self.assertIn("Your existing disk images will now be DELETED and new images created.", blob)
         self.assertIn(DELETE_GATE, blob)
@@ -1064,7 +1082,7 @@ class InterviewTest(unittest.TestCase):
             "VMID 910 is a normal VM, not a template. It will not be changed. Type a template VMID.",
             blob,
         )
-        self.assertIn("Enter bookworm template VMID [9001]: ", blob)
+        self.assertIn("bookworm VM Template ID [9001]: ", blob)
 
     def test_linked_clone_is_refused_on_every_action(self) -> None:
         image = _Script(["2", "1", "1", "910", "911", "", "", "", "yes"])
@@ -1128,7 +1146,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.vmids, (9001,))
         blob = "".join(script.written)
         self.assertIn("Type one VMID, from 100 through 999999999.", blob)
-        self.assertIn("Enter bookworm template VMID [9001]: ", blob)
+        self.assertIn("bookworm VM Template ID [9001]: ", blob)
 
     def test_standalone_without_import_storage_aborts(self) -> None:
         script = _Script(["3", "1", "1"])
@@ -1145,13 +1163,11 @@ class InterviewTest(unittest.TestCase):
                 kept.read_line,
                 kept.write,
                 cache=DEFAULT_CACHE,
-                backups=DEFAULT_BACKUPS,
                 failed=False,
             )
         )
         blob = "".join(kept.written)
-        self.assertIn(f"Disk backups in {DEFAULT_BACKUPS} stay.", blob)
-        self.assertNotIn("in that directory", blob)
+        self.assertNotIn("backups", blob)
         self.assertIn(f"Delete working files in {DEFAULT_CACHE}?", blob)
         self.assertIn(
             f"Delete working files in {DEFAULT_CACHE}? (y/n) [No]: ",
@@ -1163,14 +1179,13 @@ class InterviewTest(unittest.TestCase):
                 failed.read_line,
                 failed.write,
                 cache=DEFAULT_CACHE,
-                backups=DEFAULT_BACKUPS,
                 failed=True,
             )
         )
         blob = "".join(failed.written)
         self.assertIn("A release failed.", blob)
         self.assertIn("including the download", blob)
-        self.assertIn(f"Disk backups in {DEFAULT_BACKUPS} stay.", blob)
+        self.assertNotIn("backups", blob)
 
 
 class LayoutTest(unittest.TestCase):

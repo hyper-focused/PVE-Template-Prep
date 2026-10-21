@@ -71,6 +71,7 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     vm.os_disk_format = real_vm.os_disk_format
     vm.import_directories = real_vm.import_directories
     vm.insert_disk = mock.MagicMock(name="insert_disk")
+    vm.backups_since = real_vm.backups_since
 
 
 def _restore_siblings(saved: dict[str, types.ModuleType]) -> None:
@@ -498,7 +499,7 @@ class OrchestratorTest(unittest.TestCase):
                     MOD.main([flag])
             self.assertEqual(caught.exception.code, 0)
             self.assertEqual(buf.getvalue(), f"pve-template-prep {pve_prep.__version__}\n")
-        self.assertEqual(pve_prep.__version__, "1.3.3")
+        self.assertEqual(pve_prep.__version__, "1.3.4")
         import pve_prep.download as download
 
         self.assertEqual(download._HEADERS["User-Agent"], f"pve-prep/{pve_prep.__version__}")
@@ -599,7 +600,7 @@ class OrchestratorTest(unittest.TestCase):
             buf.getvalue(),
         )
         self.assertIn(f"deleted the working files in {cache}", buf.getvalue())
-        self.assertIn("disk backups stay", buf.getvalue())
+        self.assertNotIn("backups", buf.getvalue())
 
     def test_main_keeps_the_cache_when_a_release_fails(self) -> None:
         job = _image_job(releases=("12",), dry_run=False)
@@ -621,7 +622,7 @@ class OrchestratorTest(unittest.TestCase):
         MOD.clear_cache.assert_not_called()
         self.assertIn("cache kept:", buf.getvalue())
         self.assertIn("a release failed", buf.getvalue())
-        self.assertIn("Disk backups are kept either way", buf.getvalue())
+        self.assertNotIn("backups", buf.getvalue())
 
     def test_main_failure_can_still_delete_working_files(self) -> None:
         job = _image_job(releases=("12",), dry_run=False)
@@ -641,7 +642,6 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(code, 1)
         MOD.clear_cache.assert_called_once_with(job.cache_dir)
         self.assertIn(f"deleted the working files in {job.cache_dir}", buf.getvalue())
-        self.assertIn("disk backups stay", buf.getvalue())
 
     def test_main_dry_run_does_not_delete_the_cache(self) -> None:
         job = _image_job(releases=("12",), dry_run=True)
@@ -656,7 +656,30 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(code, 0)
         MOD.clear_cache.assert_not_called()
         self.assertIn("dry-run: would delete the working files in", buf.getvalue())
-        self.assertIn("disk backups would stay", buf.getvalue())
+        self.assertNotIn("backups", buf.getvalue())
+
+    def test_backup_line_only_when_this_run_wrote_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            job = replace(
+                _image_job(releases=("12",), dry_run=False), backup_dir=tmp, backup_vmids=frozenset({910})
+            )
+            old = Path(tmp) / "vm-910-scsi0.bak.20250101T000000Z.qcow2"
+            old.write_bytes(b"x")
+            os.utime(old, (1_000, 1_000))
+            (Path(tmp) / "notes.txt").write_text("not a backup")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                MOD._report_backups(job, started=2_000)
+            self.assertEqual(buf.getvalue(), "")
+            (Path(tmp) / "vm-910-scsi0.bak.20260101T000000Z.qcow2").write_bytes(b"x")
+            with redirect_stdout(buf):
+                MOD._report_backups(job, started=2_000)
+            self.assertEqual(buf.getvalue(), f"VM Disk image backups located at {tmp}\n")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                MOD._report_backups(replace(job, dry_run=True), started=2_000)
+                MOD._report_backups(replace(job, backup_vmids=frozenset()), started=2_000)
+            self.assertEqual(buf.getvalue(), "")
 
     def test_list_storages_parses_status(self) -> None:
         proc = SimpleNamespace(returncode=0, stdout="NAME STATUS\n", stderr="")

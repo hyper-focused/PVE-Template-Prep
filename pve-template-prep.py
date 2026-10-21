@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,9 +23,10 @@ from pve_prep.customize import argv as customize_argv
 from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, publish
 from pve_prep.job import Job, action_for
 from pve_prep.prompts import PromptAbort, ask_cache_cleanup, interview
-from pve_prep.ui import arm, tone
+from pve_prep.ui import arm, quiet_echo, tone
 from pve_prep.vm import (
     VmDestroyedError,
+    backups_since,
     VmError,
     config_has_os_disk,
     create_template,
@@ -302,30 +304,27 @@ def _pairs(job: Job) -> list[tuple[str, int | None]]:
 def _settle_cache(job: Job, failed: bool, read_line) -> bool:
     """Ask about working files once the run is over.
 
-    Enter keeps them. y deletes them. Disk backups stay. A failed release
-    still asks, and Enter keeps the download. Dry-run asks and does not
-    delete. EOF keeps the files. Returns True when a delete was asked for
-    and did not happen.
+    Enter keeps them. y deletes them. Disk backups are elsewhere and stay.
+    A failed release still asks, and Enter keeps the download. Dry-run asks
+    and does not delete. EOF keeps the files. Returns True when a delete was
+    asked for and did not happen.
     """
     cache = job.cache_dir
-    backups = job.backup_dir
     print()
     try:
-        delete = ask_cache_cleanup(read_line, _write, cache=cache, backups=backups, failed=failed)
+        delete = ask_cache_cleanup(read_line, _write, cache=cache, failed=failed)
     except PromptAbort:
         delete = False
     if job.dry_run:
         if delete:
             print(f"dry-run: would delete the working files in {cache}")
-            print(f"disk backups would stay in {backups}")
         else:
             print(f"dry-run: leaving {cache} alone")
         return False
     if not delete:
         print(f"cache kept: {cache}")
         if failed:
-            print("a release failed, so the download stays. Disk backups are kept either way")
-            print(f"disk backups: {backups}")
+            print("a release failed, so the download stays")
         return False
     try:
         clear_cache(cache)
@@ -333,8 +332,15 @@ def _settle_cache(job: Job, failed: bool, read_line) -> bool:
         print(f"FAIL cache: {exc}")
         return True
     print(f"deleted the working files in {cache}")
-    print(f"disk backups stay in {backups}")
     return False
+
+
+def _report_backups(job: Job, started: float) -> None:
+    """The last line, and only when this run wrote a disk backup."""
+    if job.dry_run or not job.backup_vmids:
+        return
+    if backups_since(job.backup_dir, started):
+        print(f"VM Disk image backups located at {job.backup_dir}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -366,21 +372,22 @@ def main(argv: list[str] | None = None) -> int:
         return failed_update
     reader = arm(_read_line)
     try:
-        job = interview(
-            reader,
-            _write,
-            dry_run=args.dry_run,
-            list_storages=list_storages,
-            storage_kinds=storage_kinds,
-            releases_for=releases_for,
-            normalize_release=normalize_release,
-            vmids_in_use=vmids_in_use,
-            vm_has_disks=vm_has_disks,
-            guest_role=guest_role,
-            disk_storage=disk_storage,
-            disk_format_of=disk_format,
-            import_storages=import_storages,
-        )
+        with quiet_echo(reader):
+            job = interview(
+                reader,
+                _write,
+                dry_run=args.dry_run,
+                list_storages=list_storages,
+                storage_kinds=storage_kinds,
+                releases_for=releases_for,
+                normalize_release=normalize_release,
+                vmids_in_use=vmids_in_use,
+                vm_has_disks=vm_has_disks,
+                guest_role=guest_role,
+                disk_storage=disk_storage,
+                disk_format_of=disk_format,
+                import_storages=import_storages,
+            )
     except PromptAbort:
         print("aborted")
         return 1
@@ -389,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     if not job.dry_run:
         preflight(job)
     failed = False
+    started = time.time()
     try:
         pairs = _pairs(job)
     except RuntimeError as exc:
@@ -409,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
     print("done")
     if _settle_cache(job, failed, reader):
         failed = True
+    _report_backups(job, started)
     return 1 if failed else 0
 
 

@@ -690,8 +690,8 @@ def _vmid_parse_reason(exc: ValueError) -> str:
 
 def _vmid_field(label: str, suggested: int | None) -> str:
     if suggested is None:
-        return f"Enter {label} template VMID: "
-    return f"Enter {label} template VMID [{suggested}]: "
+        return f"{label} VM Template ID: "
+    return f"{label} VM Template ID [{suggested}]: "
 
 
 def _named_releases(distro: str, releases: tuple[str, ...], releases_for):
@@ -754,8 +754,8 @@ def _template_intro(read_line, write, default: int | None, checked: bool) -> Non
 
 
 _TEMPLATE_VMID_NOTE = (
-    f"Enter takes the first free VMID from {DEFAULT_VMID}.\n"
-    "Typing the VMID of an existing template replaces that template."
+    "Provide a VMID for each VM template or press enter to use the default.\n"
+    "If the VMID is in use, the existing template will be deleted and replaced."
 )
 
 
@@ -765,7 +765,7 @@ def _ask_template_vmids(read_line, write, named, vmids_in_use, guest_role=None):
     destroy: list[int] = []
     names: dict[int, str] = {}
     host_known = True
-    _blank(write)
+    _section(read_line, write, "Template VMID(s)")
     _say(read_line, write, _TEMPLATE_VMID_NOTE, "note")
     for _release, label in named:
         if host_known:
@@ -909,7 +909,7 @@ def _ask_image_vmids(
     formats: list[tuple[int, str]] = []
     known_kinds = dict(kinds or {})
     for _release, label in named:
-        base = f"Enter {label} template VMID: "
+        base = f"{label} VM Template ID: "
         reason = ""
         while True:
             vmid = _read_one_vmid(read_line, write, base, reason=reason)
@@ -1006,7 +1006,7 @@ def _ask_hardware(read_line, write) -> tuple[str, int, int]:
         "q35, virtio-scsi, SeaBIOS, serial, guest agent. Change those later with qm set.",
         "note",
     )
-    accept = _ask_bool(read_line, write, "Keep this hardware?", True)
+    accept = _ask_bool(read_line, write, "Use this VM template config?", True)
     if accept:
         return DEFAULT_BRIDGE, DEFAULT_MEMORY_MB, DEFAULT_CORES
     prompt = "Bridge: "
@@ -1061,27 +1061,24 @@ class GuestSettings:
     make_template: bool
 
 
-def _usual_defaults(*, hardware: bool, convert: bool) -> str:
-    """Every remaining default this path would have asked, as one sentence.
-
-    Guest prep is not a choice. It always runs.
-    """
-    items = ["SSH password authentication", "root SSH login"]
+def _defaults_table(*, hardware: bool, convert: bool) -> list[tuple[str, str]]:
+    """Every remaining default this path would have asked, one row each. Guest prep always runs."""
+    table = [("Setting", "Default"), ("Password SSH", "yes"), ("Root SSH", "yes")]
     if hardware:
-        items.extend(
+        table.extend(
             (
-                f"bridge {DEFAULT_BRIDGE}",
-                f"{DEFAULT_MEMORY_MB} MB",
-                f"{DEFAULT_CORES} cores",
+                ("Bridge", DEFAULT_BRIDGE),
+                ("Memory", f"{DEFAULT_MEMORY_MB} MB"),
+                ("Cores", str(DEFAULT_CORES)),
             )
         )
     if convert:
-        items.append("qm template")
-    if len(items) == 2:
-        listed = f"{items[0]} and {items[1]}"
-    else:
-        listed = ", ".join(items[:-1]) + ", and " + items[-1]
-    lines = [listed[0].upper() + listed[1:] + ".", _CLOUD_INIT_ROOT]
+        table.append(("qm template", "yes"))
+    return table
+
+
+def _defaults_notes(*, hardware: bool, convert: bool) -> str:
+    lines = [_CLOUD_INIT_ROOT]
     if hardware and not convert:
         lines.append("A new VM at an unused VMID is still created with qm template.")
     return "\n".join(lines)
@@ -1095,7 +1092,9 @@ def _ask_guest_settings(read_line, write, *, hardware: bool, convert: bool, coun
         permit_root = _ask_root_ssh(read_line, write)
         return GuestSettings(password_auth, permit_root, *defaults, False)
     _section(read_line, write, "Defaults")
-    _say(read_line, write, _usual_defaults(hardware=hardware, convert=convert), "note")
+    _write_table(read_line, write, _defaults_table(hardware=hardware, convert=convert))
+    _blank(write)
+    _say(read_line, write, _defaults_notes(hardware=hardware, convert=convert), "note")
     if _ask_bool(read_line, write, "Accept these defaults?", True):
         return GuestSettings(True, True, *defaults, convert)
     password_auth = _ask_password_auth(read_line, write)
@@ -1108,23 +1107,19 @@ def _ask_guest_settings(read_line, write, *, hardware: bool, convert: bool, coun
     return GuestSettings(password_auth, permit_root, bridge, memory_mb, cores, make_template)
 
 
-def ask_cache_cleanup(read_line, write, *, cache: str, backups: str, failed: bool) -> bool:
+def ask_cache_cleanup(read_line, write, *, cache: str, failed: bool) -> bool:
     """After the builds. Enter keeps working files. y deletes them.
 
-    Disk backups live in backups and are never deleted. A failed release
-    says the download is still in the cache, and Enter keeps it.
+    Disk backups are not in the cache and are never deleted. A failed
+    release says the download is still in the cache, and Enter keeps it.
     """
     if failed:
         prompt = (
             f"A release failed. Working files are still in {cache}, including the download.\n"
-            f"Disk backups in {backups} stay.\n"
             f"Delete working files in {cache}?\n"
         )
     else:
-        prompt = (
-            f"Disk backups in {backups} stay.\n"
-            f"Delete working files in {cache}?\n"
-        )
+        prompt = f"Delete working files in {cache}?\n"
     return _ask_bool(read_line, write, prompt, False)
 
 

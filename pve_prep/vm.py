@@ -801,6 +801,24 @@ def _backup_dest(backup_dir: str, vmid: int, bus: str) -> str:
     return str(Path(backup_dir) / disk_backup_name(vmid, bus, stamp))
 
 
+def backups_since(backup_dir: str, started: float) -> list[Path]:
+    """Disk backups in backup_dir written at or after started (epoch seconds). No directory is none."""
+    found = []
+    try:
+        entries = list(Path(backup_dir).iterdir())
+    except OSError:
+        return []
+    for entry in entries:
+        if not is_disk_backup(entry.name):
+            continue
+        try:
+            if entry.stat().st_mtime >= started:
+                found.append(entry)
+        except OSError:
+            continue
+    return sorted(found)
+
+
 def prepare_backup_dir(backup_dir: str) -> Path:
     """Root-only directory for disk copies. A symlink is refused, before and after mkdir."""
     path = Path(backup_dir)

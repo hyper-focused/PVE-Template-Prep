@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -144,6 +145,40 @@ def arm(read_line):
     except (AttributeError, TypeError):
         pass
     return read_line
+
+
+@contextmanager
+def quiet_echo(read_line):
+    """Terminal echo off while the widgets run the interview.
+
+    A host lookup between two fields can take a second. Keys typed in that
+    gap would be echoed at column 0 by the terminal and then drawn again in
+    the next field. With echo off they are drawn once, by the field. The
+    plain path keeps echo, because input() relies on it.
+    """
+    try:
+        import termios
+    except ImportError:
+        termios = None
+    saved = None
+    fd = -1
+    if termios is not None and enabled(read_line):
+        try:
+            fd = sys.stdin.fileno()
+            saved = termios.tcgetattr(fd)
+            quiet = termios.tcgetattr(fd)
+            quiet[3] &= ~termios.ECHO
+            termios.tcsetattr(fd, termios.TCSANOW, quiet)
+        except (OSError, ValueError, termios.error):
+            saved = None
+    try:
+        yield
+    finally:
+        if saved is not None:
+            try:
+                termios.tcsetattr(fd, termios.TCSANOW, saved)
+            except termios.error:
+                pass
 
 
 def load_palette(path: Path = _PALETTE_FILE) -> dict[str, dict[str, dict[str, Any]]]:

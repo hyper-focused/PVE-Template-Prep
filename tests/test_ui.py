@@ -251,31 +251,31 @@ class VendorTest(unittest.TestCase):
 
     def test_hint_splits_off_the_last_line(self) -> None:
         self.assertEqual(
-            _split_hint("Keep this hardware? (y/n) [Yes]:"),
-            ("Keep this hardware?", "(y/n) [Yes]"),
+            _split_hint("Use this VM template config? (y/n) [Yes]:"),
+            ("Use this VM template config?", "(y/n) [Yes]"),
         )
         self.assertEqual(
-            _split_hint("Enter bookworm template VMID [9001]:"),
-            ("Enter bookworm template VMID", "[9001]"),
+            _split_hint("bookworm VM Template ID [9001]:"),
+            ("bookworm VM Template ID", "[9001]"),
         )
         self.assertEqual(
-            _split_hint("A VMID is required.\nEnter bookworm template VMID [9001]:"),
-            ("A VMID is required.\nEnter bookworm template VMID", "[9001]"),
+            _split_hint("A VMID is required.\nbookworm VM Template ID [9001]:"),
+            ("A VMID is required.\nbookworm VM Template ID", "[9001]"),
         )
         self.assertEqual(
-            _split_hint("Enter bookworm template VMID:"), ("Enter bookworm template VMID:", None)
+            _split_hint("bookworm VM Template ID:"), ("bookworm VM Template ID:", None)
         )
         self.assertEqual(_split_hint("Bridge:"), ("Bridge:", None))
         gate = "Type 'DELETE' to continue or 'X' to exit now without changes:"
         self.assertEqual(_split_hint(gate), (gate, None))
 
     def test_text_prompt_paints_question_hint_and_delete(self) -> None:
-        tokens = ui.prompt_tokens("Keep this hardware?", hint="(y/n) [Yes]")
+        tokens = ui.prompt_tokens("Use this VM template config?", hint="(y/n) [Yes]")
         self.assertEqual(tokens[0], ("class:qmark", " "))
-        self.assertIn(("class:question", "Keep this hardware?"), tokens)
+        self.assertIn(("class:question", "Use this VM template config?"), tokens)
         self.assertEqual(tokens[-2:], [("class:instruction", "(y/n) [Yes]"), ("class:question", ": ")])
         self.assertEqual(
-            "".join(text for _style, text in tokens).strip(), "Keep this hardware? (y/n) [Yes]:"
+            "".join(text for _style, text in tokens).strip(), "Use this VM template config? (y/n) [Yes]:"
         )
         self.assertFalse([token for token in tokens if token[0] == "class:danger"])
 
@@ -286,7 +286,7 @@ class VendorTest(unittest.TestCase):
         self.assertEqual("".join(text for _style, text in tokens).strip(), gate)
         self.assertFalse([token for token in tokens if token[0] == "class:instruction"])
 
-        tokens = ui.prompt_tokens("Enter bookworm template VMID", hint="[9001]")
+        tokens = ui.prompt_tokens("bookworm VM Template ID", hint="[9001]")
         self.assertEqual(tokens[-2:], [("class:instruction", "[9001]"), ("class:question", ": ")])
 
         rules = dict(ui.widget_style(instruction="highlight").style_rules)
@@ -325,7 +325,7 @@ class VendorTest(unittest.TestCase):
                 with create_pipe_input() as pipe:
                     pipe.send_text("\r")
                     typed = ui.text(
-                        "Keep this hardware?", hint="(y/n) [Yes]", input=pipe, output=DummyOutput()
+                        "Use this VM template config?", hint="(y/n) [Yes]", input=pipe, output=DummyOutput()
                     )
                 self.assertEqual(typed, "")
                 self.assertEqual(seen["lexer"].style, "class:answer")
@@ -349,6 +349,42 @@ class VendorTest(unittest.TestCase):
         finally:
             signal.alarm(0)
         self.assertEqual(picked, "template")
+
+
+class QuietEchoTest(unittest.TestCase):
+    def _echo(self, fd: int) -> bool:
+        import termios
+
+        return bool(termios.tcgetattr(fd)[3] & termios.ECHO)
+
+    def test_widgets_turn_echo_off_and_back_on(self) -> None:
+        import os
+
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        reader = SimpleNamespace(use_questionary=True)
+        with mock.patch.object(ui, "enabled", return_value=True), mock.patch.object(
+            sys, "stdin", SimpleNamespace(fileno=lambda: slave)
+        ):
+            self.assertTrue(self._echo(slave))
+            with self.assertRaises(PromptAbort):
+                with ui.quiet_echo(reader):
+                    self.assertFalse(self._echo(slave))
+                    raise PromptAbort("exit")
+            self.assertTrue(self._echo(slave))
+
+    def test_plain_reader_keeps_echo(self) -> None:
+        import os
+
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        with mock.patch.object(ui, "enabled", return_value=False), mock.patch.object(
+            sys, "stdin", SimpleNamespace(fileno=lambda: slave)
+        ):
+            with ui.quiet_echo(object()):
+                self.assertTrue(self._echo(slave))
 
 
 class ArmTest(unittest.TestCase):
@@ -531,7 +567,7 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertFalse(job.password_auth)
         self.assertTrue(any("Enable direct SSH login for 'root' user? (y/n) [Yes]:" in line for line in asked))
         self.assertTrue(job.permit_root)
-        self.assertTrue(any("Keep this hardware? (y/n) [Yes]:" in line for line in asked))
+        self.assertTrue(any("Use this VM template config? (y/n) [Yes]:" in line for line in asked))
         self.assertTrue(any("qm template? (y/n) [Yes]:" in line for line in asked))
         self.assertFalse(any("pve-template-prep/cache" in line for line in asked))
         self.assertTrue(any("Accept these defaults? (y/n) [Yes]:" in line for line in asked))

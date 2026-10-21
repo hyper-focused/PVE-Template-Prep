@@ -56,12 +56,12 @@ Releases are a checkbox: one to three. A codename such as `bookworm` works on th
 1. What to build, under **PVE Template and Disk Image Builder**. The question is `Highlight desired template or image type and press enter`. Enter selects **Create new Proxmox PVE VM templates**. `2` is **Update existing Proxmox PVE template VM disk images**. `3` is **Create standalone Proxmox PVE VM disk images**. The menu does not describe the rows. The line after it is `New VM templates selected.`, `Update existing VM disk images selected.`, or `Standalone VM disk images selected.` There is no in-place prep. Guest prep runs on an image this tool downloads. It does not run on a disk the tool did not build.
 2. **Distribution**. The question is `Please choose a distro. Highlight a selection and press enter`. The rows are the `name` in each distro file: Debian, Ubuntu, AlmaLinux, CloudLinux, Fedora.
 3. Releases, by number, comma-separated. **The numbers are the menu, not the version.** On Debian, `1, 2` is 12 and 13. On Fedora, `1, 2` is 43 and 44. A codename still works (`bookworm`, `noble`). The section is **Releases** and the question is `Please choose release(s). Highlight selection(s) and press enter`. Space still marks a release. The line after it is `Ubuntu 22.04, 24.04, 26.04 selected.`
-4. VMIDs, one question per release, on the create and update paths. Standalone skips this. On create, one note comes first: `Enter takes the first free VMID from 9001.` and `Typing the VMID of an existing template replaces that template.` The field is `Enter Debian 13 template VMID [9002]: ` and it is empty. The default is only in the brackets. Typing replaces it. One number. A list or a range is rejected. A value that cannot be used is asked again, and the next prompt says why.
+4. VMIDs, one question per release, on the create and update paths. Standalone skips this. On create, the section is **Template VMID(s)**, and one note comes first: `Provide a VMID for each VM template or press enter to use the default.` and `If the VMID is in use, the existing template will be deleted and replaced.` The field is `Debian 13 VM Template ID [9002]: ` and it is empty. The default is only in the brackets. Typing replaces it. One number. A list or a range is rejected. A value that cannot be used is asked again, and the next prompt says why.
    - Create: Enter assigns the next free ID from 9001. IDs already in use are skipped, quietly, including a hole such as a taken 9002. Two releases that both take the default become 9001 and 9002, or 9003 and 9004 when those first two are taken. A typed ID that is already in use has to be a template. The template is deleted and replaced. A normal VM is refused. A linked clone is refused. A template that still has linked clones is refused, including a clone on another node.
-   - Update: the field is `Enter Ubuntu 24.04 template VMID: `, with no default. A new boot disk is created for that template. Every release needs a VMID. A free VMID is refused. A normal VM is refused, and the next prompt says so. A linked clone is refused the same way.
+   - Update: the field is `Ubuntu 24.04 VM Template ID: `, with no default. A new boot disk is created for that template. Every release needs a VMID. A free VMID is refused. A normal VM is refused, and the next prompt says so. A linked clone is refused the same way.
 5. Where it goes. A standalone image lists storages whose `storage.cfg` content includes `import`, and writes `<distro>-<release>-pve.qcow2` or `.raw` into that storage's `import/` directory. Updating a template boot disk uses the storage that disk is already on, and the format that disk already has. Those questions are not asked. A boot disk on ZFS, LVM, LVM-thin, RBD, or iSCSI is refused at the VMID question: `VMID 910 boot disk: vm-data is ZFS. Disk images go on file storage only. Type another VMID.` A new template asks under **VM Disk Storage**: `Choose the storage for the new VM disk`. A pipe still says `VM Disk Storage Path`. The list is file storage only. The line above it is `Not listed: local-zfs (ZFS), local-lvm (LVM-thin). Disk images go on file storage only.` A host with storages and none of them file storage ends with `No file storage accepts the VM disk.` When that VMID already exists, its disk's storage is first in the list. Enter keeps it. A disk on block storage is not offered there. The note says to pick where the new disk goes. The field is not prefilled. A number picks from the list. A storage id that is not in the list is asked again.
 6. Format. `1` QEMU qcow2 (`.qcow2`), `2` raw (`.raw`). Enter selects qcow2. The section is **Disk Format**. A new template asks `Choose the volume format on <storage>.` and the answer is `qm importdisk --format`. A standalone image asks `Choose the image format in <storage> import/.` and the answer is the file extension. CIFS is a file share, including when the volume is raw. When pvesm cannot be read, the line above is `Could not read the type of <storage>. The run refuses it unless it is file storage.` An update uses the format that disk already has and does not ask. A qcow2 file on a raw disk, or the reverse, breaks the VM config.
-7. **Defaults**. Guest prep is not a question. It is applied to every image this tool builds. The defaults are listed above the field, which is `Accept these defaults? (y/n) [Yes]:`. Enter accepts the defaults this path still asks: SSH password authentication, root SSH login, and on the create path the bridge, memory, cores, and `qm template`. The cloud-init user must be `root`. `n` asks each one. Those are four sections: **SSH Password Authentication** asks `Allow password authentication for SSH? (y/n) [Yes]:`, **Root SSH Access** asks `Enable direct SSH login for 'root' user? (y/n) [Yes]:` under `Cloud-init user must be set to 'root'.`, **Hardware** asks `Keep this hardware? (y/n) [Yes]:`, and **Template Conversion** asks `Convert the new VM with qm template? (y/n) [Yes]:`. More than one new VM says `VMs`. A standalone file, or an update, asks only the two SSH questions. Hardware and `qm template` are the create path. Enter keeps `vmbr0`, 2048 MB, and 2 cores. Machine type is `q35`. CPU type is `x86-64-v2-AES`. SCSI type, serial console, cloud-init, and the guest agent flag are set on the VM and can be changed later with `qm set`. `n` on `qm template` leaves a normal VM. A template is cloned, not booted.
+7. **Defaults**. Guest prep is not a question. It is applied to every image this tool builds. The defaults are a two-column table above the field, `Setting` and `Default`, one row each for Password SSH, Root SSH, Bridge, Memory, Cores, and qm template, then `Cloud-init user must be set to 'root'.`. The field is `Accept these defaults? (y/n) [Yes]:`. Enter accepts the defaults this path still asks: SSH password authentication, root SSH login, and on the create path the bridge, memory, cores, and `qm template`. The cloud-init user must be `root`. `n` asks each one. Those are four sections: **SSH Password Authentication** asks `Allow password authentication for SSH? (y/n) [Yes]:`, **Root SSH Access** asks `Enable direct SSH login for 'root' user? (y/n) [Yes]:` under `Cloud-init user must be set to 'root'.`, **Hardware** asks `Use this VM template config? (y/n) [Yes]:`, and **Template Conversion** asks `Convert the new VM with qm template? (y/n) [Yes]:`. More than one new VM says `VMs`. A standalone file, or an update, asks only the two SSH questions. Hardware and `qm template` are the create path. Enter keeps `vmbr0`, 2048 MB, and 2 cores. Machine type is `q35`. CPU type is `x86-64-v2-AES`. SCSI type, serial console, cloud-init, and the guest agent flag are set on the VM and can be changed later with `qm set`. `n` on `qm template` leaves a normal VM. A template is cloned, not booted.
 8. **Backup existing images**. One question, after the other options. The field is `Create a backup copy of existing images? (y/n) [Yes]:`. Enter copies every disk that will be replaced into `/var/backups/pve-template-prep`, and the next line is `Image backups will be created at /var/backups/pve-template-prep`. `n` does not, and the line is `No backup images will be created.` A VMID with no OS disk is named, and the question is still asked. A new VMID and a published file skip this. A published file that already exists is renamed aside. That path does not ask.
 9. **Summary**, then **Confirm Selections**. The summary is a table, one row per release. A new template shows Release, VMID, Name, Storage, Format, and Existing. An update shows Release, VMID, Storage, Format, and Existing disk. A standalone image shows Release, Format, and File. Existing says `new`, `replace`, `back up, replace`, `delete VM`, or `back up, delete VM`. A cell that deletes with no backup is red. Under the table: `Guest prep: yes   Password SSH: yes   Root SSH: yes`, plus `qm template` and the hardware on the create path. Confirm Selections says what happens in one line, then one gate:
    - Backup: `Your existing disk images will be backed up, then new images created.` On the create path it says templates. Type `YES`. `X` exits. There is no second confirm.
@@ -70,7 +70,7 @@ Releases are a checkbox: one to three. A codename such as `bookworm` works on th
    - Nothing to replace: `Your new VM templates will now be created.`, or VMs, or disk images. Type `YES`.
    The gate is `Type 'YES' to continue or 'X' to exit now:` or `Type 'DELETE' to continue or 'X' to exit now without changes:`. Nothing on the host has been built until that word. A dry run says so above the line.
 
-After the builds, the cache question is `Delete working files in /var/tmp/pve-template-prep/cache? (y/n) [No]:`. Enter keeps the working files. `y` deletes them. This is the prep cache, not the rest of `/var/tmp`. Disk backups are in `/var/backups/pve-template-prep` and are never touched; a copy an older release left in the cache is skipped too. A failed release says the download is still there. Enter keeps it. A dry-run asks and does not delete.
+After the builds, the cache question is `Delete working files in /var/tmp/pve-template-prep/cache? (y/n) [No]:`. Enter keeps the working files. `y` deletes them. This is the prep cache, not the rest of `/var/tmp`. Disk backups are in `/var/backups/pve-template-prep` and are never touched; a copy an older release left in the cache is skipped too. A failed release says the download is still there. Enter keeps it. A dry-run asks and does not delete. When this run wrote a disk backup, the last line is `VM Disk image backups located at /var/backups/pve-template-prep`. A run that wrote none does not mention backups.
 
 ## The three paths
 
@@ -170,7 +170,7 @@ Somewhere else: `DEST=/somewhere bash install.sh`, or `sudo DEST=/somewhere bash
 
 `pve-template-prep -V` or `--version` prints the release and exits. It does not look for a newer copy. A run prints that same line, then an installed copy checks `main`. The check reads the version string and sends nothing else. A newer version asks `Fetch it now? (y/n) [No]:`. Enter keeps this copy. `y` runs `install.sh` into this install directory and starts that version. That includes a patch bump: a release added, a release removed, or a bugfix. A git checkout does not ask. If GitHub cannot be read, the questions start anyway. `PVE_PREP_SKIP_UPDATE=1` skips the check. Each release then prints an accent-colored line naming what it is building. On a terminal, `Converting <name> image...` is followed by the qemu-img progress, then `Preparing <name> image for Proxmox PVE...` and one progress line. virt-customize's own bracketed numbers are elapsed seconds, so that command log stays hidden. `-v` or `--verbose` shows it. A pipe shows it too. A plain line names what finished.
 
-The cache is `/var/tmp/pve-template-prep/cache`, mode `0700`, owned by root. After the builds finish, the question is `Delete working files in /var/tmp/pve-template-prep/cache? (y/n) [No]:`. Enter keeps them. `y` deletes them. **Disk backups are in `/var/backups/pve-template-prep`, mode `0700`, owned by root, and cleanup never opens that directory.** A copy an older release left in the cache is skipped as well. A failed release asks the same question and says the download is still there. Enter keeps it. A dry-run asks and does not delete. `virt-customize --install` fetches packages from inside the image. A live run needs outbound network.
+The cache is `/var/tmp/pve-template-prep/cache`, mode `0700`, owned by root. After the builds finish, the question is `Delete working files in /var/tmp/pve-template-prep/cache? (y/n) [No]:`. Enter keeps them. `y` deletes them. **Disk backups are in `/var/backups/pve-template-prep`, mode `0700`, owned by root, and cleanup never opens that directory.** A copy an older release left in the cache is skipped as well. A failed release asks the same question and says the download is still there. Enter keeps it. A dry-run asks and does not delete. When this run wrote a disk backup, the last line is `VM Disk image backups located at /var/backups/pve-template-prep`. A run that wrote none does not mention backups. `virt-customize --install` fetches packages from inside the image. A live run needs outbound network.
 
 ## Environment
 
@@ -261,15 +261,18 @@ A standalone file asks qcow2 or raw after the import storage. The cache copy is 
 A prefilled VMID had to be backspaced before it could be replaced. On the create path, one note comes before the first release, then an empty field per release:
 
 ```
-  Enter takes the first free VMID from 9001.
-  Typing the VMID of an existing template replaces that template.
+  Template VMID(s)
+    ------------------------------------------
 
-  Enter Debian 13 template VMID [9002]:
+  Provide a VMID for each VM template or press enter to use the default.
+  If the VMID is in use, the existing template will be deleted and replaced.
+
+  Debian 13 VM Template ID [9002]:
 ```
 
 The label is the catalog name plus the release, so a real run says `Debian 13`, not the codename. Enter accepts the bracket: the next free ID from 9001, skipping IDs already in use, including a hole. When no free ID can be suggested, the field has no bracket and `No free VMID from 9001 in the next 256 IDs.` comes first. When the host check fails, the field adds `Could not check which VMIDs are free. An existing VM will not be replaced.` above it.
 
-The update field is `Enter Debian 13 template VMID: ` with no brackets. Enter does not publish a file. A free VMID is refused. A normal VM, a linked clone, and a template that still has linked clones are refused, and the next prompt says which.
+The update field is `Debian 13 VM Template ID: ` with no brackets. Enter does not publish a file. A free VMID is refused. A normal VM, a linked clone, and a template that still has linked clones are refused, and the next prompt says which.
 
 Every yes or no that does not require a specific word uses the same empty field. The hint is `(y/n)`. The bracket is `Yes` or `No`. Enter accepts it. `y`, `yes`, `n`, and `no` answer it. Anything else prints `answer y or n` and asks the same line again. Context stays on the lines above. The suffix is only on the last line.
 
@@ -278,7 +281,7 @@ Every yes or no that does not require a specific word uses the same empty field.
 | `Accept these defaults?` | Yes |
 | `Allow password authentication for SSH?` | Yes |
 | `Enable direct SSH login for 'root' user?` | Yes |
-| `Keep this hardware?` | Yes |
+| `Use this VM template config?` | Yes |
 | `Convert the new VM with qm template?` | Yes |
 | `Create a backup copy of existing images?` | Yes |
 | `Delete working files in /var/tmp/pve-template-prep/cache?` | No |
@@ -286,7 +289,7 @@ Every yes or no that does not require a specific word uses the same empty field.
 
 Menus stay menus. `YES` and `DELETE` stay typed words. These yes/no questions use a text field on a terminal and on a pipe. A confirm widget would take Enter without showing the bracket.
 
-`Keep this hardware?` and `Convert the new VM with qm template?` appear only after `n` on the defaults, and only on the create path. Update and standalone ask only the root question. Cache cleanup is after the builds, including a failed release and a dry-run. The dry-run asks and does not delete. A failed release keeps the lines about the download above the same `[No]` question.
+`Use this VM template config?` and `Convert the new VM with qm template?` appear only after `n` on the defaults, and only on the create path. Update and standalone ask only the root question. Cache cleanup is after the builds, including a failed release and a dry-run. The dry-run asks and does not delete. A failed release keeps the lines about the download above the same `[No]` question.
 
 ### The summary is a table
 
@@ -306,6 +309,8 @@ The download prints nothing. A cache hit prints `reuse` and the path. On a termi
 
 ## History
 
+Release 1.3.4 is wording and layout: a Template VMID(s) section, `VM Template ID` fields, a defaults table, `Use this VM template config?`, and one backup line at the end, only when a backup was written. Terminal echo is off during the interview, so typed-ahead keys are drawn once.
+
 Release 1.3.3 splits the SSH question in two: password authentication and root login, each its own line in the drop-in. Two yeses write the file 1.3.2 wrote.
 
 Release 1.3.2 moves disk backups to `/var/backups/pve-template-prep` and colors the parts of a text field: the question, the `(y/n) [Yes]` hint, and a red `DELETE`.
@@ -321,7 +326,7 @@ Release 1.2.0 is commit `5da0213`. Release 1.3.0 carries the commits after it:
 
 ### An installed copy sees a release bump
 
-`Fetch it now? (y/n) [No]:` compares the `x.y.z` in `pve_prep/__init__.py` on `main` with the copy that is installed. Equal versions do not ask. A 1.3.2 install asks about 1.3.3. Enter on that question keeps the installed copy. `y` runs `install.sh`. That script downloads the `main` tarball and does not read the version string. `-V` prints the version and does not check. A git checkout is left alone.
+`Fetch it now? (y/n) [No]:` compares the `x.y.z` in `pve_prep/__init__.py` on `main` with the copy that is installed. Equal versions do not ask. A 1.3.3 install asks about 1.3.4. Enter on that question keeps the installed copy. `y` runs `install.sh`. That script downloads the `main` tarball and does not read the version string. `-V` prints the version and does not check. A git checkout is left alone.
 
 ## See also
 
