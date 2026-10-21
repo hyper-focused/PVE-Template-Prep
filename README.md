@@ -32,7 +32,7 @@ pve-template-prep
 With sudo:
 
 ```sh
-sudo apt update && apt -y install libguestfs-tools
+sudo apt update && sudo apt -y install libguestfs-tools
 curl -fsSLO https://raw.githubusercontent.com/hyper-focused/PVE-Template-Prep/main/install.sh
 sudo bash install.sh
 sudo pve-template-prep
