@@ -273,14 +273,15 @@ if list((vendor / "wcwidth").glob("_wcwidth_c.*")):
     raise SystemExit("wcwidth C extension must not be shipped")
 PY
 
-if ! command -v virt-customize >/dev/null 2>&1 || ! command -v qemu-img >/dev/null 2>&1; then
+# qemu-img ships with pve-qemu-kvm. Do not ask apt for qemu-utils on PVE.
+if ! command -v virt-customize >/dev/null 2>&1; then
   if ! command -v apt-get >/dev/null 2>&1; then
-    echo "Install libguestfs-tools and qemu-utils, then re-run." >&2
+    echo "Install libguestfs-tools, then re-run." >&2
     exit 1
   fi
-  echo "Installing libguestfs-tools and qemu-utils"
+  echo "Installing libguestfs-tools"
   apt-get update
-  apt-get install -y libguestfs-tools qemu-utils
+  apt-get install -y libguestfs-tools
 fi
 
 install -d -o root -g root -m 0755 "$(dirname "$BIN_LINK")"
