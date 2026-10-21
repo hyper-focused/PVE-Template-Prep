@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from pve_prep.job import Job, DEFAULT_CACHE  # noqa: E402
-from pve_prep.prompts import PromptAbort, interview  # noqa: E402
+from pve_prep.job import DEFAULT_BACKUPS, DEFAULT_CACHE, Job  # noqa: E402
+from pve_prep.prompts import PromptAbort, _split_hint, interview  # noqa: E402
 from pve_prep import ui  # noqa: E402
 
 
@@ -249,6 +249,86 @@ class VendorTest(unittest.TestCase):
             "24",
         )
 
+    def test_hint_splits_off_the_last_line(self) -> None:
+        self.assertEqual(
+            _split_hint("Keep this hardware? (y/n) [Yes]:"),
+            ("Keep this hardware?", "(y/n) [Yes]"),
+        )
+        self.assertEqual(
+            _split_hint("Enter bookworm template VMID [9001]:"),
+            ("Enter bookworm template VMID", "[9001]"),
+        )
+        self.assertEqual(
+            _split_hint("A VMID is required.\nEnter bookworm template VMID [9001]:"),
+            ("A VMID is required.\nEnter bookworm template VMID", "[9001]"),
+        )
+        self.assertEqual(
+            _split_hint("Enter bookworm template VMID:"), ("Enter bookworm template VMID:", None)
+        )
+        self.assertEqual(_split_hint("Bridge:"), ("Bridge:", None))
+        gate = "Type 'DELETE' to continue or 'X' to exit now without changes:"
+        self.assertEqual(_split_hint(gate), (gate, None))
+
+    def test_text_prompt_paints_question_hint_and_delete(self) -> None:
+        tokens = ui.prompt_tokens("Keep this hardware?", hint="(y/n) [Yes]")
+        self.assertEqual(tokens[0], ("class:qmark", " "))
+        self.assertIn(("class:question", "Keep this hardware?"), tokens)
+        self.assertEqual(tokens[-1], ("class:instruction", " (y/n) [Yes] "))
+        self.assertFalse([token for token in tokens if token[0] == "class:danger"])
+
+        gate = "Type 'DELETE' to continue or 'X' to exit now without changes:"
+        tokens = ui.prompt_tokens(gate, danger_word="DELETE")
+        self.assertIn(("class:danger", "DELETE"), tokens)
+        self.assertIn(("class:question", "Type '"), tokens)
+        self.assertEqual("".join(text for _style, text in tokens).strip(), gate)
+        self.assertFalse([token for token in tokens if token[0] == "class:instruction"])
+
+        tokens = ui.prompt_tokens("Enter bookworm template VMID", hint="[9001]")
+        self.assertEqual(tokens[-1], ("class:instruction", " [9001] "))
+
+        rules = dict(ui.widget_style(instruction="highlight").style_rules)
+        self.assertEqual(rules["instruction"], rules["pointer"])
+        self.assertNotEqual(rules["instruction"], rules["question"])
+        self.assertNotEqual(rules["answer"], rules["instruction"])
+        self.assertEqual(dict(ui.widget_style().style_rules)["instruction"], ui._style("note"))
+
+    def test_text_field_takes_delete_and_the_bracket_default(self) -> None:
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.lexers import SimpleLexer
+        from prompt_toolkit.output import DummyOutput
+        from prompt_toolkit.shortcuts import PromptSession
+
+        seen = {}
+        real_init = PromptSession.__init__
+
+        def spy_init(session, *args, **kwargs):
+            seen["lexer"] = kwargs.get("lexer")
+            real_init(session, *args, **kwargs)
+
+        _alarm(8)
+        try:
+            with mock.patch.object(PromptSession, "__init__", spy_init):
+                with create_pipe_input() as pipe:
+                    pipe.send_text("DELETE\r")
+                    typed = ui.text(
+                        "Type 'DELETE' to continue or 'X' to exit now without changes:",
+                        danger_word="DELETE",
+                        input=pipe,
+                        output=DummyOutput(),
+                    )
+                self.assertEqual(typed, "DELETE")
+                self.assertIsInstance(seen["lexer"], SimpleLexer)
+                self.assertEqual(seen["lexer"].style, "class:danger")
+                with create_pipe_input() as pipe:
+                    pipe.send_text("\r")
+                    typed = ui.text(
+                        "Keep this hardware?", hint="(y/n) [Yes]", input=pipe, output=DummyOutput()
+                    )
+                self.assertEqual(typed, "")
+                self.assertEqual(seen["lexer"].style, "class:answer")
+        finally:
+            signal.alarm(0)
+
     def test_space_accepts_the_highlighted_row(self) -> None:
         from prompt_toolkit.input import create_pipe_input
         from prompt_toolkit.output import DummyOutput
@@ -374,11 +454,15 @@ class WidgetInterviewTest(unittest.TestCase):
 
         seen_texts: list[str] = []
 
-        def text(message, default="", instruction=None):
+        def text(message, default="", hint=None, danger_word=None):
             self.assertTrue(message)
-            seen_texts.append(message)
-            if " VMID [" in message or "(y/n) [" in message:
+            self.assertNotIn("[", message)
+            seen_texts.append(f"{message} {hint}:" if hint else message)
+            if hint:
                 self.assertEqual(default, "")
+            if danger_word:
+                self.assertEqual(danger_word, "DELETE")
+                self.assertIn("'DELETE'", message)
             return texts.pop(0)
 
         def confirm_capture(message, default=True):
@@ -499,6 +583,7 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertIn("codename", "".join(written))
         self.assertIsInstance(job, Job)
         self.assertEqual(job.cache_dir, DEFAULT_CACHE)
+        self.assertEqual(job.backup_dir, DEFAULT_BACKUPS)
 
 
 if __name__ == "__main__":

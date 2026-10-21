@@ -226,8 +226,12 @@ def _style(role: str) -> str:
     return f"fg:{color}{bold}"
 
 
-def widget_style():
-    """prompt_toolkit style for the menus, in the current theme."""
+def widget_style(*, instruction: str = "note"):
+    """prompt_toolkit style for the menus, in the current theme.
+
+    instruction is the role for the hint after the question: key help on a
+    menu stays note grey; a text field's (y/n) [Yes] or [9001] is highlight.
+    """
     from prompt_toolkit.styles import Style
 
     return Style(
@@ -239,7 +243,7 @@ def widget_style():
             # prompt_toolkit's own style reverses selected rows. The palette colors them instead.
             ("highlighted", _style("highlight") + " noreverse"),
             ("selected", _style("success") + " noreverse"),
-            ("instruction", _style("note")),
+            ("instruction", _style(instruction)),
             ("danger", _style("danger")),
             ("text", _style("option")),
             ("disabled", _style("note")),
@@ -408,21 +412,58 @@ def checkbox(message: str, choices, *, instruction: str | None = None, validate=
     return _run(question)
 
 
-def text(message: str, *, default: str = "", instruction: str | None = None, **kwargs):
-    """Empty string is an answer. None means cancelled."""
-    import questionary
+def prompt_tokens(message: str, *, hint: str | None = None, danger_word: str | None = None):
+    """The text prompt line, laid out the way questionary lays out qmark, question, instruction.
 
-    # questionary puts a space after qmark, so one space here lands the text at the margin.
-    question = questionary.text(
-        indent(message),
-        default=default,
-        style=widget_style(),
-        qmark=" ",
-        instruction=instruction,
+    hint is the (y/n) [Yes] or [9001] part, drawn as highlight. danger_word
+    is drawn red wherever it appears in the question.
+    """
+    tokens = [("class:qmark", " "), ("class:question", " ")]
+    body = indent(message)
+    if danger_word and danger_word in body:
+        parts = body.split(danger_word)
+        for index, part in enumerate(parts):
+            if index:
+                tokens.append(("class:danger", danger_word))
+            if part:
+                tokens.append(("class:question", part))
+    else:
+        tokens.append(("class:question", body))
+    tokens.append(("class:question", " "))
+    if hint:
+        tokens.append(("class:instruction", f" {hint} "))
+    return tokens
+
+
+def text(
+    message: str,
+    *,
+    default: str = "",
+    hint: str | None = None,
+    danger_word: str | None = None,
+    **kwargs,
+):
+    """Empty string is an answer. None means cancelled.
+
+    A prompt_toolkit session, not questionary.text, because the question
+    is formatted text: danger_word is red in the question and in the field.
+    """
+    from prompt_toolkit.lexers import SimpleLexer
+    from prompt_toolkit.shortcuts import PromptSession
+    from prompt_toolkit.styles import merge_styles
+    from questionary.constants import DEFAULT_STYLE
+
+    session = PromptSession(
+        prompt_tokens(message, hint=hint, danger_word=danger_word),
+        style=merge_styles([DEFAULT_STYLE, widget_style(instruction="highlight")]),
+        lexer=SimpleLexer("class:danger" if danger_word else "class:answer"),
         **_app_kwargs(),
         **kwargs,
     )
-    return _run(question)
+    try:
+        return session.prompt(default=default)
+    except (KeyboardInterrupt, EOFError):
+        return None
 
 
 def confirm(message: str, *, default: bool = True, **kwargs) -> bool | None:

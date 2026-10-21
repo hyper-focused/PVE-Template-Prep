@@ -308,15 +308,16 @@ def _settle_cache(job: Job, failed: bool, read_line) -> bool:
     and did not happen.
     """
     cache = job.cache_dir
+    backups = job.backup_dir
     print()
     try:
-        delete = ask_cache_cleanup(read_line, _write, cache=cache, failed=failed)
+        delete = ask_cache_cleanup(read_line, _write, cache=cache, backups=backups, failed=failed)
     except PromptAbort:
         delete = False
     if job.dry_run:
         if delete:
             print(f"dry-run: would delete the working files in {cache}")
-            print("disk backups would stay")
+            print(f"disk backups would stay in {backups}")
         else:
             print(f"dry-run: leaving {cache} alone")
         return False
@@ -324,6 +325,7 @@ def _settle_cache(job: Job, failed: bool, read_line) -> bool:
         print(f"cache kept: {cache}")
         if failed:
             print("a release failed, so the download stays. Disk backups are kept either way")
+            print(f"disk backups: {backups}")
         return False
     try:
         clear_cache(cache)
@@ -331,7 +333,7 @@ def _settle_cache(job: Job, failed: bool, read_line) -> bool:
         print(f"FAIL cache: {exc}")
         return True
     print(f"deleted the working files in {cache}")
-    print("disk backups stay")
+    print(f"disk backups stay in {backups}")
     return False
 
 

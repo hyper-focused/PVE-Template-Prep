@@ -54,7 +54,7 @@ def _finish_insert(label: str, vmid: int, policy: str, result) -> str:
         saved = str(getattr(result, "backup_dir", "") or "")
         if saved:
             return f"{sentence}. Old disk saved in {saved}."
-        return f"{sentence}. Old disk saved in the cache."
+        return f"{sentence}. Old disk saved in the backup directory."
     return f"{sentence}. Previous disk deleted."
 
 
@@ -64,7 +64,7 @@ def _finish_template(label: str, job, vmid: int) -> str:
     if vmid in job.destroy_vmids:
         sentence += ". Previous VM deleted."
         if vmid in job.backup_vmids:
-            sentence += f" Old disk saved in {job.cache_dir}."
+            sentence += f" Old disk saved in {job.backup_dir}."
     return sentence
 
 
@@ -75,7 +75,7 @@ def _stage_replace(job, vmid: int, tools, *, backup: bool) -> None:
             shown = " ".join(
                 qemu_img_convert_argv(
                     "<os-disk>",
-                    f"{job.cache_dir}/vm-{vmid}-os.bak.qcow2",
+                    f"{job.backup_dir}/vm-{vmid}-os.bak.qcow2",
                     "qcow2",
                 )
             )
@@ -84,7 +84,7 @@ def _stage_replace(job, vmid: int, tools, *, backup: bool) -> None:
     copied = tools.prepare_replace(
         vmid=vmid,
         backup=backup,
-        backup_dir=job.cache_dir,
+        backup_dir=job.backup_dir,
         run=tools.run,
     )
     if backup:
@@ -161,7 +161,7 @@ def insert_image(job, spec, vmid: int, label: str, tools) -> str:
         image_path=str(work),
         disk_policy=policy,
         dry_run=job.dry_run,
-        backup_dir=job.cache_dir,
+        backup_dir=job.backup_dir,
         volume_format=format_for(job, vmid),
         copies_done=backup and not job.dry_run,
         run=tools.run,

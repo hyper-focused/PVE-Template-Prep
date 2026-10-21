@@ -9,12 +9,14 @@ after the run.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from pve_prep import ui
 from pve_prep.catalog import DISTROS
 from pve_prep.job import (
+    DEFAULT_BACKUPS,
     DEFAULT_CACHE,
     Job,
     parse_vmid,
@@ -48,11 +50,30 @@ def _ask(read_line, write, prompt: str) -> str:
     return str(line).strip()
 
 
-def _ask_text(read_line, write, prompt: str, *, default: str = "") -> str:
+# The last line of a prompt ends with "(y/n) [Yes]: " or "[9001]: ". The
+# widget draws that tail as its own hint; the colon goes with it.
+_HINT_TAIL = re.compile(
+    r"^(?P<question>.*?)\s*(?P<hint>(?:\(y/n\)\s*)?\[[^\]]*\])\s*:?\s*$"
+)
+
+
+def _split_hint(prompt: str) -> tuple[str, str | None]:
+    """(question, hint). A prompt with no bracket tail is all question."""
+    head, newline, last = prompt.rpartition("\n")
+    found = _HINT_TAIL.match(last)
+    if found is None:
+        return prompt, None
+    return head + newline + found.group("question"), found.group("hint")
+
+
+def _ask_text(
+    read_line, write, prompt: str, *, default: str = "", danger_word: str | None = None
+) -> str:
     """Free text. The widget shows prompt; the plain path writes it."""
     if ui.enabled(read_line):
         _begin_widget(write)
-        value = ui.text(prompt.strip(), default=default)
+        question, hint = _split_hint(prompt.strip())
+        value = ui.text(question, default=default, hint=hint, danger_word=danger_word)
         if value is None:
             raise PromptAbort("exit")
         _answered(write)
@@ -1072,21 +1093,21 @@ def _ask_guest_settings(read_line, write, *, hardware: bool, convert: bool, coun
     return True, permit_root, bridge, memory_mb, cores, make_template
 
 
-def ask_cache_cleanup(read_line, write, *, cache: str, failed: bool) -> bool:
+def ask_cache_cleanup(read_line, write, *, cache: str, backups: str, failed: bool) -> bool:
     """After the builds. Enter keeps working files. y deletes them.
 
-    Disk backups are never deleted. A failed release says the download is
-    still in the cache, and Enter keeps it.
+    Disk backups live in backups and are never deleted. A failed release
+    says the download is still in the cache, and Enter keeps it.
     """
     if failed:
         prompt = (
             f"A release failed. Working files are still in {cache}, including the download.\n"
-            "Disk backups stay.\n"
+            f"Disk backups in {backups} stay.\n"
             f"Delete working files in {cache}?\n"
         )
     else:
         prompt = (
-            "Disk backups in that directory stay.\n"
+            f"Disk backups in {backups} stay.\n"
             f"Delete working files in {cache}?\n"
         )
     return _ask_bool(read_line, write, prompt, False)
@@ -1126,7 +1147,7 @@ def _confirm_run(read_line, write, *, message: str, word: str, danger: bool) -> 
         accepted = {"YES", "yes"}
         refused = {"X", "x", "n", "no", "NO"}
     while True:
-        answer = _ask_text(read_line, write, prompt)
+        answer = _ask_text(read_line, write, prompt, danger_word=word if danger else None)
         if answer in accepted:
             return
         if answer in refused:
@@ -1446,7 +1467,7 @@ def interview(
                 _say(read_line, write, f"VMID {vmid} has no OS disk.", "warning")
         backup = _ask_bool(read_line, write, "Create a backup copy of existing images?", True)
         if backup:
-            _selected(read_line, write, f"Image backups will be created at {DEFAULT_CACHE}")
+            _selected(read_line, write, f"Image backups will be created at {DEFAULT_BACKUPS}")
         else:
             _selected(read_line, write, "No backup images will be created.", "warning")
     backup_vmids = frozenset(replace_ids) if backup else frozenset()
@@ -1511,6 +1532,7 @@ def interview(
         dest_dir=dest_dir,
         storage=storage,
         cache_dir=DEFAULT_CACHE,
+        backup_dir=DEFAULT_BACKUPS,
         collision=collision,
         vmids=vmids,
         prep=prep,

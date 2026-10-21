@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 DEFAULT_CACHE = "/var/tmp/pve-template-prep/cache"
+# Disk copies outlive a reboot and a cache cleanup, so they live outside /var/tmp.
+DEFAULT_BACKUPS = "/var/backups/pve-template-prep"
 
 _MIN_VMID = 100
 _MAX_VMID = 999_999_999
@@ -29,6 +31,8 @@ class Job:
     destroy_vmids: frozenset[int]
     # VMIDs whose OS disk is copied before a replace, or kept when a disk is inserted.
     backup_vmids: frozenset[int] = frozenset()
+    # Where those copies go. Never inside cache_dir, and never cleaned up.
+    backup_dir: str = DEFAULT_BACKUPS
     # Template mode only. False leaves a normal VM and skips qm template.
     make_template: bool = False
     # Delete the prep-cache children after every release succeeds. Never on failure.

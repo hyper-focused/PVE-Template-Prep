@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -168,7 +169,7 @@ class InsertResult:
     """Where an imported disk landed.
 
     kept_template means the guest was already a template and still is.
-    backup_dir is set when the old disk was copied into the prep cache.
+    backup_dir is set when the old disk was copied there first.
     """
 
     volid: str
@@ -779,10 +780,10 @@ def _path_line(text: str) -> str:
 
 
 def is_disk_backup(name: str) -> bool:
-    """True for a template OS-disk copy written into the prep cache.
+    """True for a template OS-disk copy.
 
-    Cache cleanup uses this so a later delete cannot remove the only copy
-    of a VM that was destroyed.
+    Copies go to the backup directory. Cache cleanup still checks this, so
+    a copy left in the cache by an older release is never deleted either.
     """
     return _DISK_BACKUP_NAME.fullmatch(name) is not None
 
@@ -798,6 +799,18 @@ def disk_backup_name(vmid: int, bus: str, stamp: str) -> str:
 def _backup_dest(backup_dir: str, vmid: int, bus: str) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return str(Path(backup_dir) / disk_backup_name(vmid, bus, stamp))
+
+
+def prepare_backup_dir(backup_dir: str) -> Path:
+    """Root-only directory for disk copies. A symlink is refused, before and after mkdir."""
+    path = Path(backup_dir)
+    if path.is_symlink():
+        raise VmError(f"backup dir is a symlink: {path}")
+    path.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or not path.is_dir():
+        raise VmError(f"backup dir is not a directory: {path}")
+    os.chmod(path, 0o700)
+    return path
 
 
 def stdout_is_tty() -> bool:
@@ -837,7 +850,8 @@ def _backup_os_disks(run: Run, *, vmid: int, config_text: str, backup_dir: str) 
     if not disks:
         return 0
     if not backup_dir:
-        raise VmError(f"VM {vmid} disk backup needs a cache directory")
+        raise VmError(f"VM {vmid} disk backup needs a backup directory")
+    prepare_backup_dir(backup_dir)
     for bus, volid in disks:
         located = run(["pvesm", "path", volid])
         if getattr(located, "returncode", 1) != 0:
@@ -1081,7 +1095,7 @@ def _replace_template_disk(
     saved = ""
     if disk_policy == "backup" and (copies_done or list_os_disks(config_text)):
         if not backup_dir:
-            raise VmError(f"VM {vmid} disk backup needs a cache directory")
+            raise VmError(f"VM {vmid} disk backup needs a backup directory")
         if not copies_done:
             _backup_os_disks(
                 run,
@@ -1138,7 +1152,7 @@ def insert_disk(
         print(" ".join(importdisk_command(vmid, image_path, storage, volume_format)))
         if disk_policy == "backup":
             print(
-                f"# old disk copied into the cache; "
+                f"# old disk copied into the backup directory; "
                 f"qm set {vmid} --<boot-disk> {guessed},discard=on,ssd=1"
             )
         else:

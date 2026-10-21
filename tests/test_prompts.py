@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from pve_prep.job import DEFAULT_CACHE, Job  # noqa: E402
+from pve_prep.job import DEFAULT_BACKUPS, DEFAULT_CACHE, Job  # noqa: E402
 from pve_prep import ui  # noqa: E402
 from pve_prep.prompts import (  # noqa: E402
     PromptAbort,
@@ -237,6 +237,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.collision, "overwrite")
         self.assertTrue(job.dry_run)
         self.assertEqual(job.cache_dir, DEFAULT_CACHE)
+        self.assertEqual(job.backup_dir, DEFAULT_BACKUPS)
         blob = "".join(script.written)
         self.assertIn("Create new Proxmox PVE VM templates", blob)
         self.assertNotIn("Create the VM, import the disk", blob)
@@ -546,7 +547,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.collision, "backup")
         blob = "".join(script.written)
         self.assertIn("answer y or n", blob)
-        self.assertIn("Image backups will be created at /var/tmp/pve-template-prep/cache", blob)
+        self.assertIn("Image backups will be created at /var/backups/pve-template-prep", blob)
         self.assertIn("Your existing templates will be backed up, then new templates created.", blob)
         self.assertEqual(job.backup_vmids, frozenset({910}))
 
@@ -635,7 +636,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.backup_vmids, frozenset({910}))
         self.assertIn("  Backup existing images\n", blob)
         self.assertIn("Create a backup copy of existing images? (y/n) [Yes]: ", blob)
-        self.assertIn("Image backups will be created at /var/tmp/pve-template-prep/cache", blob)
+        self.assertIn("Image backups will be created at /var/backups/pve-template-prep", blob)
         self.assertIn("Your existing disk images will be backed up, then new images created.", blob)
         self.assertEqual(
             _summary(blob),
@@ -1211,9 +1212,17 @@ class InterviewTest(unittest.TestCase):
     def test_cache_question_is_separate_from_the_interview(self) -> None:
         kept = _Script([""])
         self.assertFalse(
-            ask_cache_cleanup(kept.read_line, kept.write, cache=DEFAULT_CACHE, failed=False)
+            ask_cache_cleanup(
+                kept.read_line,
+                kept.write,
+                cache=DEFAULT_CACHE,
+                backups=DEFAULT_BACKUPS,
+                failed=False,
+            )
         )
         blob = "".join(kept.written)
+        self.assertIn(f"Disk backups in {DEFAULT_BACKUPS} stay.", blob)
+        self.assertNotIn("in that directory", blob)
         self.assertIn(f"Delete working files in {DEFAULT_CACHE}?", blob)
         self.assertIn(
             f"Delete working files in {DEFAULT_CACHE}? (y/n) [No]: ",
@@ -1221,11 +1230,18 @@ class InterviewTest(unittest.TestCase):
         )
         failed = _Script(["y"])
         self.assertTrue(
-            ask_cache_cleanup(failed.read_line, failed.write, cache=DEFAULT_CACHE, failed=True)
+            ask_cache_cleanup(
+                failed.read_line,
+                failed.write,
+                cache=DEFAULT_CACHE,
+                backups=DEFAULT_BACKUPS,
+                failed=True,
+            )
         )
         blob = "".join(failed.written)
         self.assertIn("A release failed.", blob)
         self.assertIn("including the download", blob)
+        self.assertIn(f"Disk backups in {DEFAULT_BACKUPS} stay.", blob)
 
 
 class LayoutTest(unittest.TestCase):

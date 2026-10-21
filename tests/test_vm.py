@@ -573,6 +573,42 @@ class CreateTemplateTests(unittest.TestCase):
         self.assertTrue(is_disk_backup(Path(run.calls[4][5]).name))
         self.assertEqual(run.calls[5], ["qm", "destroy", "910"])
 
+    def test_backup_dir_is_created_root_only_and_never_a_symlink(self) -> None:
+        from types import SimpleNamespace
+
+        from pve_prep.vm import _backup_os_disks, prepare_backup_dir
+
+        def run(argv):
+            if argv[0] == "pvesm":
+                return SimpleNamespace(returncode=0, stdout="/mnt/pve/NFS/vm-910-disk-0.raw\n")
+            Path(argv[-1]).write_bytes(b"x")
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with TemporaryDirectory() as tmp:
+            backups = Path(tmp) / "backups" / "pve-template-prep"
+            self.assertFalse(backups.exists())
+            copied = _backup_os_disks(
+                run,
+                vmid=910,
+                config_text="scsi0: NFS-SATA-SSD1:vm-910-disk-0.raw\n",
+                backup_dir=str(backups),
+            )
+            self.assertEqual(copied, 1)
+            self.assertTrue(backups.is_dir())
+            self.assertEqual(backups.stat().st_mode & 0o777, 0o700)
+            written = list(backups.iterdir())
+            self.assertEqual(len(written), 1)
+            self.assertTrue(is_disk_backup(written[0].name))
+
+            elsewhere = Path(tmp) / "elsewhere"
+            elsewhere.mkdir()
+            link = Path(tmp) / "link"
+            link.symlink_to(elsewhere)
+            with self.assertRaises(VmError) as caught:
+                prepare_backup_dir(str(link))
+            self.assertIn("symlink", str(caught.exception))
+            self.assertFalse(list(elsewhere.iterdir()))
+
     def test_empty_backup_does_not_destroy(self) -> None:
         old = "NFS-SATA-SSD1:vm-910-disk-0.raw"
         with TemporaryDirectory() as tmp:

@@ -401,7 +401,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("Debian 13 VM template created", text)
 
     def test_release_lines_name_the_outcome(self) -> None:
-        from pve_prep.job import DEFAULT_CACHE
+        from pve_prep.job import DEFAULT_BACKUPS
 
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -410,7 +410,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("\nCreating Debian 12 VM template\n\n", text)
         self.assertIn(
             f"\n\nDebian 12 VM template created. Previous VM deleted. "
-            f"Old disk saved in {DEFAULT_CACHE}.\n",
+            f"Old disk saved in {DEFAULT_BACKUPS}.\n",
             text,
         )
         buf = io.StringIO()
@@ -425,7 +425,7 @@ class OrchestratorTest(unittest.TestCase):
             MOD.run_one(kept, "12", 910)
         self.assertIn(
             "\n\nDebian 12 VM disk image created and imported. "
-            "Old disk saved in the cache.\n",
+            "Old disk saved in the backup directory.\n",
             buf.getvalue(),
         )
         replaced = replace(kept, backup_vmids=frozenset())
@@ -490,7 +490,7 @@ class OrchestratorTest(unittest.TestCase):
                     MOD.main([flag])
             self.assertEqual(caught.exception.code, 0)
             self.assertEqual(buf.getvalue(), f"pve-template-prep {pve_prep.__version__}\n")
-        self.assertEqual(pve_prep.__version__, "1.3.1")
+        self.assertEqual(pve_prep.__version__, "1.3.2")
         import pve_prep.download as download
 
         self.assertEqual(download._HEADERS["User-Agent"], f"pve-prep/{pve_prep.__version__}")
