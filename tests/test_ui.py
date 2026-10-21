@@ -273,7 +273,10 @@ class VendorTest(unittest.TestCase):
         tokens = ui.prompt_tokens("Keep this hardware?", hint="(y/n) [Yes]")
         self.assertEqual(tokens[0], ("class:qmark", " "))
         self.assertIn(("class:question", "Keep this hardware?"), tokens)
-        self.assertEqual(tokens[-1], ("class:instruction", " (y/n) [Yes] "))
+        self.assertEqual(tokens[-2:], [("class:instruction", "(y/n) [Yes]"), ("class:question", ": ")])
+        self.assertEqual(
+            "".join(text for _style, text in tokens).strip(), "Keep this hardware? (y/n) [Yes]:"
+        )
         self.assertFalse([token for token in tokens if token[0] == "class:danger"])
 
         gate = "Type 'DELETE' to continue or 'X' to exit now without changes:"
@@ -284,7 +287,7 @@ class VendorTest(unittest.TestCase):
         self.assertFalse([token for token in tokens if token[0] == "class:instruction"])
 
         tokens = ui.prompt_tokens("Enter bookworm template VMID", hint="[9001]")
-        self.assertEqual(tokens[-1], ("class:instruction", " [9001] "))
+        self.assertEqual(tokens[-2:], [("class:instruction", "[9001]"), ("class:question", ": ")])
 
         rules = dict(ui.widget_style(instruction="highlight").style_rules)
         self.assertEqual(rules["instruction"], rules["pointer"])

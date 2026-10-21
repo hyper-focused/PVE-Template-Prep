@@ -429,9 +429,12 @@ def prompt_tokens(message: str, *, hint: str | None = None, danger_word: str | N
                 tokens.append(("class:question", part))
     else:
         tokens.append(("class:question", body))
-    tokens.append(("class:question", " "))
     if hint:
-        tokens.append(("class:instruction", f" {hint} "))
+        tokens.append(("class:question", " "))
+        tokens.append(("class:instruction", hint))
+        tokens.append(("class:question", ": "))
+    else:
+        tokens.append(("class:question", " "))
     return tokens
 
 

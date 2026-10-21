@@ -187,7 +187,7 @@ def create_guest(job, spec, vmid: int, label: str, tools) -> str:
         dry_run=job.dry_run,
         destroy_ok=vmid in job.destroy_vmids,
         backup_disks=False,
-        backup_dir=job.cache_dir,
+        backup_dir=job.backup_dir,
         make_template=converts_to_template(job, vmid),
         volume_format=job.disk_format,
         run=tools.run,

@@ -45,7 +45,7 @@ The next run checks for a newer version on its own. It reads the version string 
 
 `--dry-run` asks the same questions and prints the commands. It does not need root, and it does not download or change the host.
 
-Downloads land in `/var/tmp/pve-template-prep/cache`. **A disk backup in that directory is never deleted.**
+Downloads land in `/var/tmp/pve-template-prep/cache`. Disk backups go to `/var/backups/pve-template-prep`. **Cleanup never deletes a disk backup.**
 
 <details>
 <summary>Installer, updates, and the cache</summary>
@@ -138,7 +138,7 @@ Releases are a checkbox: one to three. A codename such as `bookworm` works on th
    - Nothing to replace: `Your new VM templates will now be created.`, or VMs, or disk images. Type `YES`.
    The gate is `Type 'YES' to continue or 'X' to exit now:` or `Type 'DELETE' to continue or 'X' to exit now without changes:`. Nothing on the host has been built until that word. A dry run says so above the line.
 
-After the builds, the cache question. Enter keeps the working files in `/var/tmp/pve-template-prep/cache`. `y` deletes them. This is the prep cache, not the rest of `/var/tmp`. A disk backup in that directory is never deleted. A failed release says the download is still there. Enter keeps it. A dry-run asks and does not delete.
+After the builds, the cache question. Enter keeps the working files in `/var/tmp/pve-template-prep/cache`. `y` deletes them. This is the prep cache, not the rest of `/var/tmp`. Disk backups are in `/var/backups/pve-template-prep` and are never deleted. A failed release says the download is still there. Enter keeps it. A dry-run asks and does not delete.
 
 </details>
 

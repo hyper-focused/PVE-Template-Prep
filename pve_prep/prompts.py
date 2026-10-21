@@ -51,7 +51,7 @@ def _ask(read_line, write, prompt: str) -> str:
 
 
 # The last line of a prompt ends with "(y/n) [Yes]: " or "[9001]: ". The
-# widget draws that tail as its own hint; the colon goes with it.
+# widget draws that tail as its own hint and puts the colon back after it.
 _HINT_TAIL = re.compile(
     r"^(?P<question>.*?)\s*(?P<hint>(?:\(y/n\)\s*)?\[[^\]]*\])\s*:?\s*$"
 )
