@@ -1,25 +1,14 @@
 # pve-template-prep
 
-One interview. Up to three releases of one distro. A new template, an updated template disk, or a standalone qcow2 or raw image.
+Step 1: Pick a distro - Debian, Ubuntu, AlmaLinux, CloudLinux, or Fedora. 
+Step 2: Pick the releases you need.
+Step 3: Answer a few simple questions.
+Step 4: ????
+Step 5: Profit! by using your new Proxmox PVE KVM templates!
 
-Proxmox will let you click the cloud-image ritual until the mouse files a complaint. This asks once.
+If you've been a Proxmox PVE admin for any length of time, you're certainly familiar with the tedious process of creating templates. You download a generic image, hope it imports correctly, then fight with the generic cloud image when it won't boot (I'm pointing at you, Ubuntu). Finally, you say to yourself 'To heck with it! I'll just download the stupid ISO and call it a day!' - for the 42nd time this year.
 
-The full manual, with every question, file, exit status, and design decision, is [docs/reference.md](docs/reference.md).
-
-| Build | What lands | Enter does this |
-| --- | --- | --- |
-| Create new Proxmox PVE VM templates | A new VM named `<distro>-<release>-cloud` | Next free VMID from 9001, then `qm template` |
-| Update existing Proxmox PVE template VM disk images | The boot disk of a template that already exists | That template's VMID. Storage and format stay |
-| Create standalone Proxmox PVE VM disk images | `<distro>-<release>-pve.qcow2` or `.raw` in that storage's `import/` directory | The first storage whose content includes `import`, then qcow2 |
-
-> [!IMPORTANT]
-> Nothing is built until the last screen. A backup ends when you type `YES`. A delete with no backup ends when you type `DELETE`. Red text is that delete.
-
-> [!CAUTION]
-> Replacing a template, or replacing its boot disk, fails when the guest is a linked clone, or when a template still has linked clones. A clone on another node counts. If that check cannot be read, the guest is left alone. A normal VM cannot take the place of a template.
-
-> [!NOTE]
-> **File storage only.** Every disk this tool writes is a `.qcow2` or `.raw` file on directory, NFS, CIFS, btrfs, CephFS, or GlusterFS storage. ZFS, LVM, LVM-thin, RBD, and iSCSI are not listed for a new template. A template whose boot disk is on one is refused. No zvol, no zpool, no thin volume. See [Templates on ZFS](#templates-on-zfs) for the way around it.
+This app was developed to solve that problem, and turn template creation into a task you can complete in a few minutes instead of a few hours. 
 
 ## Install
 
@@ -49,8 +38,25 @@ The next run checks for a newer version on its own. It reads the version string 
 
 Downloads land in `/var/tmp/pve-template-prep/cache`. Disk backups go to `/var/backups/pve-template-prep`. **Cleanup never deletes a disk backup.**
 
+| Build | What lands | Enter does this |
+| --- | --- | --- |
+| Create new Proxmox PVE VM templates | A new VM named `<distro>-<release>-cloud` | Next free VMID from 9001, then `qm template` |
+| Update existing Proxmox PVE template VM disk images | The boot disk of a template that already exists | That template's VMID. Storage and format stay |
+| Create standalone Proxmox PVE VM disk images | `<distro>-<release>-pve.qcow2` or `.raw` in that storage's `import/` directory | The first storage whose content includes `import`, then qcow2 |
+
+> [!IMPORTANT]
+> Nothing is built until the last screen. A backup ends when you type `YES`. A delete with no backup ends when you type `DELETE`. Red text is that delete.
+
+> [!CAUTION]
+> Replacing a template, or replacing its boot disk, fails when the guest is a linked clone, or when a template still has linked clones. A clone on another node counts. If that check cannot be read, the guest is left alone. A normal VM cannot take the place of a template.
+
+> [!NOTE]
+> **File storage only.** Every disk this tool writes is a `.qcow2` or `.raw` file on directory, NFS, CIFS, btrfs, CephFS, or GlusterFS storage. ZFS, LVM, LVM-thin, RBD, and iSCSI are not listed for a new template. A template whose boot disk is on one is refused. No zvol, no zpool, no thin volume. See [Templates on ZFS](#templates-on-zfs) for the way around it.
+
 <details>
 <summary>Installer, updates, and the cache</summary>
+
+The full manual, with every question, file, exit status, and design decision, is [docs/reference.md](docs/reference.md).
 
 The installer creates `/opt/pve-template-prep`, pulls `pve-template-prep.py`, `pve_prep/`, and `vendor/` from GitHub, checks that those files are root-owned and not writable by anyone else, and links the command to `/usr/local/sbin/pve-template-prep`. `vendor/` is questionary, prompt_toolkit, and wcwidth, pinned in `vendor/VERSIONS`. No pip. No `python3-venv`. It also installs `libguestfs-tools` and `qemu-utils` if they are missing. Python 3, `qm`, and `pvesm` are already on PVE 9.
 
