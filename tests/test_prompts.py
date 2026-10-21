@@ -2,17 +2,30 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from pve_prep.job import DEFAULT_CACHE, Job  # noqa: E402
-from pve_prep.prompts import PromptAbort, _ask_releases, ask_cache_cleanup, interview  # noqa: E402
+from pve_prep import ui  # noqa: E402
+from pve_prep.prompts import (  # noqa: E402
+    PromptAbort,
+    _answered,
+    _ask_releases,
+    _blank,
+    _Output,
+    _write_table,
+    ask_cache_cleanup,
+    distro_name,
+    interview,
+)
 
 
 def _specs(distro: str):
@@ -22,6 +35,29 @@ def _specs(distro: str):
         SimpleNamespace(release="12", label="bookworm", eol=False),
         SimpleNamespace(release="13", label="trixie", eol=False),
     ]
+
+
+def _summary(blob: str) -> list[tuple[str, ...]]:
+    """The summary table, header row first. Cells split on runs of two or more spaces."""
+    lines = blob.split("\n")
+    start = lines.index("  Summary") + 3
+    rows = []
+    for line in lines[start:]:
+        if not line.strip():
+            break
+        rows.append(tuple(re.split(r"\s{2,}", line.strip())))
+    return rows
+
+
+def _column(blob: str, name: str) -> list[str]:
+    table = _summary(blob)
+    index = table[0].index(name)
+    return [row[index] for row in table[1:]]
+
+
+YES_GATE = "Type 'YES' to continue or 'X' to exit now: "
+DELETE_GATE = "Type 'DELETE' to continue or 'X' to exit now without changes: "
+ROOT_SSH = "Enable SSH login for 'root' with a password?"
 
 
 def _normalize(distro: str, raw: str) -> str:
@@ -144,16 +180,18 @@ class InterviewTest(unittest.TestCase):
             ),
         )
         blob = "".join(script.written)
-        self.assertIn(
-            "debian 12 -> image qcow2 /var/lib/vz/import/debian-12-pve.qcow2 guest-prep=yes root-ssh=yes",
-            blob,
+        self.assertEqual(
+            _summary(blob),
+            [
+                ("Release", "Format", "File"),
+                ("bookworm", "qcow2", "/var/lib/vz/import/debian-12-pve.qcow2"),
+                ("trixie", "qcow2", "/var/lib/vz/import/debian-13-pve.qcow2"),
+            ],
         )
-        self.assertIn(
-            "debian 13 -> image qcow2 /var/lib/vz/import/debian-13-pve.qcow2 guest-prep=yes root-ssh=yes",
-            blob,
-        )
-        self.assertIn("Guest prep is applied:", blob)
-        self.assertIn("Allow root SSH with a password?", blob)
+        self.assertIn("Guest prep: yes   Root SSH: yes", blob)
+        self.assertNotIn("Guest prep is applied:", blob)
+        self.assertIn(ROOT_SSH, blob)
+        self.assertIn("Your new disk images will now be created.", blob)
         self.assertNotIn("Accept these defaults?", blob)
         self.assertNotIn("cache: keep", blob)
         self.assertNotIn("raw (.img, full size)", blob)
@@ -161,7 +199,7 @@ class InterviewTest(unittest.TestCase):
         self.assertNotIn("Please enter an existing", blob)
         self.assertIn("1) local", blob)
         self.assertIn("2) vm-data", blob)
-        self.assertIn("Type YES: ", blob)
+        self.assertIn(YES_GATE, blob)
         self.assertNotIn("Disk:", blob)
 
     def test_template_replaces_only_the_typed_vmid(self) -> None:
@@ -203,26 +241,28 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("Create new Proxmox PVE VM templates", blob)
         self.assertNotIn("Create the VM, import the disk", blob)
         self.assertIn("VM Disk Storage Path:", blob)
-        self.assertIn("Select new/existing VMID for new bookworm VM Template.", blob)
-        self.assertIn("Select new/existing VMID for new trixie VM Template.", blob)
-        self.assertIn(
-            "If the VMID for an existing template is used, that template will be completely replaced.",
-            blob,
-        )
-        self.assertIn("Press enter to use the first available VMID over 9000.", blob)
+        self.assertIn("Enter bookworm template VMID [9001]: ", blob)
+        self.assertIn("Enter trixie template VMID [9001]: ", blob)
+        self.assertEqual(blob.count("Enter takes the first free VMID from 9001."), 1)
+        self.assertIn("Typing the VMID of an existing template replaces that template.", blob)
         self.assertNotIn("In use:", blob)
         self.assertNotIn("including a clone on another node", blob)
         self.assertNotIn("Not in use:", blob)
-        self.assertIn("The templates listed below will be permanently deleted.", blob)
-        self.assertIn("Please type DELETE to continue", blob)
+        self.assertIn("No backup images will be created.", blob)
+        self.assertIn("Your existing templates will now be DELETED and new templates created.", blob)
+        self.assertIn(DELETE_GATE, blob)
         self.assertNotIn("Do not back up the existing template VM disk", blob)
         self.assertEqual(job.backup_vmids, frozenset())
-        self.assertIn(
-            "debian 12 -> template VMID 910 name debian-12-cloud storage nfs-templates qcow2 guest-prep=yes root-ssh=yes",
-            blob,
+        self.assertEqual(
+            _summary(blob),
+            [
+                ("Release", "VMID", "Name", "Storage", "Format", "Existing"),
+                ("bookworm", "910", "debian-12-cloud", "nfs-templates", "qcow2", "delete VM"),
+                ("trixie", "911", "debian-13-cloud", "nfs-templates", "qcow2", "new"),
+            ],
         )
-        self.assertIn("910  delete the template, no copy", blob)
-        self.assertIn("hardware: bridge vmbr0, memory 2048 MB, cores 2", blob)
+        self.assertIn("Guest prep: yes   Root SSH: yes   qm template: yes", blob)
+        self.assertIn("Hardware: bridge vmbr0, memory 2048 MB, cores 2", blob)
         self.assertNotIn("non-template", blob)
 
     def test_empty_vmid_starts_at_9001_and_counts_up(self) -> None:
@@ -251,12 +291,12 @@ class InterviewTest(unittest.TestCase):
         self.assertTrue(job.make_template)
         self.assertFalse(job.clean_cache)
         blob = "".join(script.written)
-        self.assertIn("Select new/existing VMID for new bookworm VM Template.", blob)
-        self.assertIn("Press enter to use the first available VMID over 9000.", blob)
-        self.assertIn("bookworm VMID [9001]: ", blob)
-        self.assertIn("trixie VMID [9002]: ", blob)
-        self.assertIn("debian 12 -> template VMID 9001", blob)
-        self.assertIn("debian 13 -> template VMID 9002", blob)
+        self.assertIn("Enter takes the first free VMID from 9001.", blob)
+        self.assertIn("Enter bookworm template VMID [9001]: ", blob)
+        self.assertIn("Enter trixie template VMID [9002]: ", blob)
+        self.assertEqual(_column(blob, "VMID"), ["9001", "9002"])
+        self.assertEqual(_column(blob, "Existing"), ["new", "new"])
+        self.assertIn("Your new VM templates will now be created.", blob)
         self.assertNotIn("Disk:", blob)
 
     def test_default_skips_vmids_that_are_in_use(self) -> None:
@@ -286,8 +326,8 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.vmids, (9003, 9004))
         self.assertEqual(job.destroy_vmids, frozenset())
         blob = "".join(script.written)
-        self.assertIn("bookworm VMID [9003]: ", blob)
-        self.assertIn("trixie VMID [9004]: ", blob)
+        self.assertIn("Enter bookworm template VMID [9003]: ", blob)
+        self.assertIn("Enter trixie template VMID [9004]: ", blob)
         self.assertNotIn("Not in use:", blob)
         self.assertNotIn("Disk:", blob)
         self.assertNotIn("Replace VMID", blob)
@@ -318,8 +358,8 @@ class InterviewTest(unittest.TestCase):
         )
         self.assertEqual(job.vmids, (9001, 9003))
         blob = "".join(script.written)
-        self.assertIn("bookworm VMID [9001]: ", blob)
-        self.assertIn("trixie VMID [9003]: ", blob)
+        self.assertIn("Enter bookworm template VMID [9001]: ", blob)
+        self.assertIn("Enter trixie template VMID [9003]: ", blob)
 
     def test_free_vmids_skip_the_disk_prompt(self) -> None:
         script = _Script(
@@ -356,7 +396,7 @@ class InterviewTest(unittest.TestCase):
         script = _Script(["3", "1", "1", "1", "y", "", "", "yess", "yes"])
         job = script.run(dry_run=False, imports=[("local", "/var/lib/vz/import")])
         self.assertEqual(job.releases, ("12",))
-        self.assertIn("Type YES to proceed, or X to exit", "".join(script.written))
+        self.assertEqual("".join(script.written).count(YES_GATE), 2)
 
     def test_bad_release_then_good(self) -> None:
         script = _Script(
@@ -386,7 +426,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.vmids, ())
         blob = "".join(script.written)
         self.assertNotIn("00-enableroot.conf", blob)
-        self.assertIn("root-ssh=no", blob)
+        self.assertIn("Root SSH: no", blob)
         self.assertIn("unknown release: nope", blob)
         self.assertIn("pick a release number: 12", blob)
         self.assertIn("need at least one release", blob)
@@ -481,7 +521,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.bridge, "vmbr1")
         self.assertEqual(job.memory_mb, 4096)
         self.assertEqual(job.cores, 4)
-        self.assertIn("910  copy, then delete the template", "".join(script.written))
+        self.assertEqual(_column("".join(script.written), "Existing"), ["back up, delete VM", "new"])
 
     def test_backup_answer_empty_keeps_the_copy(self) -> None:
         script = _Script(
@@ -506,8 +546,8 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.collision, "backup")
         blob = "".join(script.written)
         self.assertIn("answer y or n", blob)
-        self.assertIn("A copy of the VM disks below will be saved to", blob)
-        self.assertIn("/var/tmp/pve-template-prep/cache", blob)
+        self.assertIn("Image backups will be created at /var/tmp/pve-template-prep/cache", blob)
+        self.assertIn("Your existing templates will be backed up, then new templates created.", blob)
         self.assertEqual(job.backup_vmids, frozenset({910}))
 
     def test_no_disk_still_asks_before_delete(self) -> None:
@@ -530,7 +570,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.collision, "overwrite")
         blob = "".join(script.written)
         self.assertIn("VMID 9001 has no OS disk.", blob)
-        self.assertIn("The templates listed below will be permanently deleted.", blob)
+        self.assertIn("Your existing templates will now be DELETED and new templates created.", blob)
         self.assertNotIn("Backup: ", blob)
 
     def test_unknown_storage_reasks(self) -> None:
@@ -586,16 +626,24 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.collision, "backup")
         self.assertEqual(job.destroy_vmids, frozenset())
         blob = "".join(script.written)
-        self.assertIn("Please enter an existing bookworm template VMID.", blob)
-        self.assertIn("A new VM boot disk will be created.", blob)
-        self.assertIn("bookworm template VMID: ", blob)
+        self.assertNotIn("Please enter an existing", blob)
+        self.assertIn("Enter bookworm template VMID: ", blob)
         self.assertIn("VMID 910 is on nfs-templates. The volume is raw.", blob)
         self.assertNotIn("VM Disk Storage Path", blob)
-        self.assertNotIn("Volume format", blob)
+        self.assertNotIn("Disk Format", blob)
         self.assertNotIn("The VM stays", blob)
         self.assertEqual(job.backup_vmids, frozenset({910}))
-        self.assertIn("A copy of the VM disks below will be saved to", blob)
-        self.assertIn("debian 12 -> insert VMID 910 storage nfs-templates raw disk=backup", blob)
+        self.assertIn("  Backup existing images\n", blob)
+        self.assertIn("Create a backup copy of existing images? (y/n) [Yes]: ", blob)
+        self.assertIn("Image backups will be created at /var/tmp/pve-template-prep/cache", blob)
+        self.assertIn("Your existing disk images will be backed up, then new images created.", blob)
+        self.assertEqual(
+            _summary(blob),
+            [
+                ("Release", "VMID", "Storage", "Format", "Existing disk"),
+                ("bookworm", "910", "nfs-templates", "raw", "back up, replace"),
+            ],
+        )
         self.assertNotIn("Replace VMID", blob)
         self.assertNotIn("Hardware defaults:", blob)
 
@@ -632,7 +680,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.kept_format, ((910, "raw"),))
         blob = "".join(script.written)
         self.assertIn("Could not read the disk format for VMID 910.", blob)
-        self.assertNotIn("Volume format", blob)
+        self.assertNotIn("Disk Format", blob)
 
     def test_image_inserts_keep_each_disk_format(self) -> None:
         script = _Script(
@@ -659,9 +707,9 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.kept_format, ((910, "qcow2"), (911, "raw")))
         self.assertEqual(job.storage, "")
         blob = "".join(script.written)
-        self.assertIn("insert VMID 910 storage nfs-templates qcow2", blob)
-        self.assertIn("insert VMID 911 storage local raw", blob)
-        self.assertNotIn("Volume format", blob)
+        self.assertEqual(_column(blob, "Storage"), ["nfs-templates", "local"])
+        self.assertEqual(_column(blob, "Format"), ["qcow2", "raw"])
+        self.assertNotIn("Disk Format", blob)
 
     def test_template_replace_recommends_the_current_storage(self) -> None:
         script = _Script(
@@ -820,10 +868,8 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.destroy_vmids, frozenset({910, 911}))
         self.assertEqual(job.backup_vmids, frozenset({910, 911}))
         blob = "".join(script.written)
-        self.assertIn("910  copy, then delete the template", blob)
-        self.assertIn("911  copy, then delete the template", blob)
-        self.assertIn("910\n911", blob)
-        self.assertNotIn("permanently deleted", blob)
+        self.assertEqual(_column(blob, "Existing"), ["back up, delete VM", "back up, delete VM"])
+        self.assertNotIn("DELETE", blob)
 
     def test_template_can_stay_a_vm(self) -> None:
         script = _Script(
@@ -847,11 +893,12 @@ class InterviewTest(unittest.TestCase):
         self.assertFalse(job.make_template)
         self.assertFalse(job.clean_cache)
         blob = "".join(script.written)
-        self.assertIn(
-            "debian 12 -> vm VMID 9001 name debian-12-cloud storage dir-templates qcow2 guest-prep=yes root-ssh=yes",
-            blob,
+        self.assertEqual(
+            _summary(blob)[1],
+            ("bookworm", "9001", "debian-12-cloud", "dir-templates", "qcow2", "new"),
         )
-        self.assertIn("Type YES to create the VM.", blob)
+        self.assertIn("qm template: no", blob)
+        self.assertIn("Your new VMs will now be created.", blob)
         self.assertIn("Convert the new VM with qm template? (y/n) [Yes]: ", blob)
         self.assertNotIn("cache: delete", blob)
 
@@ -881,14 +928,13 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.template_vmids, frozenset())
         self.assertEqual(job.collision, "overwrite")
         blob = "".join(script.written)
-        self.assertIn("Please enter an existing bookworm template VMID.", blob)
-        self.assertIn("Please enter an existing trixie template VMID.", blob)
-        self.assertIn("bookworm template VMID: ", blob)
-        self.assertIn("trixie template VMID: ", blob)
-        self.assertIn("The existing disk for the templates listed below will be permanently deleted.", blob)
-        self.assertIn("911\n910", blob)
-        self.assertIn("debian 12 -> insert VMID 911", blob)
-        self.assertIn("debian 13 -> insert VMID 910", blob)
+        self.assertIn("Enter bookworm template VMID: ", blob)
+        self.assertIn("Enter trixie template VMID: ", blob)
+        self.assertIn("No backup images will be created.", blob)
+        self.assertIn("Your existing disk images will now be DELETED and new images created.", blob)
+        self.assertIn(DELETE_GATE, blob)
+        self.assertEqual(_column(blob, "VMID"), ["911", "910"])
+        self.assertEqual(_column(blob, "Existing disk"), ["replace", "replace"])
 
     def test_update_refuses_a_free_vmid_on_a_later_release(self) -> None:
         script = _Script(["2", "1", "1, 2", "910", "920", "911", "", "", "yes"])
@@ -905,8 +951,7 @@ class InterviewTest(unittest.TestCase):
         blob = "".join(script.written)
         self.assertIn("VMID 920 is not in use. Type a template VMID.", blob)
         self.assertNotIn("Create a new VM template", blob)
-        self.assertIn("debian 12 -> insert VMID 910", blob)
-        self.assertIn("debian 13 -> insert VMID 911", blob)
+        self.assertEqual(_column(blob, "VMID"), ["910", "911"])
 
     def test_update_refuses_a_boot_disk_on_zfs(self) -> None:
         script = _Script(["2", "1", "1", "910", "911", "", "", "yes"])
@@ -947,7 +992,8 @@ class InterviewTest(unittest.TestCase):
         )
         self.assertIn("  1) local\n", blob)
         self.assertNotIn(") vm-data", blob)
-        self.assertIn("storage local raw", blob)
+        self.assertEqual(_column(blob, "Storage"), ["local"])
+        self.assertEqual(_column(blob, "Format"), ["raw"])
 
     def test_only_block_storage_ends_the_interview(self) -> None:
         script = _Script(["", "1", "1", ""])
@@ -967,15 +1013,15 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.disk_format, "qcow2")
         blob = "".join(script.written)
         self.assertIn("Could not read the type of local.", blob)
-        self.assertIn("Volume format on local.", blob)
+        self.assertIn("Choose the volume format on local.", blob)
 
     def test_standalone_raw_is_named_raw(self) -> None:
         script = _Script(["3", "1", "1", "1", "2", "", "yes"])
         job = script.run(dry_run=False, imports=[("local", "/var/lib/vz/import")])
         self.assertEqual(job.disk_format, "raw")
         blob = "".join(script.written)
-        self.assertIn("Image format in local import/.", blob)
-        self.assertIn("debian 12 -> image raw /var/lib/vz/import/debian-12-pve.raw", blob)
+        self.assertIn("Choose the image format in local import/.", blob)
+        self.assertEqual(_column(blob, "File"), ["/var/lib/vz/import/debian-12-pve.raw"])
 
     def test_cifs_storage_asks_and_enter_is_qcow2(self) -> None:
         script = _Script(
@@ -1004,7 +1050,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.storage, "share")
         self.assertEqual(job.disk_format, "qcow2")
         blob = "".join(script.written)
-        self.assertIn("Volume format on share.", blob)
+        self.assertIn("Choose the volume format on share.", blob)
         self.assertIn("1) QEMU qcow2 (.qcow2)", blob)
         self.assertIn("2) raw (.raw)", blob)
 
@@ -1034,9 +1080,11 @@ class InterviewTest(unittest.TestCase):
         )
         self.assertEqual(job.disk_format, "raw")
         blob = "".join(script.written)
-        self.assertIn("debian 12 -> template VMID 9001", blob)
-        self.assertIn("storage share raw", blob)
-        self.assertIn("guest-prep=yes root-ssh=yes", blob)
+        self.assertEqual(
+            _summary(blob)[1],
+            ("bookworm", "9001", "debian-12-cloud", "share", "raw", "new"),
+        )
+        self.assertIn("Guest prep: yes   Root SSH: yes", blob)
 
     def test_root_ssh_no_leaves_the_image_default(self) -> None:
         script = _Script(["3", "1", "1", "1", "", "n", "yes"])
@@ -1046,16 +1094,13 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.disk_format, "qcow2")
         self.assertEqual(job.dest_dir, "/var/lib/vz/import")
         blob = "".join(script.written)
-        self.assertIn("Allow root SSH with a password?", blob)
-        self.assertIn("Cloud-init user must be root.", blob)
+        self.assertIn("  Root SSH Access\n", blob)
+        self.assertIn("Cloud-init user must be set to 'root'.", blob)
         self.assertNotIn("rm /etc/ssh/sshd_config.d/00-enableroot.conf", blob)
         self.assertNotIn("and restart SSHd.", blob)
-        self.assertIn("Allow root SSH with a password? (y/n) [Yes]: ", blob)
-        self.assertIn(
-            "debian 12 -> image qcow2 /var/lib/vz/import/debian-12-pve.qcow2 "
-            "guest-prep=yes root-ssh=no",
-            blob,
-        )
+        self.assertIn(ROOT_SSH + " (y/n) [Yes]: ", blob)
+        self.assertEqual(_column(blob, "File"), ["/var/lib/vz/import/debian-12-pve.qcow2"])
+        self.assertIn("Guest prep: yes   Root SSH: no", blob)
 
     def test_normal_vm_is_refused_on_template_replace(self) -> None:
         script = _Script(
@@ -1089,7 +1134,7 @@ class InterviewTest(unittest.TestCase):
             "VMID 910 is a normal VM, not a template. It will not be changed. Type a template VMID.",
             blob,
         )
-        self.assertIn("bookworm VMID [9001]: ", blob)
+        self.assertIn("Enter bookworm template VMID [9001]: ", blob)
 
     def test_linked_clone_is_refused_on_every_action(self) -> None:
         image = _Script(["2", "1", "1", "910", "911", "", "", "yes"])
@@ -1153,7 +1198,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.vmids, (9001,))
         blob = "".join(script.written)
         self.assertIn("Type one VMID, from 100 through 999999999.", blob)
-        self.assertIn("bookworm VMID [9001]: ", blob)
+        self.assertIn("Enter bookworm template VMID [9001]: ", blob)
 
     def test_standalone_without_import_storage_aborts(self) -> None:
         script = _Script(["3", "1", "1"])
@@ -1181,6 +1226,71 @@ class InterviewTest(unittest.TestCase):
         blob = "".join(failed.written)
         self.assertIn("A release failed.", blob)
         self.assertIn("including the download", blob)
+
+
+class LayoutTest(unittest.TestCase):
+    def test_output_never_writes_two_blank_lines(self) -> None:
+        written: list[str] = []
+        out = _Output(written.append, paint=False)
+        _blank(out)
+        out("  Heading\n")
+        _blank(out)
+        _blank(out)
+        out("Select [1]: ")
+        _answered(out)
+        _blank(out)
+        _blank(out)
+        out("done\n")
+        self.assertEqual("".join(written), "\n  Heading\n\nSelect [1]: \ndone\n")
+
+    def test_painted_output_goes_to_the_margin(self) -> None:
+        written: list[str] = []
+        out = _Output(written.append, paint=True)
+        with mock.patch.object(ui, "_depth", "16"), mock.patch.object(ui, "_theme", "dark"):
+            out("one\n  two\n")
+            out("\033[90m  colored\033[0m\n")
+        self.assertEqual(
+            "".join(written),
+            "\033[37m  one\033[0m\n\033[37m  two\033[0m\n\033[90m  colored\033[0m\n",
+        )
+
+    def test_only_a_destructive_cell_is_drawn_as_danger(self) -> None:
+        def read_line() -> str:
+            return ""
+
+        read_line.use_questionary = True
+        written: list[str] = []
+        table = [
+            ("Release", "VMID", "Existing disk"),
+            ("bookworm", "910", "replace"),
+            ("trixie", "911", "back up, replace"),
+        ]
+        with mock.patch.object(ui, "_depth", "16"), mock.patch.object(ui, "_theme", "dark"):
+            _write_table(read_line, written.append, table)
+        blob = "".join(written)
+        self.assertIn("\033[1;91mreplace\033[0m", blob)
+        self.assertNotIn("\033[1;91mback up", blob)
+        self.assertEqual(blob.count("\033[1;91m"), 1)
+        plain: list[str] = []
+        _write_table(lambda: "", plain.append, table)
+        self.assertEqual(
+            "".join(plain),
+            "  Release   VMID  Existing disk\n"
+            "  bookworm  910   replace\n"
+            "  trixie    911   back up, replace\n",
+        )
+
+    def test_distro_menu_uses_the_config_name(self) -> None:
+        def named(distro: str):
+            return [SimpleNamespace(release="9", label="AlmaLinux 9", eol=False, name="AlmaLinux")]
+
+        self.assertEqual(distro_name("alma", named), "AlmaLinux")
+        self.assertEqual(distro_name("debian", _specs), "debian")
+
+        def broken(distro: str):
+            raise RuntimeError("no config")
+
+        self.assertEqual(distro_name("fedora", broken), "fedora")
 
 
 if __name__ == "__main__":

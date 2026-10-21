@@ -283,7 +283,7 @@ def run_one(job: Job, release: str, vmid: int | None) -> None:
     label = _product(spec, job.distro, release)
     action = action_for(job, vmid)
     print()
-    _announce(opening(action, label, job, vmid), "cyan")
+    _announce(opening(action, label, job, vmid), "accent")
     print()
     tools = _tools()
     done = run_fetched(job, spec, vmid, label, tools)

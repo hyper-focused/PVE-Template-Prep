@@ -139,27 +139,84 @@ class VendorTest(unittest.TestCase):
         with mock.patch.object(questionary, "select", lambda *args, **kwargs: _Cancel()):
             self.assertIsNone(ui.select("Distro", [("debian", "debian")]))
 
-    def test_dark_background_keeps_yes_no_readable(self) -> None:
+    def test_palette_roles_drive_the_widget_style(self) -> None:
         self.assertTrue(ui.available())
-        rules = dict(ui.widget_style().style_rules)
-        self.assertIn(ui._hex("header"), rules["separator"])
-        self.assertEqual(rules["text"], f"fg:{ui._hex('cyan')}")
-        self.assertEqual(rules["highlighted"], f"bg:{ui._hex('cyan')} fg:{ui._hex('ink')}")
-        self.assertEqual(rules["selected"], rules["highlighted"])
-        self.assertEqual(rules["pointer"], rules["highlighted"])
-        self.assertIn(ui._hex("muted"), rules["question"])
-        self.assertIn(ui._hex("danger"), rules["danger"])
-        self.assertTrue(ui.tone("explanation", "body", depth="16").startswith("\033[37m"))
-        self.assertIn("explanation", ui.tone("explanation", "body", depth="16"))
-        self.assertTrue(ui.tone("Releases.", "header", depth="16").startswith("\033[32m"))
-        self.assertTrue(ui.tone("Creating Debian 12 VM template", "cyan", depth="16").startswith("\033[36m"))
-        self.assertIn("deleted", ui.tone("deleted", "danger", depth="24"))
-        self.assertIn("38;2;255;85;85", ui.tone("deleted", "danger", depth="24"))
-        self.assertEqual(ui.tone("plain", "body", depth="none"), "plain")
-        self.assertIn("38;5;", ui.tone("status", "cyan", depth="256"))
+        palette = ui.load_palette()
+        self.assertEqual(set(palette), {"dark", "light"})
+        with mock.patch.object(ui, "_theme", "dark"), mock.patch.object(ui, "_depth", "256"):
+            rules = dict(ui.widget_style().style_rules)
+        self.assertEqual(rules["question"], "fg:#00d7ff bold")
+        self.assertEqual(rules["qmark"], rules["question"])
+        self.assertEqual(rules["text"], "fg:#d0d0d0")
+        self.assertEqual(rules["pointer"], "fg:#00afff bold")
+        self.assertEqual(rules["highlighted"], "fg:#00afff bold noreverse")
+        self.assertEqual(rules["selected"], "fg:#00afaf noreverse")
+        self.assertEqual(rules["separator"], "fg:#949494")
+        self.assertEqual(rules["danger"], "fg:#ff0000 bold")
+        self.assertNotIn("bg:", "".join(rules.values()))
+        with mock.patch.object(ui, "_theme", "light"), mock.patch.object(ui, "_depth", "16"):
+            rules = dict(ui.widget_style().style_rules)
+        self.assertEqual(rules["question"], "fg:ansiblue bold")
+        self.assertEqual(rules["text"], "fg:ansiblack")
+        self.assertEqual(rules["danger"], "fg:ansired bold")
+
+    def test_tone_follows_the_theme_and_depth(self) -> None:
+        with mock.patch.object(ui, "_theme", "dark"):
+            self.assertEqual(ui.tone("Releases", "header", depth="16"), "\033[1;36mReleases\033[0m")
+            self.assertTrue(ui.tone("explanation", "body", depth="16").startswith("\033[37m"))
+            self.assertTrue(ui.tone("Creating", "accent", depth="16").startswith("\033[96m"))
+            self.assertTrue(ui.tone("status", "accent", depth="256").startswith("\033[38;5;51m"))
+            self.assertIn("1;38;2;255;0;0", ui.tone("deleted", "danger", depth="24"))
+            self.assertEqual(ui.tone("plain", "body", depth="none"), "plain")
+            self.assertTrue(ui.tone("odd", "no-such-role", depth="16").startswith("\033[37m"))
+        with mock.patch.object(ui, "_theme", "light"):
+            self.assertTrue(ui.tone("Releases", "header", depth="256").startswith("\033[1;38;5;27m"))
+            self.assertTrue(ui.tone("note", "note", depth="256").startswith("\033[38;5;242m"))
+        self.assertEqual(ui.rule(color=False), "    " + "-" * 42)
         title = ui.choice_title("42  Fedora 42 EOL")
         self.assertEqual(title[1], ("class:danger", " EOL"))
         self.assertIn("Fedora 42", title[0][1])
+
+    def test_xterm_index_maps_to_its_fixed_rgb(self) -> None:
+        self.assertEqual(ui.xterm_rgb(16), (0, 0, 0))
+        self.assertEqual(ui.xterm_rgb(45), (0, 215, 255))
+        self.assertEqual(ui.xterm_rgb(196), (255, 0, 0))
+        self.assertEqual(ui.xterm_rgb(231), (255, 255, 255))
+        self.assertEqual(ui.xterm_rgb(232), (8, 8, 8))
+        self.assertEqual(ui.xterm_rgb(255), (238, 238, 238))
+        with self.assertRaises(ValueError):
+            ui.xterm_rgb(15)
+
+    def test_bad_palette_is_refused_and_turns_color_off(self) -> None:
+        import json
+        import tempfile
+
+        good = ui.load_palette()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "palette.json"
+            broken = json.loads(json.dumps(good))
+            del broken["light"]["danger"]
+            path.write_text(json.dumps(broken), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "light.danger is missing"):
+                ui.load_palette(path)
+            broken = json.loads(json.dumps(good))
+            broken["dark"]["note"]["xterm"] = 7
+            path.write_text(json.dumps(broken), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "dark.note.xterm"):
+                ui.load_palette(path)
+            broken = json.loads(json.dumps(good))
+            broken["dark"]["note"]["ansi"] = "38"
+            path.write_text(json.dumps(broken), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "dark.note.ansi"):
+                ui.load_palette(path)
+            path.write_text("{", encoding="utf-8")
+            with (
+                mock.patch.object(ui, "_PALETTE_FILE", path),
+                mock.patch.object(ui, "_palette", None),
+                mock.patch.object(sys, "stderr") as err,
+            ):
+                self.assertEqual(ui.tone("plain", "header", depth="256"), "plain")
+                self.assertIn("Colors are off", "".join(call.args[0] for call in err.write.call_args_list))
 
     def test_color_profile_follows_the_terminal(self) -> None:
         self.assertEqual(ui.color_depth(environ={"TERM": "xterm-256color"}, is_tty=False), "none")
@@ -212,6 +269,17 @@ class VendorTest(unittest.TestCase):
 
 
 class ArmTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # arm() sets the module's depth and theme. Never query the real terminal from a test.
+        patches = (
+            mock.patch.object(ui, "_depth", ui._depth),
+            mock.patch.object(ui, "_theme", ui._theme),
+            mock.patch.object(ui.termbg, "query_background", return_value=None),
+        )
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
     def test_flag_follows_the_tty(self) -> None:
         def read_line() -> str:
             return ""
@@ -232,6 +300,47 @@ class ArmTest(unittest.TestCase):
         ):
             ui.arm(again)
         self.assertTrue(again.use_questionary)
+
+    def test_background_probe_needs_both_ends_on_a_terminal(self) -> None:
+        seen: list[bool] = []
+
+        def detect(*, probe: bool) -> str:
+            seen.append(probe)
+            return "light"
+
+        def read_line() -> str:
+            return ""
+
+        with (
+            mock.patch.object(ui, "_theme", "dark"),
+            mock.patch.object(ui, "color_depth", return_value="256"),
+            mock.patch.object(ui.termbg, "detect", detect),
+        ):
+            with (
+                mock.patch.object(sys.stdin, "isatty", return_value=False),
+                mock.patch.object(sys.stdout, "isatty", return_value=True),
+            ):
+                ui.arm(read_line)
+            with (
+                mock.patch.object(sys.stdin, "isatty", return_value=True),
+                mock.patch.object(sys.stdout, "isatty", return_value=True),
+            ):
+                ui.arm(read_line)
+            self.assertEqual(ui._theme, "light")
+        self.assertEqual(seen, [False, True])
+
+    def test_no_color_skips_the_probe(self) -> None:
+        def read_line() -> str:
+            return ""
+
+        with (
+            mock.patch.object(ui, "_depth", "16"),
+            mock.patch.object(ui, "color_depth", return_value="none"),
+            mock.patch.object(ui.termbg, "detect", side_effect=AssertionError("probed")),
+            mock.patch.object(sys.stdin, "isatty", return_value=True),
+            mock.patch.object(sys.stdout, "isatty", return_value=True),
+        ):
+            ui.arm(read_line)
 
     def test_missing_library_disables_the_flag(self) -> None:
         def read_line() -> str:
@@ -254,13 +363,13 @@ class WidgetInterviewTest(unittest.TestCase):
         def select(message, choices, default=None, instruction=None):
             if any(len(item) > 2 and item[2] for item in choices):
                 self.assertTrue(choices[1][2])
-            if message in {"Build", "Please choose a distro", "Import storage"}:
-                self.assertEqual(instruction, "highlight selection(s) and press enter")
+            self.assertTrue(message.endswith("press enter"), message)
+            self.assertEqual(instruction, ui.MENU_GAP)
             return selects.pop(0)
 
         def checkbox(message, choices, instruction=None, validate=None):
-            if message.startswith("Please choose release"):
-                self.assertEqual(instruction, "highlight selection(s) and press enter")
+            self.assertTrue(message.endswith("press enter"), message)
+            self.assertEqual(instruction, ui.MENU_GAP)
             return checks.pop(0)
 
         seen_texts: list[str] = []
@@ -322,15 +431,16 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertEqual(job.cores, 4)
         self.assertEqual(job.storage, "dir-templates")
         self.assertEqual(job.disk_format, "qcow2")
-        self.assertIn("Please choose release(s).", blob)
+        self.assertIn("Releases", blob)
+        self.assertIn("debian 12, 13 selected.", blob)
         self.assertNotIn("codename", blob)
         self.assertNotIn("  1) ", blob)
         self.assertIn("Space marks", ui._CHECK_KEYS)
         self.assertIn("Space or Enter", ui._SELECT_KEYS)
-        self.assertNotIn("Guest prep:", blob)
+        self.assertNotIn("Guest prep is applied", blob)
         self.assertTrue(job.prep)
         self.assertFalse(any("00-enableroot.conf" in line for line in asked))
-        self.assertTrue(any("Allow root SSH with a password? (y/n) [Yes]:" in line for line in asked))
+        self.assertTrue(any("Enable SSH login for 'root' with a password? (y/n) [Yes]:" in line for line in asked))
         self.assertTrue(job.permit_root)
         self.assertTrue(any("Keep this hardware? (y/n) [Yes]:" in line for line in asked))
         self.assertTrue(any("qm template? (y/n) [Yes]:" in line for line in asked))
@@ -385,7 +495,7 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertEqual(job.dest_dir, "/var/lib/vz/import")
         self.assertEqual(job.vmids, ())
         self.assertTrue(job.permit_root)
-        self.assertIn("Type YES: ", "".join(written))
+        self.assertIn("Type 'YES' to continue or 'X' to exit now: ", "".join(written))
         self.assertIn("codename", "".join(written))
         self.assertIsInstance(job, Job)
         self.assertEqual(job.cache_dir, DEFAULT_CACHE)

@@ -1,0 +1,24 @@
+{
+  "dark": {
+    "header":    {"xterm": 45,  "ansi": "36", "bold": true},
+    "body":      {"xterm": 252, "ansi": "37"},
+    "option":    {"xterm": 252, "ansi": "37"},
+    "highlight": {"xterm": 39,  "ansi": "94", "bold": true},
+    "success":   {"xterm": 37,  "ansi": "36"},
+    "note":      {"xterm": 246, "ansi": "90"},
+    "warning":   {"xterm": 68,  "ansi": "34"},
+    "danger":    {"xterm": 196, "ansi": "91", "bold": true},
+    "accent":    {"xterm": 51,  "ansi": "96"}
+  },
+  "light": {
+    "header":    {"xterm": 27,  "ansi": "34", "bold": true},
+    "body":      {"xterm": 238, "ansi": "30"},
+    "option":    {"xterm": 238, "ansi": "30"},
+    "highlight": {"xterm": 24,  "ansi": "34", "bold": true},
+    "success":   {"xterm": 30,  "ansi": "36"},
+    "note":      {"xterm": 242, "ansi": "90"},
+    "warning":   {"xterm": 60,  "ansi": "34"},
+    "danger":    {"xterm": 160, "ansi": "31", "bold": true},
+    "accent":    {"xterm": 36,  "ansi": "36"}
+  }
+}

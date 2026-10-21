@@ -19,9 +19,14 @@ MODULES=(
   download.py
   job.py
   prompts.py
+  termbg.py
   ui.py
   update.py
   vm.py
+)
+# Config read at run time, next to the modules.
+DATA_FILES=(
+  palette.json
 )
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -74,7 +79,7 @@ if [[ -z "$src" || ! -f "$src/pve-template-prep.py" || ! -d "$src/pve_prep" ]]; 
   exit 1
 fi
 
-for name in "${MODULES[@]}"; do
+for name in "${MODULES[@]}" "${DATA_FILES[@]}"; do
   if [[ ! -f "$src/pve_prep/$name" ]]; then
     echo "archive is missing pve_prep/$name" >&2
     exit 1
@@ -136,7 +141,7 @@ copy_tree() {
 install -d -o root -g root -m 0755 "$DEST"
 install -d -o root -g root -m 0755 "$DEST/pve_prep"
 install -o root -g root -m 0755 "$src/pve-template-prep.py" "$DEST/pve-template-prep.py"
-for name in "${MODULES[@]}"; do
+for name in "${MODULES[@]}" "${DATA_FILES[@]}"; do
   install -o root -g root -m 0644 "$src/pve_prep/$name" "$DEST/pve_prep/$name"
 done
 install -d -o root -g root -m 0755 "$DEST/pve_prep/distros"
@@ -167,7 +172,7 @@ confirm_path() {
 confirm_path "$DEST"
 confirm_path "$DEST/pve_prep"
 confirm_path "$DEST/pve-template-prep.py"
-for name in "${MODULES[@]}"; do
+for name in "${MODULES[@]}" "${DATA_FILES[@]}"; do
   confirm_path "$DEST/pve_prep/$name"
 done
 confirm_path "$DEST/pve_prep/distros"
@@ -190,7 +195,7 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 paths = [root / "pve-template-prep.py", *sorted((root / "pve_prep").glob("*.py"))]
-if len(list((root / "pve_prep").glob("*.py"))) != 10:
+if len(list((root / "pve_prep").glob("*.py"))) != 11:
     raise SystemExit("pve_prep is missing modules")
 vendor = root / "vendor"
 paths.extend(sorted(vendor.rglob("*.py")))
@@ -199,6 +204,9 @@ for path in paths:
 sys.path.insert(0, str(vendor))
 sys.path.insert(0, str(root))
 import pve_prep.catalog  # noqa: E402
+from pve_prep.ui import load_palette  # noqa: E402
+
+load_palette(root / "pve_prep" / "palette.json")
 import prompt_toolkit  # noqa: E402
 import questionary  # noqa: E402
 import wcwidth  # noqa: E402

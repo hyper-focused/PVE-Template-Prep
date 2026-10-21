@@ -4,41 +4,55 @@ prompts.py still owns the questions, the free-VMID rule, and the DELETE
 gate. This module only draws them. No TTY, or a vendor tree that will
 not import, and the caller keeps the numbered prompts.
 
-One palette. The terminal profile picks 16, 256, or 24-bit. A pipe,
-NO_COLOR, or TERM=dumb stays plain. prompt_toolkit downsamples the hex
-style to the profile it is given.
+Colors come from palette.json: one entry per theme and role, as an xterm
+256 index plus an ANSI 16 fallback. termbg picks the theme. The terminal
+profile picks 16, 256, or 24-bit. A pipe, NO_COLOR, or TERM=dumb stays
+plain.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
 from typing import Any, Mapping
 
-_VENDOR = Path(__file__).resolve().parents[1] / "vendor"
-_ready: bool | None = None
-# Tests call tone() before arm(). A real run sets this from the terminal.
-_depth = "16"
+from pve_prep import termbg
 
+_VENDOR = Path(__file__).resolve().parents[1] / "vendor"
+_PALETTE_FILE = Path(__file__).resolve().parent / "palette.json"
+_ready: bool | None = None
+# Tests call tone() before arm(). A real run sets these from the terminal.
+_depth = "16"
+_theme = "dark"
+_palette: dict[str, dict[str, dict[str, Any]]] | None = None
+
+MARGIN = "  "
+_RULE = "-" * 42
 _SELECT_KEYS = "\n  ↑↓ move · Space or Enter selects"
 _CHECK_KEYS = "\n  ↑↓ move · Space marks · Enter accepts"
+# A newline after the question leaves a blank line above the rows.
+MENU_GAP = "\n"
 
-# Dark background. Danger stays red. The current row stays inverted cyan.
-_RGB = {
-    "header": (95, 191, 122),
-    "body": (230, 230, 230),
-    "cyan": (95, 215, 255),
-    "danger": (255, 85, 85),
-    "muted": (138, 138, 138),
-    "ink": (18, 18, 18),
-}
-_ANSI16 = {
-    "header": "32",
-    "body": "37",
-    "cyan": "36",
-    "danger": "31",
-    "muted": "90",
+ROLES = ("header", "body", "option", "highlight", "success", "note", "warning", "danger", "accent")
+_ANSI_NAMES = {
+    "30": "ansiblack",
+    "31": "ansired",
+    "32": "ansigreen",
+    "33": "ansiyellow",
+    "34": "ansiblue",
+    "35": "ansimagenta",
+    "36": "ansicyan",
+    "37": "ansigray",
+    "90": "ansibrightblack",
+    "91": "ansibrightred",
+    "92": "ansibrightgreen",
+    "93": "ansibrightyellow",
+    "94": "ansibrightblue",
+    "95": "ansibrightmagenta",
+    "96": "ansibrightcyan",
+    "97": "ansiwhite",
 }
 _CUBE = (0, 95, 135, 175, 215, 255)
 _RESET = "\033[0m"
@@ -107,18 +121,24 @@ def color_depth(
 
 
 def arm(read_line):
-    """Use the widgets only when stdin and stdout are both terminals."""
-    global _depth
-    use = False
+    """Use the widgets only when stdin and stdout are both terminals.
+
+    Also sets the color profile and the theme. The background query runs
+    only when both ends are terminals; otherwise only the environment is read.
+    """
+    global _depth, _theme
     try:
-        use = sys.stdin.isatty() and sys.stdout.isatty() and available()
+        both = sys.stdin.isatty() and sys.stdout.isatty()
     except Exception:
-        use = False
+        both = False
+    use = both and available()
     try:
         tty = sys.stdout.isatty()
     except Exception:
         tty = False
     _depth = color_depth(is_tty=tty)
+    if _depth != "none":
+        _theme = termbg.detect(probe=both)
     try:
         read_line.use_questionary = use
     except (AttributeError, TypeError):
@@ -126,70 +146,131 @@ def arm(read_line):
     return read_line
 
 
-def _hex(role: str) -> str:
-    red, green, blue = _RGB[role]
-    return f"#{red:02x}{green:02x}{blue:02x}"
+def load_palette(path: Path = _PALETTE_FILE) -> dict[str, dict[str, dict[str, Any]]]:
+    """Every theme needs every role. ValueError names the first bad entry."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("palette is not an object")
+    for theme in termbg.THEMES:
+        roles = payload.get(theme)
+        if not isinstance(roles, dict):
+            raise ValueError(f"palette has no {theme} theme")
+        for role in ROLES:
+            spec = roles.get(role)
+            if not isinstance(spec, dict):
+                raise ValueError(f"{theme}.{role} is missing")
+            index = spec.get("xterm")
+            if not isinstance(index, int) or isinstance(index, bool) or not 16 <= index <= 255:
+                raise ValueError(f"{theme}.{role}.xterm must be 16 to 255")
+            if spec.get("ansi") not in _ANSI_NAMES:
+                raise ValueError(f"{theme}.{role}.ansi must be 30-37 or 90-97")
+            if not isinstance(spec.get("bold", False), bool):
+                raise ValueError(f"{theme}.{role}.bold must be true or false")
+    return payload
 
 
-def _xterm256(rgb: tuple[int, int, int]) -> int:
-    red, green, blue = rgb
-    if abs(red - green) < 10 and abs(green - blue) < 10:
-        index = int(round((red - 8) / 10))
-        return 232 + max(0, min(23, index))
+def _roles() -> dict[str, dict[str, Any]]:
+    """The current theme. A broken palette file turns color off and says so once."""
+    global _palette
+    if _palette is None:
+        try:
+            _palette = load_palette(_PALETTE_FILE)
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(f"{_PALETTE_FILE.name}: {exc}. Colors are off.\n")
+            _palette = {}
+    return _palette.get(_theme, {})
 
-    def cube(value: int) -> int:
-        return min(range(6), key=lambda index: abs(_CUBE[index] - value))
 
-    return 16 + 36 * cube(red) + 6 * cube(green) + cube(blue)
+def xterm_rgb(index: int) -> tuple[int, int, int]:
+    """The xterm RGB for a 256-color index from 16 to 255."""
+    if 16 <= index <= 231:
+        offset = index - 16
+        return _CUBE[offset // 36], _CUBE[(offset // 6) % 6], _CUBE[offset % 6]
+    if 232 <= index <= 255:
+        level = 8 + 10 * (index - 232)
+        return level, level, level
+    raise ValueError(f"no fixed RGB for xterm color {index}")
+
+
+def _spec(role: str) -> dict[str, Any] | None:
+    roles = _roles()
+    return roles.get(role) or roles.get("body")
 
 
 def _fg(role: str, depth: str) -> str:
-    if depth == "none":
+    spec = _spec(role)
+    if depth == "none" or spec is None:
         return ""
+    bold = "1;" if spec.get("bold") else ""
     if depth == "16":
-        return f"\033[{_ANSI16[role]}m"
-    red, green, blue = _RGB[role]
-    if depth == "24":
-        return f"\033[38;2;{red};{green};{blue}m"
-    return f"\033[38;5;{_xterm256((red, green, blue))}m"
+        color = spec["ansi"]
+    elif depth == "24":
+        red, green, blue = xterm_rgb(spec["xterm"])
+        color = f"38;2;{red};{green};{blue}"
+    else:
+        color = f"38;5;{spec['xterm']}"
+    return f"\033[{bold}{color}m"
+
+
+def _style(role: str) -> str:
+    """prompt_toolkit style for one role. 16 colors use ANSI names, not the nearest hex."""
+    spec = _spec(role)
+    if spec is None:
+        return ""
+    if _depth == "16":
+        color = _ANSI_NAMES[spec["ansi"]]
+    else:
+        red, green, blue = xterm_rgb(spec["xterm"])
+        color = f"#{red:02x}{green:02x}{blue:02x}"
+    bold = " bold" if spec.get("bold") else ""
+    return f"fg:{color}{bold}"
 
 
 def widget_style():
-    """prompt_toolkit style for the menus. Built for a dark background."""
+    """prompt_toolkit style for the menus, in the current theme."""
     from prompt_toolkit.styles import Style
 
-    ink = _hex("ink")
-    cyan = _hex("cyan")
     return Style(
         [
-            ("qmark", f"fg:{_hex('muted')}"),
-            ("question", f"fg:{_hex('muted')}"),
-            ("answer", f"fg:{_hex('body')}"),
-            ("pointer", f"bg:{cyan} fg:{ink}"),
-            ("highlighted", f"bg:{cyan} fg:{ink}"),
-            ("selected", f"bg:{cyan} fg:{ink}"),
-            ("instruction", f"fg:{_hex('body')}"),
-            ("danger", f"fg:{_hex('danger')} bold"),
-            ("text", f"fg:{cyan}"),
-            ("disabled", f"fg:{cyan}"),
-            ("separator", f"fg:{_hex('header')}"),
+            ("qmark", _style("header")),
+            ("question", _style("header")),
+            ("answer", _style("success")),
+            ("pointer", _style("highlight")),
+            # prompt_toolkit's own style reverses selected rows. The palette colors them instead.
+            ("highlighted", _style("highlight") + " noreverse"),
+            ("selected", _style("success") + " noreverse"),
+            ("instruction", _style("note")),
+            ("danger", _style("danger")),
+            ("text", _style("option")),
+            ("disabled", _style("note")),
+            ("separator", _style("note")),
         ]
     )
 
 
 def tone(text: str, role: str = "body", *, depth: str | None = None) -> str:
-    """Wrap text for a dark terminal. The words themselves stay intact."""
+    """Wrap text in the role color. The words themselves stay intact."""
     chosen = _depth if depth is None else depth
-    name = role if role in _RGB else "body"
-    prefix = _fg(name, chosen)
+    prefix = _fg(role, chosen)
     if not prefix:
         return text
     return f"{prefix}{text}{_RESET}"
 
 
-def rule() -> str:
-    """Header color, between the explanation and the menu."""
-    return tone("  ------------------------------------------", "header")
+def heading(text: str) -> str:
+    """Section title, at the margin."""
+    return tone(MARGIN + text, "header")
+
+
+def rule(*, color: bool = True) -> str:
+    """Under a heading, indented past it. Note grey, so it recedes."""
+    line = MARGIN * 2 + _RULE
+    return tone(line, "note") if color else line
+
+
+def indent(text: str) -> str:
+    """Every line after the first, at the margin. The widget puts the first there."""
+    return text.replace("\n", "\n" + MARGIN)
 
 
 def choice_title(label: str):
@@ -281,9 +362,12 @@ def select(message: str, choices, *, default=None, instruction: str | None = Non
     if instruction is None:
         instruction = _SELECT_KEYS
     question = questionary.select(
-        message,
+        indent(message),
         choices=built,
         style=widget_style(),
+        qmark=MARGIN + "?",
+        pointer=MARGIN + "»",
+        erase_when_done=True,
         use_shortcuts=True,
         use_jk_keys=False,
         use_emacs_keys=False,
@@ -308,9 +392,12 @@ def checkbox(message: str, choices, *, instruction: str | None = None, validate=
     if validate is not None:
         extra["validate"] = validate
     question = questionary.checkbox(
-        message,
+        indent(message),
         choices=built,
         style=widget_style(),
+        qmark=MARGIN + "?",
+        pointer=MARGIN + "»",
+        erase_when_done=True,
         use_jk_keys=False,
         use_emacs_keys=False,
         instruction=instruction,
@@ -325,10 +412,12 @@ def text(message: str, *, default: str = "", instruction: str | None = None, **k
     """Empty string is an answer. None means cancelled."""
     import questionary
 
+    # questionary puts a space after qmark, so one space here lands the text at the margin.
     question = questionary.text(
-        message,
+        indent(message),
         default=default,
         style=widget_style(),
+        qmark=" ",
         instruction=instruction,
         **_app_kwargs(),
         **kwargs,

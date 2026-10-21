@@ -27,6 +27,7 @@ class ImageSpec:
     eol: bool
     checksum: str = ""
     source: str = "pattern"
+    name: str = ""
 
 
 _DISTRO_DIR = Path(__file__).resolve().parent / "distros"
@@ -174,6 +175,7 @@ def _pattern_spec(
         distro=distro,
         release=version,
         label=_label(name, version, eol),
+        name=name,
         family=family,
         filename=image,
         url=base + image,
@@ -217,6 +219,7 @@ def _index_spec(
         distro=distro,
         release=version,
         label=_label(name, version, eol),
+        name=name,
         family=family,
         filename="",
         url=url,
