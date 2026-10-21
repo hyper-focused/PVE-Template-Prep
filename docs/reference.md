@@ -204,6 +204,7 @@ The cache is `/var/tmp/pve-template-prep/cache`, mode `0700`, owned by root. Aft
 | `/var/backups/pve-template-prep/` | Disk backups, `vm-<vmid>-<bus>.bak.<UTC>.qcow2`. Mode `0700`, owned by root. Created on the first copy. Cleanup never opens it. |
 | `pve_prep/distros/<distro>.json` | One file per distro. A release is a row. `name` is the menu label. |
 | `pve_prep/palette.json` | Colors. For `dark` and `light`, each role has an `xterm` 256-color index from 16 to 255, an `ansi` fallback (30 to 37, 90 to 97), and optional `bold`. Roles: header, body, option, highlight, success, note, warning, danger, accent. `install.sh` checks it. A broken file turns color off, with one line on stderr. |
+| `/etc/pve/.vmlist` | Read to find free VMIDs. Every VM and container in the cluster. |
 | `/dev/tty` | Asked for its background color once, before the first question, when stdin and stdout are both terminals. |
 | `/etc/pve/storage.cfg` | Read for `images` and `import` content and each storage's `path`. Never written. |
 | `/etc/pve/nodes/*/qemu-server/*.conf` | Read to find linked clones on every node. Never written. |
@@ -270,7 +271,7 @@ A prefilled VMID had to be backspaced before it could be replaced. On the create
   Debian 13 VM Template ID [9002]:
 ```
 
-The label is the catalog name plus the release, so a real run says `Debian 13`, not the codename. Enter accepts the bracket: the next free ID from 9001, skipping IDs already in use, including a hole. When no free ID can be suggested, the field has no bracket and `No free VMID from 9001 in the next 256 IDs.` comes first. When the host check fails, the field adds `Could not check which VMIDs are free. An existing VM will not be replaced.` above it.
+The label is the catalog name plus the release, so a real run says `Debian 13`, not the codename. Enter accepts the bracket: the next free ID from 9001, skipping IDs already in use, including a hole. In use means a VM or a container on any node, read from the cluster list in `/etc/pve/.vmlist`. That read is instant. If it fails, each ID is checked with `qm status`, about a second apiece. When no free ID can be suggested, the field has no bracket and `No free VMID from 9001 in the next 256 IDs.` comes first. When the host check fails, the field adds `Could not check which VMIDs are free. An existing VM will not be replaced.` above it.
 
 The update field is `Debian 13 VM Template ID: ` with no brackets. Enter does not publish a file. A free VMID is refused. A normal VM, a linked clone, and a template that still has linked clones are refused, and the next prompt says which.
 

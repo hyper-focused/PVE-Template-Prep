@@ -58,6 +58,23 @@ def parse_storage_kinds(pvesm_status_text: str) -> dict[str, str]:
     return found
 
 
+def parse_vmlist(text: str) -> set[int]:
+    """Every VMID in /etc/pve/.vmlist: VMs and containers, on every node.
+
+    ValueError when the text is not that file.
+    """
+    payload = json.loads(text)
+    ids = payload.get("ids") if isinstance(payload, dict) else None
+    if not isinstance(ids, dict):
+        raise ValueError("vmlist has no ids")
+    found: set[int] = set()
+    for key in ids:
+        if not str(key).isdigit():
+            raise ValueError(f"vmlist id is not a number: {key!r}")
+        found.add(int(key))
+    return found
+
+
 def vmid_config_missing(returncode: int, output: str) -> bool:
     """True when qm status failed because this VMID has no config."""
     if returncode == 0:

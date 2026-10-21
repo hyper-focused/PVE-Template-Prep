@@ -40,6 +40,7 @@ from pve_prep.vm import (
     prepare_replace,
     refuse_replace_target,
     vmid_config_missing,
+    parse_vmlist,
     storage_lacks_images,
     parse_storage_ids,
     parse_storage_kinds,
@@ -59,12 +60,26 @@ def default_run(argv: list[str]) -> SimpleNamespace:
     )
 
 
-def vmids_in_use(vmids: tuple[int, ...]) -> set[int] | None:
-    """VMIDs that already have a config.
+# The cluster filesystem's list of every VM and container. One read answers
+# for any number of VMIDs; qm status costs about a second per VMID.
+VMLIST = Path("/etc/pve/.vmlist")
 
-    None means qm could not be run, so the caller must not guess.
-    A nonzero status is "free" only when the output says the VM does not exist.
+
+def vmids_in_use(vmids: tuple[int, ...]) -> set[int] | None:
+    """VMIDs already taken by a VM or a container, on any node.
+
+    Reads VMLIST. When it cannot be read or parsed, asks qm per VMID.
+    None means neither worked, so the caller must not guess.
     """
+    try:
+        taken = parse_vmlist(VMLIST.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _vmids_in_use_by_qm(vmids)
+    return {vmid for vmid in vmids if vmid in taken}
+
+
+def _vmids_in_use_by_qm(vmids: tuple[int, ...]) -> set[int] | None:
+    """The slow path. A nonzero status is "free" only when the output says the VM does not exist."""
     occupied: set[int] = set()
     for vmid in vmids:
         try:

@@ -12,6 +12,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from pve_prep.vm import (
+    parse_vmlist,
     VmError,
     is_disk_backup,
     cluster_config_links,
@@ -88,6 +89,14 @@ def _create(**overrides: object) -> dict:
 
 
 class VmParseTests(unittest.TestCase):
+    def test_vmlist_is_every_vm_and_container(self) -> None:
+        text = '{"version": 3, "ids": {"100": {"node": "a", "type": "qemu"}, "101": {"node": "b", "type": "lxc"}}}'
+        self.assertEqual(parse_vmlist(text), {100, 101})
+        self.assertEqual(parse_vmlist('{"version": 1, "ids": {}}'), set())
+        for bad in ("", "[]", '{"version": 1}', '{"ids": {"abc": {}}}'):
+            with self.assertRaises(ValueError):
+                parse_vmlist(bad)
+
     def test_parse_storage_ids_ignores_inactive_and_header(self) -> None:
         text = """
 Name             Type     Status           Total            Used       Available        %

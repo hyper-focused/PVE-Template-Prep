@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import os
 import sys
 import tempfile
@@ -68,6 +69,7 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     vm.parse_storage_content = real_vm.parse_storage_content
     vm.storage_lacks_images = real_vm.storage_lacks_images
     vm.vmid_config_missing = real_vm.vmid_config_missing
+    vm.parse_vmlist = real_vm.parse_vmlist
     vm.config_has_os_disk = real_vm.config_has_os_disk
     vm.os_disk_storage = real_vm.os_disk_storage
     vm.os_disk_format = real_vm.os_disk_format
@@ -531,6 +533,47 @@ class OrchestratorTest(unittest.TestCase):
         text = buf.getvalue()
         self.assertTrue(text.startswith(f"pve-template-prep {pve_prep.__version__}\n"))
         self.assertIn("aborted", text)
+
+    def test_vmids_in_use_reads_the_cluster_list_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vmlist = Path(tmp) / ".vmlist"
+            vmlist.write_text(
+                json.dumps(
+                    {
+                        "version": 7,
+                        "ids": {
+                            "9001": {"node": "pve1", "type": "qemu", "version": 1},
+                            "9002": {"node": "pve2", "type": "lxc", "version": 2},
+                        },
+                    }
+                )
+            )
+            with (
+                mock.patch.object(MOD, "VMLIST", vmlist),
+                mock.patch.object(MOD.subprocess, "run", side_effect=AssertionError("qm ran")),
+            ):
+                self.assertEqual(MOD.vmids_in_use(tuple(range(9001, 9033))), {9001, 9002})
+
+    def test_vmids_in_use_falls_back_to_qm(self) -> None:
+        def qm(argv, **kwargs):
+            vmid = int(argv[-1])
+            if vmid == 9001:
+                return SimpleNamespace(returncode=0, stdout="status: stopped\n", stderr="")
+            return SimpleNamespace(returncode=2, stdout="", stderr=f"Configuration file for VM {vmid} does not exist\n")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for content in (None, "not json", '{"version": 1}'):
+                vmlist = Path(tmp) / ".vmlist"
+                if content is None:
+                    vmlist.unlink(missing_ok=True)
+                else:
+                    vmlist.write_text(content)
+                with (
+                    mock.patch.object(MOD, "VMLIST", vmlist),
+                    mock.patch.object(MOD.subprocess, "run", side_effect=qm) as run,
+                ):
+                    self.assertEqual(MOD.vmids_in_use((9001, 9002)), {9001})
+                self.assertEqual(run.call_count, 2)
 
     def test_main_dry_run_flag_and_storage_failure(self) -> None:
         seen = {}
