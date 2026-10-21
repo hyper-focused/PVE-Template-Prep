@@ -2,8 +2,8 @@
 # Copyright 2026 Robert Tyree and hyper-focused
 """virt-customize guest prep.
 
-The base command text matches prep-template.sh. The SSH drop-in is an
-extra command, written only when an SSH question was answered yes.
+One virt-customize pass per image: packages, then guest commands. The SSH
+drop-in is an extra command, written only when an SSH question was answered yes.
 """
 
 import math

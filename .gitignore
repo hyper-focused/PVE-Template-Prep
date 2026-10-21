@@ -1,7 +1,4 @@
 __pycache__/
 *.py[cod]
+.ruff_cache/
 .DS_Store
-image_update.sh
-prep-template.sh
-README.starwars.md
-README.startrek.md
