@@ -1033,8 +1033,14 @@ def _ask_make_template(read_line, write, count: int) -> bool:
     return _ask_bool(read_line, write, f"Convert the new {noun} with qm template?", True)
 
 
+_PASSWORD_AUTH_PROMPT = "Allow password authentication for SSH?"
 _CLOUD_INIT_ROOT = "Cloud-init user must be set to 'root'."
-_ROOT_SSH_PROMPT = "Enable SSH login for 'root' with a password?"
+_ROOT_SSH_PROMPT = "Enable direct SSH login for 'root' user?"
+
+
+def _ask_password_auth(read_line, write) -> bool:
+    _section(read_line, write, "SSH Password Authentication")
+    return _ask_bool(read_line, write, _PASSWORD_AUTH_PROMPT, True)
 
 
 def _ask_root_ssh(read_line, write) -> bool:
@@ -1043,12 +1049,24 @@ def _ask_root_ssh(read_line, write) -> bool:
     return _ask_bool(read_line, write, _ROOT_SSH_PROMPT, True)
 
 
+@dataclass(frozen=True)
+class GuestSettings:
+    """What the defaults step decided. Guest prep is always on."""
+
+    password_auth: bool
+    permit_root: bool
+    bridge: str
+    memory_mb: int
+    cores: int
+    make_template: bool
+
+
 def _usual_defaults(*, hardware: bool, convert: bool) -> str:
     """Every remaining default this path would have asked, as one sentence.
 
     Guest prep is not a choice. It always runs.
     """
-    items = ["root password SSH"]
+    items = ["SSH password authentication", "root SSH login"]
     if hardware:
         items.extend(
             (
@@ -1059,9 +1077,7 @@ def _usual_defaults(*, hardware: bool, convert: bool) -> str:
         )
     if convert:
         items.append("qm template")
-    if len(items) == 1:
-        listed = items[0]
-    elif len(items) == 2:
+    if len(items) == 2:
         listed = f"{items[0]} and {items[1]}"
     else:
         listed = ", ".join(items[:-1]) + ", and " + items[-1]
@@ -1071,26 +1087,25 @@ def _usual_defaults(*, hardware: bool, convert: bool) -> str:
     return "\n".join(lines)
 
 
-def _ask_guest_settings(read_line, write, *, hardware: bool, convert: bool, count: int):
-    """Root SSH, and hardware or qm template when this path has them.
-
-    Guest prep is always on. Returns prep, permit_root, bridge, memory_mb,
-    cores, make_template.
-    """
+def _ask_guest_settings(read_line, write, *, hardware: bool, convert: bool, count: int) -> GuestSettings:
+    """The two SSH questions, and hardware or qm template when this path has them."""
     defaults = (DEFAULT_BRIDGE, DEFAULT_MEMORY_MB, DEFAULT_CORES)
     if not hardware and not convert:
-        return (True, _ask_root_ssh(read_line, write), *defaults, False)
+        password_auth = _ask_password_auth(read_line, write)
+        permit_root = _ask_root_ssh(read_line, write)
+        return GuestSettings(password_auth, permit_root, *defaults, False)
     _section(read_line, write, "Defaults")
     _say(read_line, write, _usual_defaults(hardware=hardware, convert=convert), "note")
     if _ask_bool(read_line, write, "Accept these defaults?", True):
-        return (True, True, *defaults, convert)
+        return GuestSettings(True, True, *defaults, convert)
+    password_auth = _ask_password_auth(read_line, write)
     permit_root = _ask_root_ssh(read_line, write)
     if hardware:
         bridge, memory_mb, cores = _ask_hardware(read_line, write)
     else:
         bridge, memory_mb, cores = defaults
     make_template = _ask_make_template(read_line, write, count) if convert else False
-    return True, permit_root, bridge, memory_mb, cores, make_template
+    return GuestSettings(password_auth, permit_root, bridge, memory_mb, cores, make_template)
 
 
 def ask_cache_cleanup(read_line, write, *, cache: str, backups: str, failed: bool) -> bool:
@@ -1325,11 +1340,25 @@ def _write_table(read_line, write, table: list[tuple[str, ...]]) -> None:
             write(ui.tone(line, "body") + "\n")
 
 
-def _summary_footer(*, permit_root: bool, hardware: tuple[str, int, int] | None, make_template: bool | None) -> str:
+def _yes_no(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+def _summary_footer(
+    *,
+    password_auth: bool,
+    permit_root: bool,
+    hardware: tuple[str, int, int] | None,
+    make_template: bool | None,
+) -> str:
     """Guest prep always runs. Hardware and qm template only where the path asks them."""
-    parts = ["Guest prep: yes", f"Root SSH: {'yes' if permit_root else 'no'}"]
+    parts = [
+        "Guest prep: yes",
+        f"Password SSH: {_yes_no(password_auth)}",
+        f"Root SSH: {_yes_no(permit_root)}",
+    ]
     if make_template is not None:
-        parts.append(f"qm template: {'yes' if make_template else 'no'}")
+        parts.append(f"qm template: {_yes_no(make_template)}")
     line = "   ".join(parts)
     if hardware is None:
         return line
@@ -1440,7 +1469,7 @@ def interview(
 
     hardware = mode == "template" or bool(template_vmids)
     convert = mode == "template"
-    prep, permit_root, bridge, memory_mb, cores, make_template = _ask_guest_settings(
+    guest = _ask_guest_settings(
         read_line,
         write,
         hardware=hardware,
@@ -1498,9 +1527,10 @@ def interview(
         read_line,
         write,
         _summary_footer(
-            permit_root=permit_root,
-            hardware=(bridge, memory_mb, cores) if hardware else None,
-            make_template=make_template if mode == "template" else None,
+            password_auth=guest.password_auth,
+            permit_root=guest.permit_root,
+            hardware=(guest.bridge, guest.memory_mb, guest.cores) if hardware else None,
+            make_template=guest.make_template if mode == "template" else None,
         ),
         "note",
     )
@@ -1515,7 +1545,7 @@ def interview(
         write,
         message=_confirm_message(
             mode=mode,
-            make_template=make_template,
+            make_template=guest.make_template,
             whole_vm=whole_vm,
             replacing=replacing,
             backup=backup,
@@ -1535,17 +1565,18 @@ def interview(
         backup_dir=DEFAULT_BACKUPS,
         collision=collision,
         vmids=vmids,
-        prep=prep,
-        bridge=bridge,
-        memory_mb=memory_mb,
-        cores=cores,
+        prep=True,
+        bridge=guest.bridge,
+        memory_mb=guest.memory_mb,
+        cores=guest.cores,
         dry_run=dry_run,
         destroy_vmids=destroy_vmids,
         backup_vmids=backup_vmids,
-        make_template=make_template,
+        make_template=guest.make_template,
         clean_cache=clean_cache,
         template_vmids=template_vmids,
-        permit_root=permit_root,
+        password_auth=guest.password_auth,
+        permit_root=guest.permit_root,
         kept_storage=kept,
         kept_format=kept_format,
     )

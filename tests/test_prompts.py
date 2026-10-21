@@ -57,7 +57,8 @@ def _column(blob: str, name: str) -> list[str]:
 
 YES_GATE = "Type 'YES' to continue or 'X' to exit now: "
 DELETE_GATE = "Type 'DELETE' to continue or 'X' to exit now without changes: "
-ROOT_SSH = "Enable SSH login for 'root' with a password?"
+PASSWORD_AUTH = "Allow password authentication for SSH?"
+ROOT_SSH = "Enable direct SSH login for 'root' user?"
 
 
 def _normalize(distro: str, raw: str) -> str:
@@ -151,7 +152,7 @@ class _Script:
 
 class InterviewTest(unittest.TestCase):
     def test_image_debian_two_releases(self) -> None:
-        script = _Script(["3", "1", "1, 2", "1", "", "", "yes"])
+        script = _Script(["3", "1", "1, 2", "1", "", "", "", "yes"])
         job = script.run(
             dry_run=False,
             imports=[("local", "/var/lib/vz/import"), ("vm-data", "/not/used")],
@@ -176,6 +177,7 @@ class InterviewTest(unittest.TestCase):
                 destroy_vmids=frozenset(),
                 make_template=False,
                 clean_cache=False,
+                password_auth=True,
                 permit_root=True,
             ),
         )
@@ -188,9 +190,11 @@ class InterviewTest(unittest.TestCase):
                 ("trixie", "qcow2", "/var/lib/vz/import/debian-13-pve.qcow2"),
             ],
         )
-        self.assertIn("Guest prep: yes   Root SSH: yes", blob)
+        self.assertIn("Guest prep: yes   Password SSH: yes   Root SSH: yes", blob)
         self.assertNotIn("Guest prep is applied:", blob)
+        self.assertIn(PASSWORD_AUTH, blob)
         self.assertIn(ROOT_SSH, blob)
+        self.assertLess(blob.index(PASSWORD_AUTH), blob.index(ROOT_SSH))
         self.assertIn("Your new disk images will now be created.", blob)
         self.assertNotIn("Accept these defaults?", blob)
         self.assertNotIn("cache: keep", blob)
@@ -262,7 +266,7 @@ class InterviewTest(unittest.TestCase):
                 ("trixie", "911", "debian-13-cloud", "nfs-templates", "qcow2", "new"),
             ],
         )
-        self.assertIn("Guest prep: yes   Root SSH: yes   qm template: yes", blob)
+        self.assertIn("Guest prep: yes   Password SSH: yes   Root SSH: yes   qm template: yes", blob)
         self.assertIn("Hardware: bridge vmbr0, memory 2048 MB, cores 2", blob)
         self.assertNotIn("non-template", blob)
 
@@ -389,31 +393,19 @@ class InterviewTest(unittest.TestCase):
         self.assertNotIn("Replace VMID", blob)
 
     def test_confirm_no_aborts(self) -> None:
-        script = _Script(["3", "1", "1", "1", "y", "", "", "no"])
+        script = _Script(["3", "1", "1", "1", "y", "", "", "", "no"])
         with self.assertRaises(PromptAbort):
             script.run(dry_run=False, imports=[("local", "/var/lib/vz/import")])
 
     def test_confirm_typo_reasks(self) -> None:
-        script = _Script(["3", "1", "1", "1", "y", "", "", "yess", "yes"])
+        script = _Script(["3", "1", "1", "1", "y", "", "", "", "yess", "yes"])
         job = script.run(dry_run=False, imports=[("local", "/var/lib/vz/import")])
         self.assertEqual(job.releases, ("12",))
         self.assertEqual("".join(script.written).count(YES_GATE), 2)
 
     def test_bad_release_then_good(self) -> None:
         script = _Script(
-            [
-                "3",
-                "0",
-                "1",
-                "nope",
-                "",
-                "12",
-                "1",
-                "",
-                "1",
-                "n",
-                "yes",
-            ]
+            ["3", "0", "1", "nope", "", "12", "1", "", "1", "", "n", "yes"]
         )
         job = script.run(dry_run=False, imports=[("local", "/var/lib/vz/import")])
         self.assertEqual(job.distro, "debian")
@@ -423,6 +415,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.dest_dir, "/var/lib/vz/import")
         self.assertEqual(job.collision, "backup")
         self.assertTrue(job.prep)
+        self.assertTrue(job.password_auth)
         self.assertFalse(job.permit_root)
         self.assertEqual(job.vmids, ())
         blob = "".join(script.written)
@@ -491,24 +484,7 @@ class InterviewTest(unittest.TestCase):
 
     def test_backup_policy_and_custom_hardware(self) -> None:
         script = _Script(
-            [
-                "",
-                "1",
-                "1, 2",
-                "910",
-                "911",
-                "nfs-templates",
-                "",
-                "n",
-                "n",
-                "n",
-                "vmbr1",
-                "4096",
-                "4",
-                "",
-                "",
-                "yes",
-            ]
+            ["", "1", "1, 2", "910", "911", "nfs-templates", "", "n", "", "n", "n", "vmbr1", "4096", "4", "", "", "yes"]
         )
         job = script.run(dry_run=False, storages=[], in_use={910}, disks={910})
         self.assertEqual(job.mode, "template")
@@ -518,6 +494,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.destroy_vmids, frozenset({910}))
         self.assertEqual(job.collision, "backup")
         self.assertTrue(job.prep)
+        self.assertTrue(job.password_auth)
         self.assertFalse(job.permit_root)
         self.assertEqual(job.bridge, "vmbr1")
         self.assertEqual(job.memory_mb, 4096)
@@ -599,15 +576,7 @@ class InterviewTest(unittest.TestCase):
 
     def test_image_inserts_into_an_existing_vmid(self) -> None:
         script = _Script(
-            [
-                "2",
-                "1",
-                "1",
-                "910",
-                "",
-                "",
-                "yes",
-            ]
+            ["2", "1", "1", "910", "", "", "", "yes"]
         )
         job = script.run(
             dry_run=False,
@@ -658,16 +627,7 @@ class InterviewTest(unittest.TestCase):
             return "raw"
 
         script = _Script(
-            [
-                "2",
-                "1",
-                "1",
-                "910",
-                "910",
-                "",
-                "",
-                "yes",
-            ]
+            ["2", "1", "1", "910", "910", "", "", "", "yes"]
         )
         job = script.run(
             dry_run=False,
@@ -685,16 +645,7 @@ class InterviewTest(unittest.TestCase):
 
     def test_image_inserts_keep_each_disk_format(self) -> None:
         script = _Script(
-            [
-                "2",
-                "1",
-                "1, 2",
-                "910",
-                "911",
-                "",
-                "",
-                "yes",
-            ]
+            ["2", "1", "1, 2", "910", "911", "", "", "", "yes"]
         )
         job = script.run(
             dry_run=False,
@@ -783,17 +734,7 @@ class InterviewTest(unittest.TestCase):
             return "nfs-templates"
 
         script = _Script(
-            [
-                "2",
-                "1",
-                "1",
-                "910",
-                "910",
-                "",
-                "",
-                "",
-                "yes",
-            ]
+            ["2", "1", "1", "910", "910", "", "", "", "", "yes"]
         )
         job = script.run(
             dry_run=False,
@@ -808,7 +749,7 @@ class InterviewTest(unittest.TestCase):
         self.assertNotIn("VM Disk Storage Path", "".join(script.written))
 
     def test_update_refuses_a_free_vmid(self) -> None:
-        script = _Script(["2", "1", "1", "9001", "910", "", "", "yes"])
+        script = _Script(["2", "1", "1", "9001", "910", "", "", "", "yes"])
         job = script.run(
             dry_run=False,
             in_use={910},
@@ -874,19 +815,7 @@ class InterviewTest(unittest.TestCase):
 
     def test_template_can_stay_a_vm(self) -> None:
         script = _Script(
-            [
-                "",
-                "1",
-                "1",
-                "",
-                "1",
-                "",
-                "n",
-                "",
-                "",
-                "n",
-                "yes",
-            ]
+            ["", "1", "1", "", "1", "", "n", "", "", "", "n", "yes"]
         )
         job = script.run(dry_run=False, storages=["dir-templates"], in_use=set(), disks=set())
         self.assertEqual(job.mode, "template")
@@ -905,18 +834,7 @@ class InterviewTest(unittest.TestCase):
 
     def test_image_pairs_each_release_with_its_own_vmid(self) -> None:
         script = _Script(
-            [
-                "2",
-                "1",
-                "1, 2",
-                "911",
-                "910",
-                "2",
-                "",
-                "",
-                "n",
-                "DELETE",
-            ]
+            ["2", "1", "1, 2", "911", "910", "2", "", "", "", "n", "DELETE"]
         )
         job = script.run(
             dry_run=False,
@@ -938,7 +856,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(_column(blob, "Existing disk"), ["replace", "replace"])
 
     def test_update_refuses_a_free_vmid_on_a_later_release(self) -> None:
-        script = _Script(["2", "1", "1, 2", "910", "920", "911", "", "", "yes"])
+        script = _Script(["2", "1", "1, 2", "910", "920", "911", "", "", "", "yes"])
         job = script.run(
             dry_run=False,
             in_use={910, 911},
@@ -955,7 +873,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(_column(blob, "VMID"), ["910", "911"])
 
     def test_update_refuses_a_boot_disk_on_zfs(self) -> None:
-        script = _Script(["2", "1", "1", "910", "911", "", "", "yes"])
+        script = _Script(["2", "1", "1", "910", "911", "", "", "", "yes"])
         job = script.run(
             dry_run=False,
             in_use={910, 911},
@@ -1017,7 +935,7 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("Choose the volume format on local.", blob)
 
     def test_standalone_raw_is_named_raw(self) -> None:
-        script = _Script(["3", "1", "1", "1", "2", "", "yes"])
+        script = _Script(["3", "1", "1", "1", "2", "", "", "yes"])
         job = script.run(dry_run=False, imports=[("local", "/var/lib/vz/import")])
         self.assertEqual(job.disk_format, "raw")
         blob = "".join(script.written)
@@ -1085,10 +1003,10 @@ class InterviewTest(unittest.TestCase):
             _summary(blob)[1],
             ("bookworm", "9001", "debian-12-cloud", "share", "raw", "new"),
         )
-        self.assertIn("Guest prep: yes   Root SSH: yes", blob)
+        self.assertIn("Guest prep: yes   Password SSH: yes   Root SSH: yes", blob)
 
     def test_root_ssh_no_leaves_the_image_default(self) -> None:
-        script = _Script(["3", "1", "1", "1", "", "n", "yes"])
+        script = _Script(["3", "1", "1", "1", "", "", "n", "yes"])
         job = script.run(dry_run=False, imports=[("local", "/var/lib/vz/import")])
         self.assertTrue(job.prep)
         self.assertFalse(job.permit_root)
@@ -1101,7 +1019,18 @@ class InterviewTest(unittest.TestCase):
         self.assertNotIn("and restart SSHd.", blob)
         self.assertIn(ROOT_SSH + " (y/n) [Yes]: ", blob)
         self.assertEqual(_column(blob, "File"), ["/var/lib/vz/import/debian-12-pve.qcow2"])
-        self.assertIn("Guest prep: yes   Root SSH: no", blob)
+        self.assertIn("Guest prep: yes   Password SSH: yes   Root SSH: no", blob)
+
+    def test_password_ssh_no_is_asked_on_its_own(self) -> None:
+        script = _Script(["3", "1", "1", "1", "", "n", "", "yes"])
+        job = script.run(dry_run=False, imports=[("local", "/var/lib/vz/import")])
+        self.assertFalse(job.password_auth)
+        self.assertTrue(job.permit_root)
+        blob = "".join(script.written)
+        self.assertIn("  SSH Password Authentication\n", blob)
+        self.assertIn(PASSWORD_AUTH + " (y/n) [Yes]: ", blob)
+        self.assertLess(blob.index("  SSH Password Authentication\n"), blob.index("  Root SSH Access\n"))
+        self.assertIn("Guest prep: yes   Password SSH: no   Root SSH: yes", blob)
 
     def test_normal_vm_is_refused_on_template_replace(self) -> None:
         script = _Script(
@@ -1138,7 +1067,7 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("Enter bookworm template VMID [9001]: ", blob)
 
     def test_linked_clone_is_refused_on_every_action(self) -> None:
-        image = _Script(["2", "1", "1", "910", "911", "", "", "yes"])
+        image = _Script(["2", "1", "1", "910", "911", "", "", "", "yes"])
         published = image.run(
             dry_run=False,
             in_use={910, 911},

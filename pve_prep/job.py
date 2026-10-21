@@ -39,7 +39,8 @@ class Job:
     clean_cache: bool = False
     # Image-mode VMIDs created as new templates instead of receiving a disk.
     template_vmids: frozenset[int] = frozenset()
-    # Guest prep writes /etc/ssh/sshd_config.d/00-enableroot.conf when this is true.
+    # Guest prep writes /etc/ssh/sshd_config.d/00-enableroot.conf with a line for each that is true.
+    password_auth: bool = False
     permit_root: bool = False
     # Boot disks that stay on their current storage. (vmid, storage id).
     kept_storage: tuple[tuple[int, str], ...] = ()

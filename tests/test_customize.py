@@ -81,9 +81,9 @@ class ArgvTests(unittest.TestCase):
             self.assertGreater(commands.index(clean), commands.index(next(cmd for cmd in commands if "ssh_host_" in cmd)))
             self.assertNotIn("PermitRootLogin", text)
 
-    def test_root_ssh_drop_in_is_one_command_on_both_families(self) -> None:
+    def test_ssh_drop_in_is_one_command_on_both_families(self) -> None:
         for family in ("deb", "el"):
-            commands = _commands(argv("disk.img", family, permit_root=True))
+            commands = _commands(argv("disk.img", family, password_auth=True, permit_root=True))
             root = [cmd for cmd in commands if "00-enableroot.conf" in cmd]
             self.assertEqual(len(root), 1)
             text = root[0]
@@ -93,10 +93,21 @@ class ArgvTests(unittest.TestCase):
             self.assertIn("chcon --reference=/etc/ssh/sshd_config", text)
             self.assertIn("restorecon -F /etc/ssh/sshd_config.d/00-enableroot.conf", text)
             self.assertIn("|| true", text)
-            commands = _commands(argv("disk.img", family, permit_root=True))
+            commands = _commands(argv("disk.img", family, password_auth=True, permit_root=True))
             clean = next(i for i, cmd in enumerate(commands) if ".bash_history" in cmd)
             root_at = next(i for i, cmd in enumerate(commands) if "00-enableroot.conf" in cmd)
             self.assertLess(clean, root_at)
+
+    def test_each_ssh_answer_writes_only_its_line(self) -> None:
+        for family in ("deb", "el"):
+            only_password = _commands(argv("disk.img", family, password_auth=True))
+            text = next(cmd for cmd in only_password if "00-enableroot.conf" in cmd)
+            self.assertIn("'PasswordAuthentication yes'", text)
+            self.assertNotIn("PermitRootLogin", text)
+            only_root = _commands(argv("disk.img", family, permit_root=True))
+            text = next(cmd for cmd in only_root if "00-enableroot.conf" in cmd)
+            self.assertIn("'PermitRootLogin yes'", text)
+            self.assertNotIn("PasswordAuthentication", text)
 
     def test_unknown_family(self) -> None:
         with self.assertRaises(ValueError):

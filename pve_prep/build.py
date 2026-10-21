@@ -107,6 +107,7 @@ def _prepare(job, spec, tools, *, cache_format: str, label: str) -> Path:
             str(work),
             spec.family,
             disk_format=cache_format,
+            password_auth=job.password_auth,
             permit_root=job.permit_root,
             dry_run=job.dry_run,
             verbose=job.verbose,

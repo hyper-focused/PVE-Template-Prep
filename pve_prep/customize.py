@@ -1,7 +1,7 @@
 """virt-customize guest prep.
 
-The base command text matches prep-template.sh. Root password SSH is an
-extra command, written only when the interview asked for it.
+The base command text matches prep-template.sh. The SSH drop-in is an
+extra command, written only when an SSH question was answered yes.
 """
 
 import math
@@ -84,16 +84,29 @@ _SHARED_COMMANDS = (
 
 # First match wins, so this has to sort before 50-cloud-init and 60-cloudimg.
 # chcon is a no-op on Debian and Ubuntu. On EL it copies sshd_config's label.
-_ROOT_SSH_COMMAND = (
-    "mkdir -p /etc/ssh/sshd_config.d && "
-    r"printf '%s\n' 'PasswordAuthentication yes' 'PermitRootLogin yes' "
-    "> /etc/ssh/sshd_config.d/00-enableroot.conf && "
-    "chmod 644 /etc/ssh/sshd_config.d/00-enableroot.conf && "
-    "(chcon --reference=/etc/ssh/sshd_config "
-    "/etc/ssh/sshd_config.d/00-enableroot.conf 2>/dev/null "
-    "|| restorecon -F /etc/ssh/sshd_config.d/00-enableroot.conf 2>/dev/null "
-    "|| true)"
-)
+_SSH_DROP_IN = "/etc/ssh/sshd_config.d/00-enableroot.conf"
+_PASSWORD_AUTH_LINE = "PasswordAuthentication yes"
+_PERMIT_ROOT_LINE = "PermitRootLogin yes"
+
+
+def _ssh_command(*, password_auth: bool, permit_root: bool) -> str | None:
+    """One guest command that writes the drop-in with the lines asked for. None when neither."""
+    lines = []
+    if password_auth:
+        lines.append(_PASSWORD_AUTH_LINE)
+    if permit_root:
+        lines.append(_PERMIT_ROOT_LINE)
+    if not lines:
+        return None
+    quoted = " ".join(f"'{line}'" for line in lines)
+    return (
+        "mkdir -p /etc/ssh/sshd_config.d && "
+        rf"printf '%s\n' {quoted} > {_SSH_DROP_IN} && "
+        f"chmod 644 {_SSH_DROP_IN} && "
+        f"(chcon --reference=/etc/ssh/sshd_config {_SSH_DROP_IN} 2>/dev/null "
+        f"|| restorecon -F {_SSH_DROP_IN} 2>/dev/null "
+        "|| true)"
+    )
 
 
 # virt-customize prints "[  15.6] ..." as elapsed seconds, not a fraction
@@ -266,18 +279,21 @@ def argv(
     image: str,
     family: str,
     *,
+    password_auth: bool = False,
     permit_root: bool = False,
     disk_format: str = "",
 ) -> list[str]:
     """Full argv: 'virt-customize', optional --format, '-a', image, then --install and --run-command.
 
     family is 'deb' or 'el'. ValueError on anything else.
-    permit_root writes /etc/ssh/sshd_config.d/00-enableroot.conf.
+    password_auth and permit_root each add a line to /etc/ssh/sshd_config.d/00-enableroot.conf.
+    Neither writes no file.
     disk_format raw or qcow2 is passed as --format, so libguestfs does not probe the file.
     """
     packages, commands = _plan(family)
-    if permit_root:
-        commands = commands + (_ROOT_SSH_COMMAND,)
+    ssh = _ssh_command(password_auth=password_auth, permit_root=permit_root)
+    if ssh is not None:
+        commands = commands + (ssh,)
     command = ["virt-customize"]
     if disk_format:
         if disk_format not in {"raw", "qcow2"}:
@@ -294,6 +310,7 @@ def apply(
     family: str,
     *,
     disk_format: str = "",
+    password_auth: bool = False,
     permit_root: bool = False,
     dry_run: bool = False,
     run=None,
@@ -310,7 +327,9 @@ def apply(
     The progress bar does not use run. Nonzero raises RuntimeError including the
     return code, and the captured log is printed first. Do not use shell=True.
     """
-    command = argv(image, family, permit_root=permit_root, disk_format=disk_format)
+    command = argv(
+        image, family, password_auth=password_auth, permit_root=permit_root, disk_format=disk_format
+    )
     # Blank lines keep the prep block off the status lines.
     print()
     try:

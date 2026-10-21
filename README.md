@@ -64,9 +64,16 @@ The cache is mode `0700`, owned by root. Disk backups are not in it: they go to 
 
 </details>
 
-## Root password SSH
+## SSH access
 
-Guest prep always runs. Root can log in over SSH with a password. Enter on the defaults turns that on with the other defaults. `n` asks it by itself, and Enter on that question writes `/etc/ssh/sshd_config.d/00-enableroot.conf` on every family. `n` there leaves the image default.
+Guest prep always runs. Two questions shape SSH, and Enter on the defaults says yes to both. `n` on the defaults asks each one. Each yes writes one line into `/etc/ssh/sshd_config.d/00-enableroot.conf` on every family:
+
+| Question | Line |
+| --- | --- |
+| `Allow password authentication for SSH?` | `PasswordAuthentication yes` |
+| `Enable direct SSH login for 'root' user?` | `PermitRootLogin yes` |
+
+Two yeses give the line pair below. Two `n` answers write no file and leave the image default. Password alone leaves root at the image's own `PermitRootLogin`, which on stock OpenSSH refuses a root password. Root alone leaves password login at the image default, so root logs in with a key.
 
 ```
 PasswordAuthentication yes
@@ -108,7 +115,7 @@ Each question says what that step does before it asks. Empty input accepts the d
 | 8 | Back up the disks that will be replaced. One answer for the whole list. Skipped when nothing is being replaced. The field is `(y/n) [Yes]:`. | Yes. `n` deletes them with no copy. |
 | 9 | Read the summary. A backup ends on `YES`. No backup ends on `DELETE`. | |
 
-The summary is a table with one row per release, and says what happens to every VMID that already exists. Under it: `Guest prep: yes   Root SSH: yes`. After the builds, one question deletes the working files in the prep cache: `Delete working files in /var/tmp/pve-template-prep/cache? (y/n) [No]:`. Enter keeps them. `y` deletes them. Disk backups are in `/var/backups/pve-template-prep` and stay. A failed release asks too, and Enter keeps the download.
+The summary is a table with one row per release, and says what happens to every VMID that already exists. Under it: `Guest prep: yes   Password SSH: yes   Root SSH: yes`. After the builds, one question deletes the working files in the prep cache: `Delete working files in /var/tmp/pve-template-prep/cache? (y/n) [No]:`. Enter keeps them. `y` deletes them. Disk backups are in `/var/backups/pve-template-prep` and stay. A failed release asks too, and Enter keeps the download.
 
 <details>
 <summary>The long version of those questions</summary>
@@ -129,9 +136,9 @@ Releases are a checkbox: one to three. A codename such as `bookworm` works on th
    - Update: the field is `Enter Ubuntu 24.04 template VMID: `, with no default. A new boot disk is created for that template. Every release needs a VMID. A free VMID is refused. A normal VM is refused, and the next prompt says so. A linked clone is refused the same way.
 5. Where it goes. A standalone image lists storages whose `storage.cfg` content includes `import`, and writes `<distro>-<release>-pve.qcow2` or `.raw` into that storage's `import/` directory. Updating a template boot disk uses the storage that disk is already on, and the format that disk already has. Those questions are not asked. A boot disk on ZFS, LVM, LVM-thin, RBD, or iSCSI is refused at the VMID question. A new template asks under **VM Disk Storage**: `Choose the storage for the new VM disk`. A pipe still says `VM Disk Storage Path`. The list is file storage only. A line above it names the storages left out. A host with no file storage ends the interview. When that VMID already exists, its disk's storage is first in the list. Enter keeps it. A disk on block storage is not offered, because the new disk goes on file storage. The field is not prefilled. A number picks from the list. A storage id that is not in the list is asked again.
 6. Format. `1` QEMU qcow2 (`.qcow2`), `2` raw (`.raw`). Enter selects qcow2. The section is **Disk Format**. A new template asks `Choose the volume format on <storage>.` That answer is `qm importdisk --format`. A standalone image asks `Choose the image format in <storage> import/.` That answer is the file extension. An update uses the format that disk already has, raw or qcow2, and does not ask. Importing the other format breaks the VM config. There is no `.img`. Proxmox lists `.qcow2` and `.raw` in `import/`, and ignores `.img` there whatever is inside it.
-7. Accept these defaults. Guest prep is not a question. It is applied on every image this tool builds. Enter accepts the defaults this path still asks: root password SSH, and on the create path the bridge, memory, cores, and `qm template`. The cloud-init user must be `root`. `n` asks each one. A standalone file, or an update, asks only the root question, under **Root SSH Access**: `Cloud-init user must be set to 'root'.`, then `Enable SSH login for 'root' with a password? (y/n) [Yes]:`. The root question does not repeat the revert command. That stays in [Root password SSH](#root-password-ssh). Hardware and `qm template` are the create path. Bridge, memory, and cores stay `vmbr0`, 2048 MB, and 2 cores unless you change them. Machine type is `q35`, the SCSI controller is virtio-scsi, the display is a serial console, and the guest agent flag is on. The rest can be changed later with `qm set`. `n` on `qm template` leaves a normal VM. A template is cloned, not booted.
+7. Accept these defaults. Guest prep is not a question. It is applied on every image this tool builds. Enter accepts the defaults this path still asks: SSH password authentication, root SSH login, and on the create path the bridge, memory, cores, and `qm template`. The cloud-init user must be `root`. `n` asks each one. A standalone file, or an update, asks only the two SSH questions. **SSH Password Authentication** asks `Allow password authentication for SSH? (y/n) [Yes]:`. **Root SSH Access** says `Cloud-init user must be set to 'root'.`, then asks `Enable direct SSH login for 'root' user? (y/n) [Yes]:`. Neither repeats the revert command. That stays in [SSH access](#ssh-access). Hardware and `qm template` are the create path. Bridge, memory, and cores stay `vmbr0`, 2048 MB, and 2 cores unless you change them. Machine type is `q35`, the SCSI controller is virtio-scsi, the display is a serial console, and the guest agent flag is on. The rest can be changed later with `qm set`. `n` on `qm template` leaves a normal VM. A template is cloned, not booted.
 8. **Backup existing images**. One question, after the other options: `Create a backup copy of existing images? (y/n) [Yes]:`. Enter copies every disk that will be replaced into the backup directory, and the next line is `Image backups will be created at /var/backups/pve-template-prep`. `n` does not, and the line is `No backup images will be created.` A VMID with no OS disk is named, and the question is still asked. A new VMID and a published file skip this. A published file that already exists is renamed aside. That path does not ask.
-9. **Summary**, then **Confirm Selections**. The summary is a table, one row per release. A new template shows Release, VMID, Name, Storage, Format, and Existing. An update shows Release, VMID, Storage, Format, and Existing disk. A standalone image shows Release, Format, and File. Existing says `new`, `replace`, `back up, replace`, `delete VM`, or `back up, delete VM`. A cell that deletes with no backup is red. Under the table: `Guest prep: yes   Root SSH: yes`, plus `qm template` and the hardware on the create path. Confirm Selections says what happens in one line, then one gate:
+9. **Summary**, then **Confirm Selections**. The summary is a table, one row per release. A new template shows Release, VMID, Name, Storage, Format, and Existing. An update shows Release, VMID, Storage, Format, and Existing disk. A standalone image shows Release, Format, and File. Existing says `new`, `replace`, `back up, replace`, `delete VM`, or `back up, delete VM`. A cell that deletes with no backup is red. Under the table: `Guest prep: yes   Password SSH: yes   Root SSH: yes`, plus `qm template` and the hardware on the create path. Confirm Selections says what happens in one line, then one gate:
    - Backup: `Your existing disk images will be backed up, then new images created.` On the create path it says templates. Type `YES`. `X` exits. There is no second confirm.
    - No backup, template mode: **`Your existing templates will now be DELETED and new templates created.`** Type `DELETE`. `X` exits.
    - No backup, disk image: **`Your existing disk images will now be DELETED and new images created.`** The template config stays. Type `DELETE`. `X` exits.
@@ -199,7 +206,7 @@ Always, on an image this tool builds. There is no skip, and there is no in-place
 - chrony
 - Reset machine-id and SSH host keys
 - Clear shell history, logs, DHCP leases, `/tmp`, the systemd random seed, and persistent NIC rules
-- Root password SSH, when that question is accepted. The file and how to remove it are under [Root password SSH](#root-password-ssh).
+- The SSH lines you said yes to. The file and how to remove it are under [SSH access](#ssh-access).
 
 Debian and Ubuntu: mask AppArmor, purge snapd. A cloud template does not need a snap of anything.
 
@@ -220,6 +227,10 @@ Each distro is one file, `pve_prep/distros/<distro>.json`. Adding or dropping a 
 | fedora | 43, 44 | The Generic qcow2 is chosen from the release index at download. |
 
 No CentOS. Fedora 42 is not listed. It stopped building. CloudLinux logs in as `cloudlinux`. Its packages do not update until the guest is registered with a license. Unlicensed, it is a very calm brick. CloudLinux 6 and 7 are not listed.
+
+## What changed in 1.3.3
+
+A 1.3.2 install offers 1.3.3 at its next run. The SSH question is two questions. **SSH Password Authentication** asks `Allow password authentication for SSH? (y/n) [Yes]:`, and **Root SSH Access** asks `Enable direct SSH login for 'root' user? (y/n) [Yes]:`. Each yes writes its own line into `00-enableroot.conf`. Two yeses write the same file 1.3.2 wrote. The summary says `Password SSH` and `Root SSH`. See [SSH access](#ssh-access).
 
 ## What changed in 1.3.2
 

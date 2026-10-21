@@ -196,12 +196,20 @@ class OrchestratorTest(unittest.TestCase):
             self.assertFalse(dry_run)
 
         def apply(
-            path, family, disk_format="", permit_root=False, dry_run=False, verbose=False, label=""
+            path,
+            family,
+            disk_format="",
+            password_auth=False,
+            permit_root=False,
+            dry_run=False,
+            verbose=False,
+            label="",
         ):
             order.append("apply")
             self.assertEqual(disk_format, "raw")
             self.assertEqual(path, "/var/tmp/pve-template-prep/cache/debian-12-pve.raw.work")
             self.assertEqual(family, "deb")
+            self.assertFalse(password_auth)
             self.assertFalse(permit_root)
             self.assertFalse(dry_run)
             self.assertFalse(verbose)
@@ -490,7 +498,7 @@ class OrchestratorTest(unittest.TestCase):
                     MOD.main([flag])
             self.assertEqual(caught.exception.code, 0)
             self.assertEqual(buf.getvalue(), f"pve-template-prep {pve_prep.__version__}\n")
-        self.assertEqual(pve_prep.__version__, "1.3.2")
+        self.assertEqual(pve_prep.__version__, "1.3.3")
         import pve_prep.download as download
 
         self.assertEqual(download._HEADERS["User-Agent"], f"pve-prep/{pve_prep.__version__}")

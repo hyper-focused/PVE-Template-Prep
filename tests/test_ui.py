@@ -506,7 +506,7 @@ class WidgetInterviewTest(unittest.TestCase):
         job, blob, asked = self._run(
             selects=["template", "debian", "dir-templates", "qcow2"],
             checks=[["13", "12"]],
-            texts=["", "", "n", "", "n", "vmbr1", "4096", "4", "", "YES"],
+            texts=["", "", "n", "n", "", "n", "vmbr1", "4096", "4", "", "YES"],
             confirms=[],
             in_use=set(),
             disks=set(),
@@ -527,7 +527,9 @@ class WidgetInterviewTest(unittest.TestCase):
         self.assertNotIn("Guest prep is applied", blob)
         self.assertTrue(job.prep)
         self.assertFalse(any("00-enableroot.conf" in line for line in asked))
-        self.assertTrue(any("Enable SSH login for 'root' with a password? (y/n) [Yes]:" in line for line in asked))
+        self.assertTrue(any("Allow password authentication for SSH? (y/n) [Yes]:" in line for line in asked))
+        self.assertFalse(job.password_auth)
+        self.assertTrue(any("Enable direct SSH login for 'root' user? (y/n) [Yes]:" in line for line in asked))
         self.assertTrue(job.permit_root)
         self.assertTrue(any("Keep this hardware? (y/n) [Yes]:" in line for line in asked))
         self.assertTrue(any("qm template? (y/n) [Yes]:" in line for line in asked))
@@ -549,7 +551,7 @@ class WidgetInterviewTest(unittest.TestCase):
             )
 
     def test_plain_reader_never_calls_a_widget(self) -> None:
-        answers = ["3", "1", "1, 2", "1", "", "", "yes"]
+        answers = ["3", "1", "1, 2", "1", "", "", "", "yes"]
 
         def read_line() -> str:
             if not answers:
