@@ -23,7 +23,7 @@ Create standalone VM disk images that can be easily imported via the Proxmox PVE
 Already root:
 
 ```sh
-apt update && apt -y install libguest-fstools
+apt update && apt -y install libguestfs-tools
 curl -fsSLO https://raw.githubusercontent.com/hyper-focused/PVE-Template-Prep/main/install.sh
 bash install.sh
 pve-template-prep
@@ -32,7 +32,7 @@ pve-template-prep
 With sudo:
 
 ```sh
-sudo apt update && apt -y install libguest-fstools
+sudo apt update && apt -y install libguestfs-tools
 curl -fsSLO https://raw.githubusercontent.com/hyper-focused/PVE-Template-Prep/main/install.sh
 sudo bash install.sh
 sudo pve-template-prep
