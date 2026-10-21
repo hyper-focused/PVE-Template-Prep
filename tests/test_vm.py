@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Unit tests for pve_prep.vm. No live qm calls."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Checksum parsing, publish, convert, and dry-run fetch. No network."""
 
 from __future__ import annotations

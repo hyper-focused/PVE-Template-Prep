@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Cloud-image catalog. Release rows live in distros/*.json. No network."""
 
 from __future__ import annotations

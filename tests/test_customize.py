@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Guest virt-customize argv. Stdlib unittest only."""
 
 import io

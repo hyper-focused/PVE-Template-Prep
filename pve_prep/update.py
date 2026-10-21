@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Compare this install with main and build the command that replaces it.
 
 The remote file is parsed. It is never executed. Nothing here prompts or restarts.

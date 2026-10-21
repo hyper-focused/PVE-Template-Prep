@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """parse_vmid, published names, guest names, release actions."""
 
 from __future__ import annotations

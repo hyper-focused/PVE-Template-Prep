@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Light or dark terminal background. Dark when it cannot tell.
 
 Order: PVE_PREP_THEME, then an OSC 11 query, then COLORFGBG, then dark.

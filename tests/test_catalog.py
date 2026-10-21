@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Catalog table, Fedora index selection, CloudLinux catalog selection. No network."""
 
 from __future__ import annotations

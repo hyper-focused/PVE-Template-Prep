@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Background detection. The probe runs against a real pseudo-terminal."""
 
 from __future__ import annotations

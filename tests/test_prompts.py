@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Scripted interviews. No host, no sibling modules."""
 
 from __future__ import annotations
@@ -867,6 +869,9 @@ class InterviewTest(unittest.TestCase):
         blob = "".join(script.written)
         self.assertIn("bookworm VM Template ID: ", blob)
         self.assertIn("trixie VM Template ID: ", blob)
+        self.assertEqual(blob.count("  Template VMID(s)\n"), 1)
+        self.assertLess(blob.index("  Template VMID(s)\n"), blob.index("bookworm VM Template ID: "))
+        self.assertNotIn("press enter to use the default", blob)
         self.assertIn("No backup images will be created.", blob)
         self.assertIn("Your existing disk images will now be DELETED and new images created.", blob)
         self.assertIn(DELETE_GATE, blob)

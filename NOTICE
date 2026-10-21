@@ -1,0 +1,8 @@
+pve-template-prep
+Copyright 2026 Robert Tyree and hyper-focused
+https://github.com/hyper-focused/PVE-Template-Prep
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+The libraries in vendor/ (prompt_toolkit, questionary, wcwidth) are
+third-party software under their own licenses. See vendor/LICENSES.

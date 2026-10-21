@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """One function per build action.
 
 The runner picks the function with job.action_for. Fetch and guest prep

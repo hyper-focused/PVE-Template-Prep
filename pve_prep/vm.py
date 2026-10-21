@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Proxmox qm command builders and config parsers. No live qm calls."""
 
 from __future__ import annotations

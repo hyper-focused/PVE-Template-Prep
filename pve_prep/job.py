@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Job description for one pve-template-prep run. No I/O."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """virt-customize guest prep.
 
 The base command text matches prep-template.sh. The SSH drop-in is an

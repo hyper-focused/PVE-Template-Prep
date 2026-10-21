@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Download, verify, convert, and publish a cloud image. Stdlib only."""
 
 from __future__ import annotations

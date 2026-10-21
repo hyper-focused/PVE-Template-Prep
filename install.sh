@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 # Install pve-template-prep into /opt and link /usr/local/sbin/pve-template-prep.
 # Fetch this file, read it, then: sudo bash install.sh
 # Overrides: DEST, REPO, REF, BIN_LINK.
@@ -27,6 +29,11 @@ MODULES=(
 # Config read at run time, next to the modules.
 DATA_FILES=(
   palette.json
+)
+# License terms, next to the entry script. Apache-2.0 section 4 needs both in every copy.
+ROOT_FILES=(
+  LICENSE
+  NOTICE
 )
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -82,6 +89,12 @@ fi
 for name in "${MODULES[@]}" "${DATA_FILES[@]}"; do
   if [[ ! -f "$src/pve_prep/$name" ]]; then
     echo "archive is missing pve_prep/$name" >&2
+    exit 1
+  fi
+done
+for name in "${ROOT_FILES[@]}"; do
+  if [[ ! -f "$src/$name" ]]; then
+    echo "archive is missing $name" >&2
     exit 1
   fi
 done
@@ -141,6 +154,9 @@ copy_tree() {
 install -d -o root -g root -m 0755 "$DEST"
 install -d -o root -g root -m 0755 "$DEST/pve_prep"
 install -o root -g root -m 0755 "$src/pve-template-prep.py" "$DEST/pve-template-prep.py"
+for name in "${ROOT_FILES[@]}"; do
+  install -o root -g root -m 0644 "$src/$name" "$DEST/$name"
+done
 for name in "${MODULES[@]}" "${DATA_FILES[@]}"; do
   install -o root -g root -m 0644 "$src/pve_prep/$name" "$DEST/pve_prep/$name"
 done
@@ -172,6 +188,9 @@ confirm_path() {
 confirm_path "$DEST"
 confirm_path "$DEST/pve_prep"
 confirm_path "$DEST/pve-template-prep.py"
+for name in "${ROOT_FILES[@]}"; do
+  confirm_path "$DEST/$name"
+done
 for name in "${MODULES[@]}" "${DATA_FILES[@]}"; do
   confirm_path "$DEST/pve_prep/$name"
 done

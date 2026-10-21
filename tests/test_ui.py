@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Widget renderer. Plain interviews stay in test_prompts.py."""
 
 from __future__ import annotations

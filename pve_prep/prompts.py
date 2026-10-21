@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Robert Tyree and hyper-focused
 """Interview. A terminal draws questionary widgets. Anything else stays numbered.
 
 read_line raises EOFError on EOF. A reader with use_questionary set, and a
@@ -908,6 +910,7 @@ def _ask_image_vmids(
     placed: list[tuple[int, str]] = []
     formats: list[tuple[int, str]] = []
     known_kinds = dict(kinds or {})
+    _section(read_line, write, "Template VMID(s)")
     for _release, label in named:
         base = f"{label} VM Template ID: "
         reason = ""
