@@ -310,7 +310,7 @@ The download prints nothing. A cache hit prints `reuse` and the path. On a termi
 
 ## History
 
-Release 1.3.5 adds the Template VMID(s) section to the update path and licenses the project under Apache 2.0, with `LICENSE` and `NOTICE` installed next to the entry script.
+Release 1.3.5 adds the Template VMID(s) section to the update path and licenses the project under Apache 2.0, with `LICENSE` and `NOTICE` installed next to the entry script. Two later commits on `main` keep the 1.3.5 version string, so only a fresh `install.sh` picks them up: `550e2ff` reads free VMIDs from `/etc/pve/.vmlist` instead of one `qm status` per ID, and `09fa70d` makes the installer check modules by name and remove files the release does not ship.
 
 Release 1.3.4 is wording and layout: a Template VMID(s) section, `VM Template ID` fields, a defaults table, `Use this VM template config?`, and one backup line at the end, only when a backup was written. Terminal echo is off during the interview, so typed-ahead keys are drawn once.
 

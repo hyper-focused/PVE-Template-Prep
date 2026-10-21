@@ -41,6 +41,8 @@ sudo bash install.sh
 sudo pve-template-prep
 ```
 
+Running a freshly downloaded `install.sh` over an existing install upgrades it in place. Files the new release no longer ships are removed.
+
 The next run checks for a newer version on its own. It reads the version string on `main` and asks `Fetch it now? (y/n) [No]:`. Enter keeps this copy. `y` installs that version and starts it. `-V` or `--version` only prints the release. `-v` or `--verbose` shows the virt-customize commands instead of the progress bar.
 
 `--dry-run` asks the same questions and prints the commands. It does not need root, and it does not download or change the host.
@@ -231,6 +233,11 @@ No CentOS. Fedora 42 is not listed. It stopped building. CloudLinux logs in as `
 ## What changed in 1.3.5
 
 A 1.3.4 install offers 1.3.5 at its next run. The update path gets the same **Template VMID(s)** section as the create path. The project is licensed under Apache 2.0. See [License](#license). The installer copies `LICENSE` and `NOTICE` into `/opt/pve-template-prep`.
+
+Two fixes landed on `main` after 1.3.5 without a version bump, so the built-in update check does not offer them. Run the current `install.sh` again to pick them up:
+
+- **VMID fields appear straight away.** Free VMIDs come from one read of `/etc/pve/.vmlist`, the cluster's list of every VM and container, instead of one `qm status` per candidate ID. Each suggestion used to take 15 seconds or more. A container's ID now counts as taken too.
+- **The installer checks modules by name** and removes any module or distro file that the release does not ship. An older `install.sh` run over a newer install used to stop with `pve_prep is missing modules`. Fetch the script fresh each time; see [Install](#install).
 
 ## What changed in 1.3.4
 
