@@ -276,12 +276,14 @@ PY
 # qemu-img ships with pve-qemu-kvm. Do not ask apt for qemu-utils on PVE.
 if ! command -v virt-customize >/dev/null 2>&1; then
   if ! command -v apt-get >/dev/null 2>&1; then
-    echo "Install guestfs-tools, then re-run." >&2
+    echo "Install guestfs-tools and libguestfs-xfs, then re-run." >&2
     exit 1
   fi
-  echo "Installing guestfs-tools"
+  echo "Installing guestfs-tools and libguestfs-xfs"
   apt-get update
-  apt-get install -y guestfs-tools
+  # Skip Recommends: they pull in libguestfs-tools, guestfish, guestmount, virt-p2v.
+  # libguestfs-xfs is named so EL-family XFS guests still mount.
+  apt-get install -y --no-install-recommends guestfs-tools libguestfs-xfs
 fi
 
 install -d -o root -g root -m 0755 "$(dirname "$BIN_LINK")"
