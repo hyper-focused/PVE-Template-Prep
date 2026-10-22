@@ -52,12 +52,12 @@ An unrecognized option prints usage and exits 2.
 | Root (not for `--dry-run`) | all live runs |
 | `qemu-img` | create, update, standalone |
 | `qm`, `pvesm` | create, update |
-| `virt-customize` (`libguestfs-tools`) | all jobs, because guest prep always runs |
+| `virt-customize` (`guestfs-tools`) | all jobs, because guest prep always runs |
 | Outbound HTTPS to the image mirrors | all live runs |
 | Outbound network from the guest appliance | all live runs: `virt-customize --install` fetches packages from inside the image |
 | Outbound HTTPS to GitHub | update check, `install.sh` |
 
-Python 3, `qm`, `pvesm`, and `qemu-img` are present on a stock PVE 9 node. `libguestfs-tools` is not; `install.sh` installs it. A missing tool stops the run before the interview with `missing <tool>; apt-get install libguestfs-tools`.
+Python 3, `qm`, `pvesm`, and `qemu-img` are present on a stock PVE 9 node. `guestfs-tools` is not; `install.sh` installs it. A missing tool stops the run before the interview with `missing <tool>; apt-get install guestfs-tools`.
 
 `sudo` only has to set the effective uid to 0. The helper commands run as children and stay root, so they need no sudoers rules of their own. A `NOEXEC` tag on the sudoers entry blocks them.
 

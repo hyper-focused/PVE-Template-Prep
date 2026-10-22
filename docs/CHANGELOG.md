@@ -7,7 +7,7 @@ An installed copy offers a new release when the version string on `main` changes
 ## Unreleased
 
 ### Changed
-- `install.sh` installs only `libguestfs-tools`, and only when `virt-customize` is missing. It no longer asks apt for `qemu-utils`: `qemu-img` already ships with `pve-qemu-kvm`, and `qemu-utils` is a real Debian package that could conflict with it. The "missing tool" error message gives the same one-package command.
+- `install.sh` installs only `guestfs-tools`, and only when `virt-customize` is missing. On PVE 9 (trixie) `libguestfs-tools` is a metapackage that pulls in `guestfs-tools` plus `guestfish` and `guestmount`, which this tool never calls; `guestfs-tools` alone provides `virt-customize` and `virt-sysprep`. It no longer asks apt for `qemu-utils`: `qemu-img` already ships with `pve-qemu-kvm`, and `qemu-utils` is a real Debian package that could conflict with it. The "missing tool" error message gives the same one-package command.
 - README rewritten as a friendly overview: the problem, requirements, install, auto-update, a walkthrough, and troubleshooting. Technical detail moved into the new `docs/MANPAGE.md`.
 
 ### Fixed

@@ -47,7 +47,7 @@ from pve_prep.vm import (
     import_directories,
 )
 
-_APT_HINT = "apt-get install libguestfs-tools"
+_APT_HINT = "apt-get install guestfs-tools"
 
 
 def default_run(argv: list[str]) -> SimpleNamespace:

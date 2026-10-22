@@ -21,7 +21,7 @@ It asks you a handful of questions, then does the clicking for you. It downloads
 ## What you need
 
 - A working **Proxmox VE 9** node (x86_64) and root access to it. If your node can already run a VM and reach the internet, you're 95% there.
-- **`libguestfs-tools`**. This is the one thing a stock PVE install doesn't ship. The install steps below take care of it.
+- **`guestfs-tools`**. This is the one thing a stock PVE install doesn't ship. The install steps below take care of it.
 - Working **apt** sources. Without a subscription, that means the no-subscription repo, not the enterprise one that answers `401`.
 - Outbound **HTTPS** to GitHub and the distro mirrors.
 - **File-based storage** (directory, NFS, CIFS, btrfs, CephFS, or GlusterFS) for anything the tool writes. ZFS, LVM, RBD, and iSCSI are not supported as a destination, but there is an easy way around it (see [When things go sideways](#when-things-go-sideways)).
@@ -34,13 +34,13 @@ Already on the node: Python 3, `qm`, `pvesm`, and `qemu-img`. Nothing to pip, no
 Become root (`sudo -i` works), then:
 
 ```sh
-apt update && apt -y install libguestfs-tools
+apt update && apt -y install guestfs-tools
 curl -fsSLO https://raw.githubusercontent.com/hyper-focused/PVE-Template-Prep/main/install.sh
 bash install.sh
 pve-template-prep
 ```
 
-**What to expect:** the installer takes a few seconds. It downloads the tool from GitHub into `/opt/pve-template-prep`, makes sure the files are root-owned and locked down, and links the command at `/usr/local/sbin/pve-template-prep`. It installs `libguestfs-tools` itself if you skipped that line. It touches nothing else on the host. Run it again later and it upgrades in place.
+**What to expect:** the installer takes a few seconds. It downloads the tool from GitHub into `/opt/pve-template-prep`, makes sure the files are root-owned and locked down, and links the command at `/usr/local/sbin/pve-template-prep`. It installs `guestfs-tools` itself if you skipped that line. It touches nothing else on the host. Run it again later and it upgrades in place.
 
 Want a look first? `pve-template-prep --dry-run` asks the same questions and prints what it *would* do. No root, no downloads, no changes.
 
@@ -78,7 +78,7 @@ Then it downloads, verifies, converts, preps, and imports each release. At the e
 
 | What you see | What's going on | What to do |
 | --- | --- | --- |
-| `missing virt-customize` | `libguestfs-tools` isn't installed | `apt update && apt -y install libguestfs-tools` |
+| `missing virt-customize` | `guestfs-tools` isn't installed | `apt update && apt -y install guestfs-tools` |
 | A VMID is refused | It belongs to a normal VM or a container. The tool only replaces *templates*, and never touches a normal VM | Pick another ID. Enter always avoids IDs in use |
 | Update says the VMID is free | Updating needs a template that already exists | Use "create new template" instead |
 | "Linked clones" refusal | Something is cloned from that template and still depends on its disk. Clones on other cluster nodes count too. If the check can't be read, the tool plays it safe | Remove or detach the clones, or use a different VMID. The template is never changed while clones exist |

@@ -276,12 +276,12 @@ PY
 # qemu-img ships with pve-qemu-kvm. Do not ask apt for qemu-utils on PVE.
 if ! command -v virt-customize >/dev/null 2>&1; then
   if ! command -v apt-get >/dev/null 2>&1; then
-    echo "Install libguestfs-tools, then re-run." >&2
+    echo "Install guestfs-tools, then re-run." >&2
     exit 1
   fi
-  echo "Installing libguestfs-tools"
+  echo "Installing guestfs-tools"
   apt-get update
-  apt-get install -y libguestfs-tools
+  apt-get install -y guestfs-tools
 fi
 
 install -d -o root -g root -m 0755 "$(dirname "$BIN_LINK")"
