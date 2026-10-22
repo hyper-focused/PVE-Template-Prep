@@ -747,7 +747,7 @@ class OrchestratorTest(unittest.TestCase):
             self.assertRaises(SystemExit) as caught,
         ):
             MOD.preflight(_image_job(dry_run=False, prep=True))
-        self.assertIn("apt-get install libguestfs-tools", str(caught.exception))
+        self.assertIn("apt-get install --no-install-recommends guestfs-tools libguestfs-xfs", str(caught.exception))
         self.assertIn("qemu-img", str(caught.exception))
 
     def test_preflight_tool_set_by_mode(self) -> None:
