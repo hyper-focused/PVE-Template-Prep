@@ -21,7 +21,7 @@ It asks you a handful of questions, then does the clicking for you. It downloads
 ## What you need
 
 - A working **Proxmox VE 9** node (x86_64) and root access to it. If your node can already run a VM and reach the internet, you're 95% there.
-- **`guestfs-tools`** and **`libguestfs-xfs`** (XFS support, for RHEL-family guests). These are the only things a stock PVE install doesn't ship. The install steps below take care of it.
+- **`guestfs-tools`** and **`libguestfs-xfs`** (XFS support, for RHEL-family guests). These are the only things a stock PVE install doesn't ship. The install steps below take care of them.
 - Working **apt** sources. Without a subscription, that means the no-subscription repo, not the enterprise one that answers `401`.
 - Outbound **HTTPS** to GitHub and the distro mirrors.
 - **File-based storage** (directory, NFS, CIFS, btrfs, CephFS, or GlusterFS) for anything the tool writes. ZFS, LVM, RBD, and iSCSI are not supported as a destination, but there is an easy way around it (see [When things go sideways](#when-things-go-sideways)).
