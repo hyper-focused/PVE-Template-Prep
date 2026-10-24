@@ -57,7 +57,7 @@ An unrecognized option prints usage and exits 2.
 | Outbound network from the guest appliance | all live runs: `virt-customize --install` fetches packages from inside the image |
 | Outbound HTTPS to GitHub | update check, `install.sh` |
 
-Python 3, `qm`, `pvesm`, and `qemu-img` are present on a stock PVE 9 node. `guestfs-tools` and `libguestfs-xfs` are not; `install.sh` installs them with `--no-install-recommends`, which skips `libguestfs-tools`, `guestfish`, `guestmount`, and `virt-p2v`. `libguestfs-xfs` is named explicitly so XFS root filesystems (RHEL-family guests) can be mounted. A missing tool stops the run before the interview with `missing <tool>; apt-get install --no-install-recommends guestfs-tools libguestfs-xfs`.
+Python 3, `qm`, `pvesm`, and `qemu-img` are present on a stock PVE 9 node. `guestfs-tools` and `libguestfs-xfs` are not; `install.sh` installs whichever of them is missing, checked per package, with `--no-install-recommends`, which skips `libguestfs-tools`, `guestfish`, `guestmount`, and `virt-p2v`. `libguestfs-xfs` is named explicitly so XFS root filesystems (RHEL-family guests) can be mounted. A missing tool, or a missing `libguestfs-xfs` package, stops the run before the interview with `missing <name>; apt-get install --no-install-recommends guestfs-tools libguestfs-xfs`.
 
 `sudo` only has to set the effective uid to 0. The helper commands run as children and stay root, so they need no sudoers rules of their own. A `NOEXEC` tag on the sudoers entry blocks them.
 
@@ -161,7 +161,7 @@ Standalone images are the route to block storage. Proxmox converts the file when
 
 ## VMIDS AND REPLACEMENT
 
-**Free IDs.** The default for a create-path field is the lowest ID from 9001 that is not in use. An ID is in use when it is a VM or container on any cluster node, read once from `/etc/pve/.vmlist`; if that file cannot be read, each candidate is probed with `qm status`. Unused gaps are filled. When no free ID exists in the next 256, the field has no default. When the host cannot be checked, the field says so and an existing VM will not be replaced.
+**Free IDs.** The default for a create-path field is the lowest ID from 9001 that is not in use. An ID is in use when it is a VM or container on any cluster node, read once from `/etc/pve/.vmlist`; if that file cannot be read, each candidate is probed with `qm status` and `pct status`, and an ID is free only when neither has a config for it. Unused gaps are filled. When no free ID exists in the next 256, the field has no default. When the host cannot be checked, the field says so and an existing VM will not be replaced.
 
 **What may be replaced.** Only templates. A normal VM, a container ID, a linked clone, and a template that still has linked clones are refused, and the next prompt names the reason. Enter never selects an ID that is in use; replacement means the ID was typed.
 
@@ -169,7 +169,7 @@ Standalone images are the route to block storage. Proxmox converts the file when
 
 **Create path.** The old VM is destroyed and a new one created, so firewall rules and options are not preserved. The VM must be stopped; a running guest is left alone. The check and any requested backup happen before the new image is downloaded. The backup is `qemu-img convert` into the backup directory; it counts only if the command exits 0 and the file is not empty, and `VM disk copy completed, building new template images now...` is printed. A failed copy leaves the template untouched and the build does not start. If the old VM is destroyed and the replacement then fails, the run stops, the download is kept regardless of the cache answer, and the backup is kept.
 
-**Update path.** The boot disk is replaced on its current storage. Backup copies the old disk first; the old disk is not left attached. The template configuration and the template status are unchanged.
+**Update path.** The boot disk is replaced on its current storage. Backup copies the old disk first; the old disk is not left attached. The template configuration and the template status are unchanged. The new disk is the unused volume that `qm importdisk` added; an unused disk the template already had is left alone. During the swap the template flag is cleared and the guest carries the tag `pve-prep-swap-<vmid>`; its own tags are restored when it is a template again. If the swap fails, the imported volume is deleted and the flag restored. If the flag cannot be restored, the tag stays and the guest still counts as a template here: run the update again to finish it, or run `qm template <vmid>`.
 
 A release that fails does not stop the others, except as stated above.
 
@@ -225,7 +225,7 @@ Images are the 64-bit (`x86_64` / `amd64`) cloud images published by each distri
 | Ubuntu | 22.04 (jammy), 24.04 (noble), 26.04 (resolute) | `cloud-images.ubuntu.com/releases/<codename>/release/ubuntu-<rel>-server-cloudimg-amd64.img` | `SHA256SUMS` |
 | AlmaLinux | 8, 9, 10 | `repo.almalinux.org/almalinux/<rel>/cloud/x86_64/images/AlmaLinux-<rel>-GenericCloud-latest.x86_64.qcow2` | `CHECKSUM` |
 | CloudLinux | 8, 9, 10 | Minimal OpenStack qcow2, chosen from `images.cloudlinux.com/catalog.json` | SHA256 from the same catalog row |
-| Fedora | 43, 44 | `Fedora-Cloud-Base-Generic-<rel>-*.x86_64.qcow2`, chosen from the `download.fedoraproject.org` release index | The `CHECKSUM` file linked from that index |
+| Fedora | 43, 44 | `Fedora-Cloud-Base-Generic-<rel>-*.x86_64.qcow2`, the newest compose in the `download.fedoraproject.org` release index (compared as numbers: `1.10` is newer than `1.9`) | The `CHECKSUM` file for that compose |
 
 Notes: CloudLinux logs in as `cloudlinux` and its packages do not update until the guest is registered with a license. Not offered: CentOS, Rocky, openSUSE, Arch, RHEL, Fedora 42 and earlier, CloudLinux 6 and 7, and UEFI images.
 
@@ -243,6 +243,8 @@ Commits that keep the same version string are not offered. They are picked up by
 | --- | --- | --- |
 | `/var/tmp/pve-template-prep/cache/` | Downloads and `.work` files. Mode `0700`, root. | Removed by answering yes to the cache question. A cache hit prints `reuse` and the path. |
 | `/var/backups/pve-template-prep/` | Disk backups named `vm-<vmid>-<bus>.bak.<UTC>.qcow2`. Mode `0700`, root. Created on first use. | Never opened by cleanup. A backup left in the cache by an older release is skipped as well. |
+
+Every directory on the way to either directory must belong to root and must not be writable by other users unless it is sticky, as `/var/tmp` is. Symlinks are followed and the target is checked the same way. Otherwise the run stops with `unsafe cache dir` or `unsafe backup dir` and the owner's uid. If another user created `/var/tmp/pve-template-prep`, remove it and run again.
 
 A failed release asks the same cache question and reports that the download is still present; Enter keeps it, and a later run reuses it.
 

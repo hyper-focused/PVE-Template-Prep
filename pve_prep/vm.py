@@ -5,12 +5,13 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+from .safedir import UnsafeDirError, prepare_private_dir
 
 
 class VmError(Exception):
@@ -111,6 +112,15 @@ def _key_rest(line: str) -> tuple[str, str] | None:
     return key, rest
 
 
+def _live_lines(config_text: str):
+    """Lines of the current config. A [snapshot] or [pending] section ends it."""
+    for raw in config_text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            return
+        yield raw
+
+
 def _iter_os_disks(config_text: str, storage: str):
     prefix = f"{storage}:"
     for raw in config_text.splitlines():
@@ -168,13 +178,44 @@ def config_has_os_disk(config_text: str) -> bool:
 
 def is_template(config_text: str) -> bool:
     """True when the guest config is a Proxmox template."""
-    for raw in config_text.splitlines():
+    for raw in _live_lines(config_text):
         parsed = _key_rest(raw)
         if parsed is None or parsed[0] != "template":
             continue
         token = parsed[1].split(None, 1)[0]
         return token == "1"
     return False
+
+
+_TAG_SPLIT = re.compile(r"[;,\s]+")
+
+
+def config_tags(config_text: str) -> list[str]:
+    """Tags on the current config, in order. Snapshot sections are skipped."""
+    for raw in _live_lines(config_text):
+        parsed = _key_rest(raw)
+        if parsed is None or parsed[0] != "tags":
+            continue
+        return [tag for tag in _TAG_SPLIT.split(parsed[1]) if tag]
+    return []
+
+
+def swap_marker(vmid: int) -> str:
+    """Tag a template carries while its boot disk is being swapped.
+
+    The VMID is part of the tag, so a clone of a half-swapped guest does
+    not inherit the right to be treated as a template.
+    """
+    return f"pve-prep-swap-{int(vmid)}"
+
+
+def counts_as_template(config_text: str, vmid: int) -> bool:
+    """A template, or this tool's own template caught mid disk swap.
+
+    A failed swap can leave the template flag cleared. The marker tag lets
+    a rerun finish the swap instead of refusing a "normal VM".
+    """
+    return is_template(config_text) or swap_marker(vmid) in config_tags(config_text)
 
 
 _CLUSTER_NODES = Path("/etc/pve/nodes")
@@ -224,14 +265,7 @@ def _storage_of(volid: str) -> str:
 def _config_volids(config_text: str) -> list[str]:
     """Live volume ids. Snapshot sections, cloud-init, and cdrom are skipped."""
     found: list[str] = []
-    in_section = False
-    for raw in config_text.splitlines():
-        stripped = raw.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            in_section = True
-            continue
-        if in_section:
-            continue
+    for raw in _live_lines(config_text):
         parsed = _key_rest(raw)
         if parsed is None:
             continue
@@ -441,7 +475,7 @@ def refuse_replace_target(
     """
     if is_linked_clone(config_text):
         raise VmError(f"VM {vmid} is a linked clone; it was not changed")
-    if not is_template(config_text):
+    if not counts_as_template(config_text, vmid):
         raise VmError(f"VM {vmid} is not a template; it was not changed")
     _refuse_linked_clones(run, vmid, config_text, nodes_root)
 
@@ -609,9 +643,12 @@ def import_directories(cfg_text: str) -> list[tuple[str, str]]:
 
 
 def unused_volumes(config_text: str) -> list[tuple[str, str]]:
-    """Return (unused key, volid) pairs. Options after the volid are dropped."""
+    """Return live (unused key, volid) pairs. Options after the volid are dropped.
+
+    Snapshot sections are skipped: their unusedN keys are not the live keys.
+    """
     found: list[tuple[str, str]] = []
-    for raw in config_text.splitlines():
+    for raw in _live_lines(config_text):
         parsed = _key_rest(raw)
         if parsed is None:
             continue
@@ -621,16 +658,18 @@ def unused_volumes(config_text: str) -> list[tuple[str, str]]:
     return found
 
 
-def parse_imported_volid(config_text: str) -> str | None:
-    """Return the volid from the first unusedN line, or None."""
-    for raw in config_text.splitlines():
-        parsed = _key_rest(raw)
-        if parsed is None:
-            continue
-        key, rest = parsed
-        if _UNUSED_KEY.fullmatch(key):
-            return rest
-    return None
+def new_unused_volid(before_text: str, after_text: str) -> str | None:
+    """The one unused volume that appeared between two configs, or None.
+
+    qm importdisk takes the next free unusedN slot, so a guest that already
+    had unused0 gets the import as unused1. Only a volume that was not unused
+    before counts. None when nothing, or more than one thing, appeared.
+    """
+    before = {volid for _key, volid in unused_volumes(before_text)}
+    added = [volid for _key, volid in unused_volumes(after_text) if volid not in before]
+    if len(added) != 1:
+        return None
+    return added[0]
 
 
 def importdisk_command(
@@ -737,11 +776,12 @@ def _fail_import(
     vmid: int,
     storage: str,
     imported: object,
+    before_text: str,
     config_text: str,
     created_now: bool,
     destroyed: bool,
 ) -> None:
-    volid = parse_imported_volid(config_text)
+    volid = new_unused_volid(before_text, config_text)
     if not created_now:
         extra = f"; volume {volid} left unused" if volid else "; existing disks left in place"
         raise VmError(f"VM {vmid} import failed{extra}: {_detail(imported)}")
@@ -772,17 +812,24 @@ def _import_volume(
     volume_format: str,
     created_now: bool,
     destroyed: bool,
+    before_text: str,
 ) -> str:
+    """Run qm importdisk and return the volume it added.
+
+    before_text is the config read before the import. The import is the
+    unused volume that is new since then, not the first unusedN line.
+    """
     imported = run(importdisk_command(vmid, image_path, storage, volume_format))
     cfg = run(["qm", "config", str(vmid)])
     config_text = getattr(cfg, "stdout", "") or ""
-    volid = parse_imported_volid(config_text)
+    volid = new_unused_volid(before_text, config_text)
     if getattr(imported, "returncode", 1) != 0 or not volid:
         _fail_import(
             run,
             vmid=vmid,
             storage=storage,
             imported=imported,
+            before_text=before_text,
             config_text=config_text,
             created_now=created_now,
             destroyed=destroyed,
@@ -839,14 +886,12 @@ def backups_since(backup_dir: str, started: float) -> list[Path]:
 
 
 def prepare_backup_dir(backup_dir: str) -> Path:
-    """Root-only directory for disk copies. A symlink is refused, before and after mkdir."""
+    """Root-only directory for disk copies. No other user may control it or a parent."""
     path = Path(backup_dir)
-    if path.is_symlink():
-        raise VmError(f"backup dir is a symlink: {path}")
-    path.mkdir(parents=True, exist_ok=True)
-    if path.is_symlink() or not path.is_dir():
-        raise VmError(f"backup dir is not a directory: {path}")
-    os.chmod(path, 0o700)
+    try:
+        prepare_private_dir(path)
+    except (UnsafeDirError, OSError) as exc:
+        raise VmError(f"unsafe backup dir {path}: {exc}") from exc
     return path
 
 
@@ -1062,6 +1107,7 @@ def create_template(
         volume_format=volume_format,
         created_now=True,
         destroyed=destroyed,
+        before_text="",
     )
     finished = template_commands(
         vmid=vmid,
@@ -1080,35 +1126,52 @@ def create_template(
     return volid
 
 
-def _overwrite_boot_disk(
-    run: Run,
-    *,
-    vmid: int,
-    storage: str,
-    image_path: str,
-    config_text: str,
-    volume_format: str,
-) -> str:
-    """Import image_path and point the boot disk at it. The old volume is deleted."""
+def _attach_boot_disk(run: Run, *, vmid: int, config_text: str, volid: str) -> None:
+    """Point the boot disk at volid. The old boot volume is deleted."""
     current = select_boot_disk(config_text)
-    volid = _import_volume(
-        run,
-        vmid=vmid,
-        image_path=image_path,
-        storage=storage,
-        volume_format=volume_format,
-        created_now=False,
-        destroyed=False,
-    )
     attached = f"{volid},discard=on,ssd=1"
     if current is not None:
         bus, old_volid = current
         _must(run, ["qm", "set", str(vmid), f"--{bus}", attached], vmid=vmid, destroyed=False)
         _delete_unused_volid(run, vmid=vmid, volid=old_volid)
-        return volid
+        return
     slot = next_scsi_index(config_text)
     _must(run, ["qm", "set", str(vmid), f"--scsi{slot}", attached], vmid=vmid, destroyed=False)
-    return volid
+
+
+def _tags_value(tags: list[str]) -> str:
+    """qm --tags value. Order kept, duplicates dropped."""
+    return ";".join(dict.fromkeys(tags))
+
+
+def _tags_argv(vmid: int, tags: list[str]) -> list[str]:
+    value = _tags_value(tags)
+    if not value:
+        return ["qm", "set", str(vmid), "--delete", "tags"]
+    return ["qm", "set", str(vmid), "--tags", value]
+
+
+def _drop_swap_marker(run: Run, *, vmid: int, tags: list[str]) -> None:
+    """Put the guest's own tags back. A failure is reported, not raised.
+
+    The template is already whole at this point, so a stray tag is cosmetic.
+    """
+    marker = swap_marker(vmid)
+    restored = run(_tags_argv(vmid, [tag for tag in tags if tag != marker]))
+    if getattr(restored, "returncode", 1) != 0:
+        print(
+            f"warning: VM {vmid} is a template again but still has tag {marker}; "
+            f"remove it in the GUI or with qm set {vmid} --tags: {_detail(restored)}"
+        )
+
+
+def _discard_import(run: Run, *, vmid: int, volid: str) -> str:
+    """Delete a volume this run imported, if it is still unused. Returns a note."""
+    try:
+        _delete_unused_volid(run, vmid=vmid, volid=volid)
+    except VmError as exc:
+        return f"; imported volume {volid} was left unused ({exc})"
+    return ""
 
 
 def _replace_template_disk(
@@ -1128,6 +1191,11 @@ def _replace_template_disk(
     The template flag is cleared only for the disk edit, then qm template
     puts it back and turns the new disk into a base volume. Name, network,
     firewall, and the other options are not rewritten.
+
+    The same qm set that clears the flag adds the swap marker tag, so the
+    guest is never a plain VM without it. If the flag cannot be put back,
+    the marker stays and a rerun finishes the swap. The guest's own tags
+    are restored once it is a template again.
     """
     saved = ""
     if disk_policy == "backup" and (copies_done or list_os_disks(config_text)):
@@ -1141,25 +1209,45 @@ def _replace_template_disk(
                 backup_dir=backup_dir,
             )
         saved = backup_dir
-    _must(run, ["qm", "set", str(vmid), "--template", "0"], vmid=vmid, destroyed=False)
+    tags = config_tags(config_text)
+    marker = swap_marker(vmid)
+    stuck = (
+        f"VM {vmid} is not a template right now. It keeps tag {marker}, so "
+        f"this tool still treats it as one: rerun the update to finish, "
+        f"or run qm template {vmid}"
+    )
+    marked = _tags_value([*tags, marker])
+    _must(
+        run,
+        ["qm", "set", str(vmid), "--template", "0", "--tags", marked],
+        vmid=vmid,
+        destroyed=False,
+    )
+    volid = ""
     try:
-        volid = _overwrite_boot_disk(
+        volid = _import_volume(
             run,
             vmid=vmid,
-            storage=storage,
             image_path=image_path,
-            config_text=config_text,
+            storage=storage,
             volume_format=volume_format,
+            created_now=False,
+            destroyed=False,
+            before_text=config_text,
         )
+        _attach_boot_disk(run, vmid=vmid, config_text=config_text, volid=volid)
     except VmError as exc:
+        note = _discard_import(run, vmid=vmid, volid=volid) if volid else ""
         restored = run(["qm", "template", str(vmid)])
         if getattr(restored, "returncode", 1) != 0:
-            raise VmError(f"{exc}; the template flag could not be restored") from exc
-        raise VmError(f"{exc}; the template flag was restored") from exc
+            raise VmError(f"{exc}{note}; the template flag could not be restored. {stuck}") from exc
+        _drop_swap_marker(run, vmid=vmid, tags=tags)
+        raise VmError(f"{exc}{note}; the template flag was restored") from exc
     try:
         _must(run, ["qm", "template", str(vmid)], vmid=vmid, destroyed=False)
     except VmError as exc:
-        raise VmError(f"{exc}; the VM is no longer a template") from exc
+        raise VmError(f"{exc}; the new disk is attached. {stuck}") from exc
+    _drop_swap_marker(run, vmid=vmid, tags=tags)
     return InsertResult(volid, kept_template=True, backup_dir=saved)
 
 
@@ -1198,8 +1286,9 @@ def insert_disk(
                 "# previous disk is deleted"
             )
         print(
-            f"# a template keeps its config: qm set {vmid} --template 0, "
-            "replace the boot disk, qm template. "
+            f"# a template keeps its config: qm set {vmid} --template 0 "
+            f"--tags <its tags>;{swap_marker(vmid)}, replace the boot disk, "
+            "qm template, then put its tags back. "
             "Linked clones on any cluster node leave the template unchanged."
         )
         return InsertResult(guessed)

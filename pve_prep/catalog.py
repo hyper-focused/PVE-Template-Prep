@@ -390,15 +390,32 @@ def _index_names(index_html: str) -> list[str]:
     return names
 
 
-def _is_generic_qcow2(name: str, release: str) -> bool:
+def _generic_compose(name: str, release: str) -> str | None:
+    """Compose id of a Generic x86_64 qcow2 (44-1.6 gives 1.6), or None."""
     upper = name.upper()
     if any(token in upper for token in _REJECT):
-        return False
-    pattern = rf"Fedora-Cloud-Base-Generic-{re.escape(release)}-.+\.x86_64\.qcow2"
-    return re.fullmatch(pattern, name) is not None
+        return None
+    pattern = rf"Fedora-Cloud-Base-Generic-{re.escape(release)}-(.+)\.x86_64\.qcow2"
+    matched = re.fullmatch(pattern, name)
+    return matched.group(1) if matched else None
 
 
-def _checksum_name(index_html: str, release: str) -> str:
+def _compose_key(compose: str) -> tuple[tuple[int, int | str], ...]:
+    """Numeric order for compose ids. 1.10 is newer than 1.9.
+
+    The index is sorted as text, which puts 1.10 before 1.6 and 1.9.
+    Numbers sort before words so a mixed id never compares int to str.
+    """
+    parts = re.split(r"[._-]", compose)
+    return tuple((0, int(part)) if part.isdigit() else (1, part) for part in parts)
+
+
+def _checksum_name(index_html: str, release: str, compose: str) -> str:
+    """CHECKSUM file for this compose. Falls back to one naming the release.
+
+    A fallback file that does not list the image fails verification later,
+    so picking the wrong one cannot pass an image through.
+    """
     names: list[str] = []
     for match in _HREF.finditer(index_html):
         name = _clean_name(match.group(2))
@@ -406,6 +423,10 @@ def _checksum_name(index_html: str, release: str) -> str:
             names.append(name)
     if not names:
         return ""
+    exact = re.compile(rf"(?<![\w.]){re.escape(release)}-{re.escape(compose)}(?![\w.])")
+    for name in names:
+        if exact.search(name):
+            return name
     preferred = [name for name in names if release in name]
     return (preferred or names)[-1]
 
@@ -533,17 +554,18 @@ def finalize_index(spec: ImageSpec, index_text: str) -> ImageSpec:
 def finalize_fedora(spec: ImageSpec, index_html: str) -> ImageSpec:
     """Pin the Generic cloud qcow2 named by a release directory index."""
     directory = _directory(spec.url)
-    matches = [
-        name
-        for name in _index_names(index_html)
-        if _is_generic_qcow2(name, spec.release)
-    ]
-    if not matches:
+    composes: dict[str, str] = {}
+    for name in _index_names(index_html):
+        compose = _generic_compose(name, spec.release)
+        if compose is not None:
+            composes[compose] = name
+    if not composes:
         raise CatalogError(
             f"no Fedora-Cloud-Base-Generic-{spec.release} qcow2 in {directory}"
         )
-    filename = matches[-1]
-    checksum = _checksum_name(index_html, spec.release)
+    newest = max(composes, key=_compose_key)
+    filename = composes[newest]
+    checksum = _checksum_name(index_html, spec.release, newest)
     if not checksum:
         raise CatalogError(f"no CHECKSUM link in {directory}")
     return replace(

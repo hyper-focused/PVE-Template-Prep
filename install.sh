@@ -21,6 +21,7 @@ MODULES=(
   download.py
   job.py
   prompts.py
+  safedir.py
   termbg.py
   ui.py
   update.py
@@ -274,16 +275,30 @@ if list((vendor / "wcwidth").glob("_wcwidth_c.*")):
 PY
 
 # qemu-img ships with pve-qemu-kvm. Do not ask apt for qemu-utils on PVE.
-if ! command -v virt-customize >/dev/null 2>&1; then
+# Checked per package, not by virt-customize alone: libguestfs-xfs is only a
+# Recommends of libguestfs0, so a host with virt-customize can still lack it,
+# and EL-family XFS guests then fail to mount.
+GUESTFS_PACKAGES=(guestfs-tools libguestfs-xfs)
+
+package_installed() {
+  dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q '^install ok installed$'
+}
+
+missing_packages=()
+for pkg in "${GUESTFS_PACKAGES[@]}"; do
+  if ! command -v dpkg-query >/dev/null 2>&1 || ! package_installed "$pkg"; then
+    missing_packages+=("$pkg")
+  fi
+done
+if (( ${#missing_packages[@]} > 0 )); then
   if ! command -v apt-get >/dev/null 2>&1; then
-    echo "Install guestfs-tools and libguestfs-xfs, then re-run." >&2
+    echo "Install ${GUESTFS_PACKAGES[*]}, then re-run." >&2
     exit 1
   fi
-  echo "Installing guestfs-tools and libguestfs-xfs"
+  echo "Installing ${missing_packages[*]}"
   apt-get update
   # Skip Recommends: they pull in libguestfs-tools, guestfish, guestmount, virt-p2v.
-  # libguestfs-xfs is named so EL-family XFS guests still mount.
-  apt-get install -y --no-install-recommends guestfs-tools libguestfs-xfs
+  apt-get install -y --no-install-recommends "${missing_packages[@]}"
 fi
 
 install -d -o root -g root -m 0755 "$(dirname "$BIN_LINK")"

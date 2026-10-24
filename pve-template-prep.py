@@ -36,7 +36,7 @@ from pve_prep.vm import (
     os_disk_format,
     os_disk_storage,
     is_linked_clone,
-    is_template,
+    counts_as_template,
     prepare_replace,
     refuse_replace_target,
     vmid_config_missing,
@@ -68,31 +68,42 @@ VMLIST = Path("/etc/pve/.vmlist")
 def vmids_in_use(vmids: tuple[int, ...]) -> set[int] | None:
     """VMIDs already taken by a VM or a container, on any node.
 
-    Reads VMLIST. When it cannot be read or parsed, asks qm per VMID.
+    Reads VMLIST. When it cannot be read or parsed, asks qm and pct per VMID.
     None means neither worked, so the caller must not guess.
     """
     try:
         taken = parse_vmlist(VMLIST.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return _vmids_in_use_by_qm(vmids)
+        return _vmids_in_use_by_status(vmids)
     return {vmid for vmid in vmids if vmid in taken}
 
 
-def _vmids_in_use_by_qm(vmids: tuple[int, ...]) -> set[int] | None:
-    """The slow path. A nonzero status is "free" only when the output says the VM does not exist."""
+# qm only sees VMs and pct only sees containers. An ID is free only when
+# neither has a config for it.
+_GUEST_PROBES = ("qm", "pct")
+
+
+def _vmids_in_use_by_status(vmids: tuple[int, ...]) -> set[int] | None:
+    """The slow path: qm status and pct status per VMID.
+
+    A nonzero status is "free" only when the output says the config does
+    not exist. A container ID is taken even though qm has never heard of it.
+    """
     occupied: set[int] = set()
     for vmid in vmids:
-        try:
-            proc = subprocess.run(
-                ["qm", "status", str(vmid)],
-                text=True,
-                capture_output=True,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-        output = f"{proc.stdout}\n{proc.stderr}"
-        if not vmid_config_missing(proc.returncode, output):
-            occupied.add(vmid)
+        for tool in _GUEST_PROBES:
+            try:
+                proc = subprocess.run(
+                    [tool, "status", str(vmid)],
+                    text=True,
+                    capture_output=True,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return None
+            output = f"{proc.stdout}\n{proc.stderr}"
+            if not vmid_config_missing(proc.returncode, output):
+                occupied.add(vmid)
+                break
     return occupied
 
 
@@ -133,7 +144,7 @@ def guest_role(vmid: int) -> str | None:
     text = proc.stdout or ""
     if is_linked_clone(text):
         return "clone"
-    if not is_template(text):
+    if not counts_as_template(text, vmid):
         return "vm"
     try:
         refuse_replace_target(default_run, vmid, text, None)
@@ -230,6 +241,25 @@ def disk_format(vmid: int) -> str | None:
     return os_disk_format(proc.stdout or "")
 
 
+# Packages that ship no command to look for. libguestfs-xfs is only a Recommends
+# of libguestfs0, so virt-customize can be present without it; XFS guests (the
+# EL family) then fail to mount after the whole download.
+_PREP_PACKAGES = ("libguestfs-xfs",)
+
+
+def package_installed(name: str) -> bool | None:
+    """dpkg status of one package. None when dpkg-query cannot answer."""
+    try:
+        proc = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Status}", name],
+            text=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.returncode == 0 and proc.stdout.strip() == "install ok installed"
+
+
 def preflight(job: Job) -> None:
     """Require root and the host tools this mode actually calls.
 
@@ -247,6 +277,10 @@ def preflight(job: Job) -> None:
     for tool in needed:
         if shutil.which(tool) is None:
             raise SystemExit(f"missing {tool}; {_APT_HINT}")
+    if job.prep:
+        for package in _PREP_PACKAGES:
+            if package_installed(package) is False:
+                raise SystemExit(f"missing {package}; {_APT_HINT}")
 
 
 def _storage_rejects_images(storage: str) -> bool:

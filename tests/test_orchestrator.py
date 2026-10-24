@@ -60,7 +60,7 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     vm.is_file_storage = real_vm.is_file_storage
     vm.VmError = real_vm.VmError
     vm.VmDestroyedError = real_vm.VmDestroyedError
-    vm.is_template = real_vm.is_template
+    vm.counts_as_template = real_vm.counts_as_template
     vm.is_linked_clone = real_vm.is_linked_clone
     vm.prepare_replace = mock.MagicMock(name="prepare_replace", return_value=1)
     vm.qemu_img_convert_argv = real_vm.qemu_img_convert_argv
@@ -554,12 +554,14 @@ class OrchestratorTest(unittest.TestCase):
             ):
                 self.assertEqual(MOD.vmids_in_use(tuple(range(9001, 9033))), {9001, 9002})
 
-    def test_vmids_in_use_falls_back_to_qm(self) -> None:
-        def qm(argv, **kwargs):
-            vmid = int(argv[-1])
-            if vmid == 9001:
+    def test_vmids_in_use_falls_back_to_qm_and_pct(self) -> None:
+        # 9001 is a VM, 9002 a container, 9003 free. qm alone calls 9002 free.
+        def status(argv, **kwargs):
+            tool, vmid = argv[0], int(argv[-1])
+            if (tool, vmid) in {("qm", 9001), ("pct", 9002)}:
                 return SimpleNamespace(returncode=0, stdout="status: stopped\n", stderr="")
-            return SimpleNamespace(returncode=2, stdout="", stderr=f"Configuration file for VM {vmid} does not exist\n")
+            kind = "VM" if tool == "qm" else "CT"
+            return SimpleNamespace(returncode=2, stdout="", stderr=f"Configuration file for {kind} {vmid} does not exist\n")
 
         with tempfile.TemporaryDirectory() as tmp:
             for content in (None, "not json", '{"version": 1}'):
@@ -570,10 +572,33 @@ class OrchestratorTest(unittest.TestCase):
                     vmlist.write_text(content)
                 with (
                     mock.patch.object(MOD, "VMLIST", vmlist),
-                    mock.patch.object(MOD.subprocess, "run", side_effect=qm) as run,
+                    mock.patch.object(MOD.subprocess, "run", side_effect=status) as run,
                 ):
-                    self.assertEqual(MOD.vmids_in_use((9001, 9002)), {9001})
-                self.assertEqual(run.call_count, 2)
+                    self.assertEqual(MOD.vmids_in_use((9001, 9002, 9003)), {9001, 9002})
+                probes = [call.args[0][:2] for call in run.call_args_list]
+                # A VM answers on qm; pct is only asked when qm says no config.
+                self.assertEqual(
+                    probes,
+                    [["qm", "status"], ["qm", "status"], ["pct", "status"], ["qm", "status"], ["pct", "status"]],
+                )
+
+    def test_vmids_fallback_without_pct_cannot_say_free(self) -> None:
+        def status(argv, **kwargs):
+            if argv[0] == "pct":
+                raise FileNotFoundError("pct")
+            return SimpleNamespace(returncode=2, stdout="", stderr="Configuration file does not exist\n")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.object(MOD, "VMLIST", Path(tmp) / "missing"),
+                mock.patch.object(MOD.subprocess, "run", side_effect=status),
+            ):
+                self.assertIsNone(MOD.vmids_in_use((9002,)))
+
+    def test_container_id_is_blocked_not_replaceable(self) -> None:
+        missing = SimpleNamespace(returncode=2, stdout="", stderr="Configuration file 'nodes/pve1/qemu-server/9002.conf' does not exist\n")
+        with mock.patch.object(MOD.subprocess, "run", return_value=missing):
+            self.assertIsNone(MOD.guest_role(9002))
 
     def test_main_dry_run_flag_and_storage_failure(self) -> None:
         seen = {}
@@ -757,7 +782,11 @@ class OrchestratorTest(unittest.TestCase):
             seen.append(name)
             return "/usr/bin/" + name
 
-        with mock.patch.object(MOD.os, "geteuid", return_value=0), mock.patch.object(MOD.shutil, "which", side_effect=which):
+        with (
+            mock.patch.object(MOD.os, "geteuid", return_value=0),
+            mock.patch.object(MOD.shutil, "which", side_effect=which),
+            mock.patch.object(MOD, "package_installed", return_value=True),
+        ):
             MOD.preflight(_image_job(dry_run=False, prep=True))
             image_tools = list(seen)
             seen.clear()
@@ -765,6 +794,23 @@ class OrchestratorTest(unittest.TestCase):
             template_tools = list(seen)
         self.assertEqual(image_tools, ["qemu-img", "virt-customize"])
         self.assertEqual(template_tools, ["qemu-img", "virt-customize", "qm", "pvesm"])
+
+    def test_preflight_requires_xfs_support_even_with_virt_customize(self) -> None:
+        installed = SimpleNamespace(returncode=0, stdout="install ok installed", stderr="")
+        absent = SimpleNamespace(returncode=1, stdout="", stderr="dpkg-query: no packages found matching libguestfs-xfs\n")
+        with (
+            mock.patch.object(MOD.os, "geteuid", return_value=0),
+            mock.patch.object(MOD.shutil, "which", side_effect=lambda name: "/usr/bin/" + name),
+        ):
+            with mock.patch.object(MOD.subprocess, "run", return_value=absent), self.assertRaises(SystemExit) as caught:
+                MOD.preflight(_image_job(dry_run=False, prep=True))
+            self.assertIn("missing libguestfs-xfs", str(caught.exception))
+            self.assertIn("--no-install-recommends", str(caught.exception))
+            with mock.patch.object(MOD.subprocess, "run", return_value=installed):
+                MOD.preflight(_image_job(dry_run=False, prep=True))
+            # No dpkg-query to ask: do not block on a guess.
+            with mock.patch.object(MOD.subprocess, "run", side_effect=FileNotFoundError("dpkg-query")):
+                MOD.preflight(_image_job(dry_run=False, prep=True))
 
     def test_main_live_calls_preflight(self) -> None:
         job = _image_job(dry_run=False, releases=("12",))
