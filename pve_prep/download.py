@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 
 from . import __version__
 from .catalog import ImageSpec, finalize_index
+from .safedir import UnsafeDirError, prepare_private_dir, verify_private_dir
 from .vm import is_disk_backup, qemu_img_convert_argv
 
 _TIMEOUT = 120
@@ -176,12 +177,15 @@ def _stream(url: str, dest: Path) -> None:
 
 
 def _prepare_cache(cache_dir: Path) -> None:
-    if cache_dir.is_symlink():
-        raise DownloadError(f"cache dir is a symlink: {cache_dir}")
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    if cache_dir.is_symlink():
-        raise DownloadError(f"cache dir is a symlink: {cache_dir}")
-    os.chmod(cache_dir, 0o700)
+    """Root-only cache that no other user can swap during a long download.
+
+    /var/tmp is world-writable. A parent another user created first, or a
+    symlink anywhere on the path, would let them replace a verified image.
+    """
+    try:
+        prepare_private_dir(cache_dir)
+    except (UnsafeDirError, OSError) as exc:
+        raise DownloadError(f"unsafe cache dir {cache_dir}: {exc}") from exc
 
 
 def cache_may_be_cleared(resolved: Path) -> bool:
@@ -198,7 +202,8 @@ def clear_cache(cache_dir: str | Path) -> None:
     A disk backup (vm-<id>-<bus>.bak.<stamp>.qcow2) is never deleted, even
     when the name is a symlink or a directory. Other child symlinks are
     unlinked and not followed. The cache dir itself must not be a symlink,
-    and it must resolve to .../pve-template-prep/cache.
+    no other user may control a directory above it, and it must resolve to
+    .../pve-template-prep/cache.
     """
     path = Path(cache_dir)
     if path.is_symlink():
@@ -207,7 +212,10 @@ def clear_cache(cache_dir: str | Path) -> None:
         return
     if not path.is_dir():
         raise DownloadError(f"cache dir is not a directory: {path}")
-    resolved = path.resolve()
+    try:
+        resolved = verify_private_dir(path)
+    except (UnsafeDirError, OSError) as exc:
+        raise DownloadError(f"refusing to clear {path}: {exc}") from exc
     if not cache_may_be_cleared(resolved):
         raise DownloadError(f"refusing to clear {resolved}")
     for child in resolved.iterdir():

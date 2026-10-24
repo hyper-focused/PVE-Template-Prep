@@ -13,6 +13,7 @@ pve_prep/
   catalog.py              image catalog; reads distros/*.json. No network.
   distros/<distro>.json   one file per distribution; a release is a row
   download.py             download, verify, convert, publish. Stdlib only.
+  safedir.py              root-only directories no other user can redirect
   customize.py            guest prep through virt-customize
   vm.py                   qm command builders and config parsers. No live qm calls.
   build.py                one function per build action
@@ -74,7 +75,7 @@ A standalone image takes its storage from `storage.cfg` entries whose content in
 
 A prefilled VMID had to be backspaced before it could be replaced. Fields are empty, the default shows in brackets, and Enter accepts it. This applies to the create-path VMID and to every yes/no.
 
-For free IDs, "in use" means a VM or container on any node, read from `/etc/pve/.vmlist`. The file lists the whole cluster in one instant read. Probing with `qm status` cost about a second per ID, and each suggestion probed 32 candidates, which is where a 15-second wait before every field came from. The probe survives only as a fallback when the file cannot be read.
+For free IDs, "in use" means a VM or container on any node, read from `/etc/pve/.vmlist`. The file lists the whole cluster in one instant read. Probing with `qm status` cost about a second per ID, and each suggestion probed 32 candidates, which is where a 15-second wait before every field came from. The probe survives only as a fallback when the file cannot be read. It asks `qm status` and then `pct status`, because `qm` has never heard of a container and would call its ID free; an ID is free only when both say the config does not exist.
 
 Yes/no questions are text fields on a terminal and on a pipe. A confirm widget would accept Enter without showing the bracket. Menus stay menus, and `YES` and `DELETE` stay typed words.
 
@@ -85,6 +86,18 @@ The summary was once a line per release (`debian 12 -> insert VMID 910 storage l
 ## Backups live outside the cache
 
 Backups used to sit in the download cache. `/var/tmp` is not promised to survive a reboot, and cache cleanup is a routine yes/no, so a backup there could vanish with the downloads. Backups go to `/var/backups/pve-template-prep` (`0700`, root), which cleanup never opens. The copy runs before the new image is downloaded and counts only if `qemu-img convert` exits 0 and the file is non-empty, so a failed copy cannot be mistaken for protection.
+
+## The whole cache path is checked
+
+The cache lives under `/var/tmp`, which every user can write. Checking only the cache directory for a symlink left its parent open: a local user who created `/var/tmp/pve-template-prep` first owned it, so they could swap `cache` for a symlink after root had checked it, during the download, and replace the verified image before it was imported. `pve_prep/safedir.py` now walks every directory from `/` to the cache, both as written and as resolved, and requires each to belong to root and to be writable by nobody else unless sticky. Once that holds, no other user can rename anything on the path, so the check stays true for the rest of the run. A parent someone else owns is refused with its uid rather than repaired: deleting another user's files as root is the operator's call. The backup directory uses the same check.
+
+## Imports are found by difference
+
+`qm importdisk` puts the new volume in the next free `unusedN` slot. Taking the first `unusedN` line attached whatever was already unused and deleted the old boot disk, leaving the new image unused. The import is now the one unused volume that was not in the config read before the import. None, or more than one, is a failed import. Only the live config counts; `[snapshot]` sections are skipped by every parser that reads keys.
+
+## A disk swap leaves a marker until it is done
+
+Swapping a template's boot disk clears the template flag for the edit. If putting it back failed, the guest was a normal VM, and the tool refuses normal VMs, so it could neither finish nor undo its own work. The `qm set` that clears the flag now also adds the tag `pve-prep-swap-<vmid>`, in one config write, so the guest is never a plain VM without it. A guest carrying its own marker counts as a template, so a rerun finishes the swap. The VMID is in the tag so a clone of a half-swapped guest gets no such pass. The guest's own tags are written back once it is a template again. A failed attach also deletes the volume it just imported, if that volume is still unused, so retries do not pile up orphans.
 
 ## Linked clones
 

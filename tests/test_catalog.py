@@ -183,24 +183,45 @@ class CatalogTests(unittest.TestCase):
             compile_distro(payload, filename="example.json")
         self.assertIn("unknown source type", str(caught.exception))
 
-    def test_finalize_fedora_picks_generic_not_uefi(self) -> None:
+    def test_finalize_fedora_picks_newest_generic_not_uefi(self) -> None:
         spec = next(item for item in releases_for("fedora") if item.release == "44")
         html = _FIXTURE.read_text(encoding="utf-8")
         pinned = finalize_fedora(spec, html)
+        # Last in text order is 1.9. Newest is 1.10.
         self.assertEqual(
             pinned.filename,
-            "Fedora-Cloud-Base-Generic-44-1.6.x86_64.qcow2",
+            "Fedora-Cloud-Base-Generic-44-1.10.x86_64.qcow2",
         )
         self.assertNotIn("UEFI", pinned.filename.upper())
         self.assertNotIn("EC2", pinned.url.upper())
         self.assertNotIn("AMAZON", pinned.url.upper())
         self.assertEqual(pinned.url, spec.url + pinned.filename)
         self.assertTrue(
-            pinned.checksum_url.endswith("Fedora-Cloud-44-1.6-x86_64-CHECKSUM")
+            pinned.checksum_url.endswith("Fedora-Cloud-44-1.10-x86_64-CHECKSUM")
         )
         self.assertFalse(pinned.checksum_url.endswith("/CHECKSUM"))
         self.assertEqual(pinned.checksum_alg, "256")
         self.assertEqual(pinned.release, "44")
+
+    def test_fedora_checksum_follows_the_chosen_compose(self) -> None:
+        spec = next(item for item in releases_for("fedora") if item.release == "44")
+        html = "".join(
+            f"<a href='{name}'>{name}</a>"
+            for name in (
+                "Fedora-Cloud-44-1.1-x86_64-CHECKSUM",
+                "Fedora-Cloud-44-1.10-x86_64-CHECKSUM",
+                "Fedora-Cloud-Base-Generic-44-1.1.x86_64.qcow2",
+                "Fedora-Cloud-Base-Generic-44-1.9.x86_64.qcow2",
+                "Fedora-Cloud-44-1.9-x86_64-CHECKSUM",
+            )
+        )
+        pinned = finalize_fedora(spec, html)
+        self.assertTrue(pinned.filename.endswith("44-1.9.x86_64.qcow2"))
+        self.assertTrue(pinned.checksum_url.endswith("Fedora-Cloud-44-1.9-x86_64-CHECKSUM"))
+        older = html.replace("Fedora-Cloud-Base-Generic-44-1.9.x86_64.qcow2", "x")
+        pinned = finalize_fedora(spec, older)
+        # 1.1 must not pick up the 1.10 checksum file.
+        self.assertTrue(pinned.checksum_url.endswith("Fedora-Cloud-44-1.1-x86_64-CHECKSUM"))
 
     def test_finalize_fedora_missing_image(self) -> None:
         spec = next(item for item in releases_for("fedora") if item.release == "43")

@@ -10,9 +10,9 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest import mock
 
+from privtmp import private_tempdir
 from pve_prep.catalog import releases_for
 from pve_prep.download import (
     DownloadError,
@@ -101,7 +101,7 @@ class ParseChecksumTests(unittest.TestCase):
 class FileDigestTests(unittest.TestCase):
     def test_file_digest_matches_hashlib(self) -> None:
         payload = b"cloud-image"
-        with TemporaryDirectory() as tmp:
+        with private_tempdir() as tmp:
             path = Path(tmp) / "disk.img"
             path.write_bytes(payload)
             self.assertEqual(file_digest(path, "256"), hashlib.sha256(payload).hexdigest())
@@ -123,7 +123,7 @@ def _seek_gap_is_a_hole(root: Path) -> bool:
 
 class PublishTests(unittest.TestCase):
     def test_backup_skip_and_overwrite(self) -> None:
-        with TemporaryDirectory() as tmp:
+        with private_tempdir() as tmp:
             root = Path(tmp)
             dest = root / "disk.qcow2"
             dest.write_bytes(b"old")
@@ -181,7 +181,7 @@ class PublishTests(unittest.TestCase):
             return real_replace(src, dest)
 
         mib = 1024 * 1024
-        with TemporaryDirectory() as tmp:
+        with private_tempdir() as tmp:
             root = Path(tmp)
             for tail in (b"end", b""):
                 src = root / "incoming.raw"
@@ -204,7 +204,7 @@ class PublishTests(unittest.TestCase):
                     self.assertLess(dest.stat().st_blocks * 512, 4 * mib)
 
     def test_unknown_collision_and_dry_run(self) -> None:
-        with TemporaryDirectory() as tmp:
+        with private_tempdir() as tmp:
             root = Path(tmp)
             dest = root / "disk.qcow2"
             dest.write_bytes(b"old")
@@ -226,7 +226,7 @@ class ConvertTests(unittest.TestCase):
             called.append(argv)
             raise AssertionError("dry_run must not call run")
 
-        with TemporaryDirectory() as tmp:
+        with private_tempdir() as tmp:
             dest = Path(tmp) / "nested" / "disk.raw"
             with redirect_stdout(StringIO()) as buffer:
                 convert(Path("in.qcow2"), dest, "raw", dry_run=True, run=run)
@@ -248,7 +248,7 @@ class FetchDryRunTests(unittest.TestCase):
     def test_fetch_verified_dry_run_skips_network(self) -> None:
         debian = _by_release("debian", "12")
         fedora = _by_release("fedora", "44")
-        with TemporaryDirectory() as tmp:
+        with private_tempdir() as tmp:
             cache = Path(tmp) / "cache"
             with redirect_stdout(StringIO()) as buffer:
                 dest = fetch_verified(debian, cache, dry_run=True)
@@ -314,7 +314,7 @@ class CloudLinuxFetchTests(unittest.TestCase):
             streams.append(url)
             dest.write_bytes(payload)
 
-        with TemporaryDirectory() as tmp:
+        with private_tempdir() as tmp:
             cache = Path(tmp) / "cache"
             with (
                 mock.patch("pve_prep.download._read_text", read_text),
@@ -359,7 +359,7 @@ class ClearCacheTests(unittest.TestCase):
             self.assertFalse(cache_may_be_cleared(path))
 
     def test_clears_children_and_does_not_follow_a_symlink(self) -> None:
-        with TemporaryDirectory() as tmp:
+        with private_tempdir() as tmp:
             root = Path(tmp)
             cache = root / "pve-template-prep" / "cache"
             cache.mkdir(parents=True)
@@ -376,7 +376,7 @@ class ClearCacheTests(unittest.TestCase):
             self.assertEqual(outside.read_text(), "safe")
 
     def test_disk_backups_are_never_deleted(self) -> None:
-        with TemporaryDirectory() as tmp:
+        with private_tempdir() as tmp:
             root = Path(tmp)
             cache = root / "pve-template-prep" / "cache"
             cache.mkdir(parents=True)
@@ -409,7 +409,7 @@ class ClearCacheTests(unittest.TestCase):
             self.assertFalse(nested.exists())
 
     def test_refuses_a_symlink_and_a_wrong_directory(self) -> None:
-        with TemporaryDirectory() as tmp:
+        with private_tempdir() as tmp:
             root = Path(tmp)
             real = root / "pve-template-prep" / "cache"
             real.mkdir(parents=True)
