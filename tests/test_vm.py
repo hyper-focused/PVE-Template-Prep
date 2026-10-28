@@ -1062,6 +1062,67 @@ class InsertDiskTests(unittest.TestCase):
         self.assertEqual(run.calls[9], ["qm", "template", "910"])
         self.assertEqual(run.calls[10], ["qm", "set", "910", "--tags", "prod;web"])
 
+    def test_old_disk_cleanup_failure_reports_an_updated_template(self) -> None:
+        old = "NFS-SATA-SSD1:base-910-disk-0"
+        new = "NFS-SATA-SSD1:vm-910-disk-1"
+        with private_tempdir() as tmp:
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, f"template: 1\ntags: prod;web\nscsi0: {old}\n"),
+                    (0, "[]"),
+                    (0, ""),
+                    (0, ""),
+                    (0, f"scsi0: {old}\nunused0: {new}\n"),
+                    (0, ""),
+                    (0, f"scsi0: {new}\nunused0: {old}\n"),
+                    (1, "volume is locked\n"),
+                    (0, ""),
+                    (0, ""),
+                ]
+            )
+            result = self._insert(run, tmp)
+        self.assertEqual(result.volid, new)
+        self.assertTrue(result.kept_template)
+        self.assertIn("volume is locked", result.cleanup_error)
+        self.assertIn("--delete unused0", result.cleanup_error)
+        self.assertEqual(run.calls[6], ["qm", "set", "910", "--scsi0", f"{new},discard=on,ssd=1"])
+        self.assertEqual(run.calls[8], ["qm", "set", "910", "--delete", "unused0"])
+        self.assertEqual(run.calls[9], ["qm", "template", "910"])
+        self.assertEqual(run.calls[10], ["qm", "set", "910", "--tags", "prod;web"])
+        self.assertNotIn(["qm", "set", "910", "--delete", "scsi0"], run.calls)
+
+    def test_template_failure_after_cleanup_failure_keeps_the_marker(self) -> None:
+        old = "NFS-SATA-SSD1:base-910-disk-0"
+        new = "NFS-SATA-SSD1:vm-910-disk-1"
+        with private_tempdir() as tmp:
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, f"template: 1\ntags: prod;web\nscsi0: {old}\n"),
+                    (0, "[]"),
+                    (0, ""),
+                    (0, ""),
+                    (0, f"scsi0: {old}\nunused0: {new}\n"),
+                    (0, ""),
+                    (0, f"scsi0: {new}\nunused0: {old}\n"),
+                    (1, "volume is locked\n"),
+                    (1, "VM is locked (backup)\n"),
+                ]
+            )
+            with self.assertRaises(VmError) as caught:
+                self._insert(run, tmp)
+        message = str(caught.exception)
+        self.assertIn("the new disk is attached", message)
+        self.assertIn("Old disk cleanup failed", message)
+        self.assertIn("volume is locked", message)
+        self.assertIn("pve-prep-swap-910", message)
+        self.assertIn("qm template 910", message)
+        self.assertNotIn("template flag was restored", message)
+        self.assertNotIn("could not be restored", message)
+        self.assertEqual(run.calls[-1], ["qm", "template", "910"])
+        self.assertNotIn(["qm", "set", "910", "--tags", "prod;web"], run.calls)
+
     def test_unrestorable_flag_keeps_the_marker_and_says_how_to_finish(self) -> None:
         old = "NFS-SATA-SSD1:base-910-disk-0"
         with private_tempdir() as tmp:

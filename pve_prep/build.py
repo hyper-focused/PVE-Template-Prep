@@ -47,8 +47,14 @@ def _finish_file(label: str, dest: Path, result) -> str:
 def _finish_insert(label: str, vmid: int, policy: str, result) -> str:
     sentence = f"{label} VM disk image created and imported"
     if getattr(result, "kept_template", False):
-        sentence += f". Template {vmid} kept"
         saved = str(getattr(result, "backup_dir", "") or "")
+        cleanup = str(getattr(result, "cleanup_error", "") or "")
+        if cleanup:
+            sentence += f". Template {vmid} updated"
+            if saved:
+                sentence += f". Old disk saved in {saved}"
+            return f"{sentence}. Old disk cleanup failed: {cleanup}."
+        sentence += f". Template {vmid} kept"
         if saved:
             return f"{sentence}. Old disk saved in {saved}."
         return f"{sentence}. Previous disk deleted."
