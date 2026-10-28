@@ -78,7 +78,7 @@ Then it downloads, verifies, converts, preps, and imports each release. At the e
 
 | What you see | What's going on | What to do |
 | --- | --- | --- |
-| `missing virt-customize` or `missing libguestfs-xfs` | `guestfs-tools`, or its XFS support for RHEL-family guests, isn't installed | `apt update && apt -y install --no-install-recommends guestfs-tools libguestfs-xfs` |
+| `missing virt-customize`, `missing libguestfs-xfs`, or `could not check libguestfs-xfs` | `guestfs-tools` or its XFS support isn't installed, or `dpkg-query` could not say | `apt update && apt -y install --no-install-recommends guestfs-tools libguestfs-xfs` |
 | `unsafe cache dir ... owned by uid N` | Someone other than root created `/var/tmp/pve-template-prep`, so they could swap your image mid-download | Check who and why, then `rm -rf /var/tmp/pve-template-prep` and run again |
 | `its disk update did not finish` | An earlier update couldn't put the template flag back. The VM carries the tag `pve-prep-swap-<vmid>` to say so, and the tool won't touch it while it's a normal VM | Run `qm template <vmid>`, then run the update again |
 | `Old disk cleanup failed` | The new image is already the boot disk and the guest is a template again. Deleting the previous unused volume failed | Delete that unused disk in the GUI, or `qm set <vmid> --delete unusedN`. The message names the key |

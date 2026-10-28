@@ -838,9 +838,14 @@ class OrchestratorTest(unittest.TestCase):
             self.assertIn("--no-install-recommends", str(caught.exception))
             with mock.patch.object(MOD.subprocess, "run", return_value=installed):
                 MOD.preflight(_image_job(dry_run=False, prep=True))
-            # No dpkg-query to ask: do not block on a guess.
-            with mock.patch.object(MOD.subprocess, "run", side_effect=FileNotFoundError("dpkg-query")):
+            # No answer is not "installed". Stop before the download.
+            with (
+                mock.patch.object(MOD.subprocess, "run", side_effect=FileNotFoundError("dpkg-query")),
+                self.assertRaises(SystemExit) as caught,
+            ):
                 MOD.preflight(_image_job(dry_run=False, prep=True))
+            self.assertIn("could not check libguestfs-xfs with dpkg-query", str(caught.exception))
+            self.assertIn("--no-install-recommends", str(caught.exception))
 
     def test_main_live_calls_preflight(self) -> None:
         job = _image_job(dry_run=False, releases=("12",))

@@ -57,7 +57,7 @@ An unrecognized option prints usage and exits 2.
 | Outbound network from the guest appliance | all live runs: `virt-customize --install` fetches packages from inside the image |
 | Outbound HTTPS to GitHub | update check, `install.sh` |
 
-Python 3, `qm`, `pvesm`, and `qemu-img` are present on a stock PVE 9 node. `guestfs-tools` and `libguestfs-xfs` are not; `install.sh` installs whichever of them is missing, checked per package, with `--no-install-recommends`, which skips `libguestfs-tools`, `guestfish`, `guestmount`, and `virt-p2v`. `libguestfs-xfs` is named explicitly so XFS root filesystems (RHEL-family guests) can be mounted. A missing tool, or a missing `libguestfs-xfs` package, stops the run before the interview with `missing <name>; apt-get install --no-install-recommends guestfs-tools libguestfs-xfs`.
+Python 3, `qm`, `pvesm`, and `qemu-img` are present on a stock PVE 9 node. `guestfs-tools` and `libguestfs-xfs` are not; `install.sh` installs whichever of them is missing, checked per package, with `--no-install-recommends`, which skips `libguestfs-tools`, `guestfish`, `guestmount`, and `virt-p2v`. `libguestfs-xfs` is named explicitly so XFS root filesystems (RHEL-family guests) can be mounted. A missing tool, a missing `libguestfs-xfs` package, or a `dpkg-query` that cannot answer, stops the run before the interview. The message is `missing <name>` or `could not check libguestfs-xfs with dpkg-query`, then `apt-get install --no-install-recommends guestfs-tools libguestfs-xfs`.
 
 `sudo` only has to set the effective uid to 0. The helper commands run as children and stay root, so they need no sudoers rules of their own. A `NOEXEC` tag on the sudoers entry blocks them.
 

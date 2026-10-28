@@ -283,7 +283,10 @@ def preflight(job: Job) -> None:
             raise SystemExit(f"missing {tool}; {_APT_HINT}")
     if job.prep:
         for package in _PREP_PACKAGES:
-            if package_installed(package) is False:
+            installed = package_installed(package)
+            if installed is None:
+                raise SystemExit(f"could not check {package} with dpkg-query; {_APT_HINT}")
+            if not installed:
                 raise SystemExit(f"missing {package}; {_APT_HINT}")
 
 
