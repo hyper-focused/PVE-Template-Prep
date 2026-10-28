@@ -18,6 +18,8 @@ pve_prep/
   vm.py                   qm command builders and config parsers. No live qm calls.
   build.py                one function per build action
   update.py               version comparison and the install command
+  enroll.py               one JSON enrollment file per VMID. No qm.
+  cronscript.py           the cron wrapper; execs this program and nothing else
   termbg.py               light or dark terminal background
   palette.json            colors, as data
 vendor/                   prompt_toolkit, questionary, wcwidth
@@ -98,6 +100,27 @@ The cache lives under `/var/tmp`, which every user can write. Checking only the 
 ## A disk swap leaves a marker until it is done
 
 Swapping a template's boot disk clears the template flag for the edit. If putting it back fails, the guest is a normal VM. The `qm set` that clears the flag also adds the tag `pve-prep-swap-<vmid>`, in one config write, so a half-swapped guest always says what happened. The tag does not make the guest count as a template. Anyone who can edit tags can set it, and treating it as a template let the create path `qm destroy` a guest that was not one, or let an update replace a normal VM's boot disk. A guest with its own tag and no template flag is refused on both paths with a message to run `qm template <vmid>` and then update again. That costs one command in a rare case; the tool keeps its rule of never touching a normal VM. The guest's own tags are written back once it is a template again, which also clears a tag an earlier run left. A failed attach also deletes the volume it just imported, if that volume is still unused, so retries do not pile up orphans. Deleting the previous volume happens after the new disk is the boot disk. If that delete fails, the swap is already done: `qm template` still runs, the marker comes off, and the result says the template was updated and old disk cleanup failed. The previous volume stays unused. The run still counts as an updated template, because the guest is on the new image.
+
+## The enrollment record is a file, not a tag
+
+An unattended refresh has to know which guests this tool created and converted, which digest was applied, and which SSH answers were used. A Proxmox tag cannot be that record. Anyone who can edit tags can set one. That is why `pve-prep-swap-<vmid>` does not make a guest count as a template: a tag is guest configuration, and treating it as authority let the tool destroy or rewrite a guest it did not create. The proof is a root-only JSON file, `/var/lib/pve-template-prep/<vmid>.json`, written only after this run created the guest and `qm template` succeeded. The update path, a standalone image, and a create left as a normal VM get no file. A template with no file is never selected, so a guest this tool did not create cannot be enrolled by tagging it. The file holds `vmid`, `distro`, `release`, `digest`, `checksum_alg`, `password_auth`, `permit_root`, and `schedule`. Newer means the catalog's current published checksum for that distro and release differs from the stored digest. The digest is rewritten only after the disk swap succeeds, so a failed run leaves the old digest in place and tries again next time.
+
+## The cron script is a wrapper
+
+Cron must not grow a second copy of the download, the guest prep, or the `qm` commands. `/etc/cron.weekly/pve-template-prep` or `/etc/cron.monthly/pve-template-prep` (mode `0755`) is only a wrapper. Its whole body is:
+
+```sh
+#!/bin/sh
+exec /usr/local/sbin/pve-template-prep --unattended weekly
+```
+
+The monthly file says `monthly`. The script does not download and it does not call `qm`. `--unattended` runs this program, so the swap stays the update path's swap. If that path already exists with different text, it is left unchanged. The tool does not overwrite a script it did not write. Later enrollments only add record files. A dry run prints the script and the record and writes neither.
+
+## The new disk is attached before the old one is deleted
+
+The unattended swap does not detach the boot disk first. Detach, then attach, leaves the template with no boot disk when the attach fails. The order is the one the interactive update already uses. The current boot disk is backed up to `/var/backups/pve-template-prep`. The new image is downloaded and prepped with the SSH answers stored on the record. It is attached to the boot bus. Only then is the old volume deleted and `qm template` run. A failed attach still has the old disk. A failed delete is cleanup: the guest is already on the new image, which is the same outcome as the marker section above. Storage and format are read from that live boot disk, so a move onto another file storage still updates, and block storage is still refused. Memory, cores, bridge, name, and firewall are not rewritten.
+
+The run assumes the boot disk was not customized after creation. It does not look for those edits. A newer published checksum replaces the disk, and the backup is what remains of the previous one.
 
 ## Linked clones
 
