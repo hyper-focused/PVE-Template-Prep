@@ -4,7 +4,7 @@ All notable changes to pve-template-prep. Newest first. The format follows [Keep
 
 An installed copy offers a new release when the version string on `main` changes. Changes merged without a version bump are listed under **Unreleased** and arrive only through a freshly downloaded `install.sh`, which upgrades in place.
 
-## Unreleased
+## 1.3.6 - 2026-10-27
 
 ### Changed
 - `install.sh` installs `guestfs-tools` and `libguestfs-xfs` with `--no-install-recommends`, each only when dpkg says it is not installed. On PVE 9 (trixie) `libguestfs-tools` is a metapackage, and `guestfs-tools` Recommends it along with `virt-p2v`; skipping Recommends drops `libguestfs-tools`, `guestfish`, `guestmount`, and `virt-p2v` (20 packages down to 13 on a test node), none of which this tool calls. `libguestfs-xfs` is named explicitly so XFS root filesystems (RHEL-family guests) still mount. It no longer asks apt for `qemu-utils`: `qemu-img` already ships with `pve-qemu-kvm`, and `qemu-utils` is a real Debian package that could conflict with it. The "missing tool" error message gives the same command.
