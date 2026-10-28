@@ -78,7 +78,7 @@ Then it downloads, verifies, converts, preps, and imports each release. At the e
 
 | What you see | What's going on | What to do |
 | --- | --- | --- |
-| `missing virt-customize` or `missing libguestfs-xfs` | `guestfs-tools`, or its XFS support for RHEL-family guests, isn't installed | `apt update && apt -y install --no-install-recommends guestfs-tools libguestfs-xfs` |
+| `missing virt-customize`, `missing libguestfs-xfs`, or `could not check libguestfs-xfs` | `guestfs-tools` or its XFS support isn't installed, or `dpkg-query` could not say | `apt update && apt -y install --no-install-recommends guestfs-tools libguestfs-xfs` |
 | `unsafe cache dir ... owned by uid N` | Someone other than root created `/var/tmp/pve-template-prep`, so they could swap your image mid-download | Check who and why, then `rm -rf /var/tmp/pve-template-prep` and run again |
 | An update failed and the template is now a normal VM | The template flag couldn't be put back. The VM carries the tag `pve-prep-swap-<vmid>`, so the tool still treats it as its template | Run the update again to finish it, or `qm template <vmid>` |
 | A VMID is refused | It belongs to a normal VM or a container. The tool only replaces *templates*, and never touches a normal VM | Pick another ID. Enter always avoids IDs in use |
