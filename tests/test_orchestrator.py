@@ -60,7 +60,8 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     vm.is_file_storage = real_vm.is_file_storage
     vm.VmError = real_vm.VmError
     vm.VmDestroyedError = real_vm.VmDestroyedError
-    vm.counts_as_template = real_vm.counts_as_template
+    vm.is_template = real_vm.is_template
+    vm.unfinished_swap = real_vm.unfinished_swap
     vm.is_linked_clone = real_vm.is_linked_clone
     vm.prepare_replace = mock.MagicMock(name="prepare_replace", return_value=1)
     vm.qemu_img_convert_argv = real_vm.qemu_img_convert_argv
@@ -462,6 +463,24 @@ class OrchestratorTest(unittest.TestCase):
             "Template 910 kept. Previous disk deleted.",
             buf.getvalue(),
         )
+        cleaned = SimpleNamespace(
+            volid="dir-templates:vm-910-disk-1",
+            kept_template=True,
+            backup_dir="/var/backups/pve-template-prep",
+            cleanup_error="volume is locked",
+        )
+        MOD.insert_disk = mock.MagicMock(return_value=cleaned)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            MOD.run_one(replaced, "12", 910)
+        self.assertIn(
+            "Debian 12 VM disk image created and imported. Template 910 updated. "
+            "Old disk saved in /var/backups/pve-template-prep. "
+            "Old disk cleanup failed: volume is locked.",
+            buf.getvalue(),
+        )
+        self.assertNotIn("Previous disk deleted.", buf.getvalue())
+        self.assertNotIn("template flag was restored", buf.getvalue())
 
     def test_main_continues_after_second_release_fails(self) -> None:
         job = _image_job(dry_run=True, prep=True)
@@ -599,6 +618,17 @@ class OrchestratorTest(unittest.TestCase):
         missing = SimpleNamespace(returncode=2, stdout="", stderr="Configuration file 'nodes/pve1/qemu-server/9002.conf' does not exist\n")
         with mock.patch.object(MOD.subprocess, "run", return_value=missing):
             self.assertIsNone(MOD.guest_role(9002))
+
+    def test_swap_marker_alone_is_not_a_template_role(self) -> None:
+        def config(text: str) -> SimpleNamespace:
+            return SimpleNamespace(returncode=0, stdout=text, stderr="")
+
+        marked = config("tags: prod;pve-prep-swap-910\nscsi0: NFS-SATA-SSD1:base-910-disk-0\n")
+        with mock.patch.object(MOD.subprocess, "run", return_value=marked):
+            self.assertEqual(MOD.guest_role(910), "unfinished")
+        other = config("tags: pve-prep-swap-9001\nscsi0: NFS-SATA-SSD1:vm-910-disk-0\n")
+        with mock.patch.object(MOD.subprocess, "run", return_value=other):
+            self.assertEqual(MOD.guest_role(910), "vm")
 
     def test_main_dry_run_flag_and_storage_failure(self) -> None:
         seen = {}

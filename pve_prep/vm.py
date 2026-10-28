@@ -203,19 +203,26 @@ def config_tags(config_text: str) -> list[str]:
 def swap_marker(vmid: int) -> str:
     """Tag a template carries while its boot disk is being swapped.
 
-    The VMID is part of the tag, so a clone of a half-swapped guest does
-    not inherit the right to be treated as a template.
+    The tag only names what happened. Anyone who can edit tags can set it,
+    so it never makes a guest count as a template.
     """
     return f"pve-prep-swap-{int(vmid)}"
 
 
-def counts_as_template(config_text: str, vmid: int) -> bool:
-    """A template, or this tool's own template caught mid disk swap.
+def unfinished_swap(config_text: str, vmid: int) -> bool:
+    """Not a template, but carries this VMID's swap marker.
 
-    A failed swap can leave the template flag cleared. The marker tag lets
-    a rerun finish the swap instead of refusing a "normal VM".
+    A disk swap whose template flag could not be restored looks like this.
+    It is refused like any normal VM, with a message that says how to finish.
     """
-    return is_template(config_text) or swap_marker(vmid) in config_tags(config_text)
+    return not is_template(config_text) and swap_marker(vmid) in config_tags(config_text)
+
+
+def unfinished_swap_reason(vmid: int) -> str:
+    return (
+        f"VM {vmid} is not a template; its disk update did not finish. "
+        f"Run qm template {vmid}, then run the update again"
+    )
 
 
 _CLUSTER_NODES = Path("/etc/pve/nodes")
@@ -230,11 +237,14 @@ class InsertResult:
 
     kept_template means the guest was already a template and still is.
     backup_dir is set when the old disk was copied there first.
+    cleanup_error is set when the new disk is the boot disk and the guest
+    is a template again, but deleting the previous volume failed.
     """
 
     volid: str
     kept_template: bool = False
     backup_dir: str = ""
+    cleanup_error: str = ""
 
 
 def _linked_child(template_vmid: int) -> re.Pattern[str]:
@@ -475,7 +485,9 @@ def refuse_replace_target(
     """
     if is_linked_clone(config_text):
         raise VmError(f"VM {vmid} is a linked clone; it was not changed")
-    if not counts_as_template(config_text, vmid):
+    if unfinished_swap(config_text, vmid):
+        raise VmError(f"{unfinished_swap_reason(vmid)}. It was not changed")
+    if not is_template(config_text):
         raise VmError(f"VM {vmid} is not a template; it was not changed")
     _refuse_linked_clones(run, vmid, config_text, nodes_root)
 
@@ -1126,17 +1138,17 @@ def create_template(
     return volid
 
 
-def _attach_boot_disk(run: Run, *, vmid: int, config_text: str, volid: str) -> None:
-    """Point the boot disk at volid. The old boot volume is deleted."""
+def _attach_boot_disk(run: Run, *, vmid: int, config_text: str, volid: str) -> str:
+    """Point the boot disk at volid. Returns the previous boot volume, or ""."""
     current = select_boot_disk(config_text)
     attached = f"{volid},discard=on,ssd=1"
     if current is not None:
         bus, old_volid = current
         _must(run, ["qm", "set", str(vmid), f"--{bus}", attached], vmid=vmid, destroyed=False)
-        _delete_unused_volid(run, vmid=vmid, volid=old_volid)
-        return
+        return old_volid
     slot = next_scsi_index(config_text)
     _must(run, ["qm", "set", str(vmid), f"--scsi{slot}", attached], vmid=vmid, destroyed=False)
+    return ""
 
 
 def _tags_value(tags: list[str]) -> str:
@@ -1194,8 +1206,14 @@ def _replace_template_disk(
 
     The same qm set that clears the flag adds the swap marker tag, so the
     guest is never a plain VM without it. If the flag cannot be put back,
-    the marker stays and a rerun finishes the swap. The guest's own tags
-    are restored once it is a template again.
+    the marker stays to say why, and the guest is refused until someone
+    runs qm template. The guest's own tags are restored once it is a
+    template again, which also clears a marker an earlier run left.
+
+    Deleting the previous volume happens after the new disk is attached.
+    A failure there is cleanup: the template is updated, and the error is
+    returned on InsertResult. A failure before the attach still rolls the
+    flag back.
     """
     saved = ""
     if disk_policy == "backup" and (copies_done or list_os_disks(config_text)):
@@ -1212,9 +1230,8 @@ def _replace_template_disk(
     tags = config_tags(config_text)
     marker = swap_marker(vmid)
     stuck = (
-        f"VM {vmid} is not a template right now. It keeps tag {marker}, so "
-        f"this tool still treats it as one: rerun the update to finish, "
-        f"or run qm template {vmid}"
+        f"VM {vmid} is not a template right now and keeps tag {marker}. "
+        f"Run qm template {vmid}, then run the update again"
     )
     marked = _tags_value([*tags, marker])
     _must(
@@ -1235,7 +1252,7 @@ def _replace_template_disk(
             destroyed=False,
             before_text=config_text,
         )
-        _attach_boot_disk(run, vmid=vmid, config_text=config_text, volid=volid)
+        old_volid = _attach_boot_disk(run, vmid=vmid, config_text=config_text, volid=volid)
     except VmError as exc:
         note = _discard_import(run, vmid=vmid, volid=volid) if volid else ""
         restored = run(["qm", "template", str(vmid)])
@@ -1243,12 +1260,24 @@ def _replace_template_disk(
             raise VmError(f"{exc}{note}; the template flag could not be restored. {stuck}") from exc
         _drop_swap_marker(run, vmid=vmid, tags=tags)
         raise VmError(f"{exc}{note}; the template flag was restored") from exc
+    cleanup_error = ""
+    if old_volid:
+        try:
+            _delete_unused_volid(run, vmid=vmid, volid=old_volid)
+        except VmError as exc:
+            cleanup_error = str(exc)
     try:
         _must(run, ["qm", "template", str(vmid)], vmid=vmid, destroyed=False)
     except VmError as exc:
-        raise VmError(f"{exc}; the new disk is attached. {stuck}") from exc
+        note = f" Old disk cleanup failed: {cleanup_error}." if cleanup_error else ""
+        raise VmError(f"{exc}; the new disk is attached.{note} {stuck}") from exc
     _drop_swap_marker(run, vmid=vmid, tags=tags)
-    return InsertResult(volid, kept_template=True, backup_dir=saved)
+    return InsertResult(
+        volid,
+        kept_template=True,
+        backup_dir=saved,
+        cleanup_error=cleanup_error,
+    )
 
 
 def insert_disk(

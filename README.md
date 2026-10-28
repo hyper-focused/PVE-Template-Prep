@@ -80,7 +80,8 @@ Then it downloads, verifies, converts, preps, and imports each release. At the e
 | --- | --- | --- |
 | `missing virt-customize`, `missing libguestfs-xfs`, or `could not check libguestfs-xfs` | `guestfs-tools` or its XFS support isn't installed, or `dpkg-query` could not say | `apt update && apt -y install --no-install-recommends guestfs-tools libguestfs-xfs` |
 | `unsafe cache dir ... owned by uid N` | Someone other than root created `/var/tmp/pve-template-prep`, so they could swap your image mid-download | Check who and why, then `rm -rf /var/tmp/pve-template-prep` and run again |
-| An update failed and the template is now a normal VM | The template flag couldn't be put back. The VM carries the tag `pve-prep-swap-<vmid>`, so the tool still treats it as its template | Run the update again to finish it, or `qm template <vmid>` |
+| `its disk update did not finish` | An earlier update couldn't put the template flag back. The VM carries the tag `pve-prep-swap-<vmid>` to say so, and the tool won't touch it while it's a normal VM | Run `qm template <vmid>`, then run the update again |
+| `Old disk cleanup failed` | The new image is already the boot disk and the guest is a template again. Deleting the previous unused volume failed | Delete that unused disk in the GUI, or `qm set <vmid> --delete unusedN`. The message names the key |
 | A VMID is refused | It belongs to a normal VM or a container. The tool only replaces *templates*, and never touches a normal VM | Pick another ID. Enter always avoids IDs in use |
 | Update says the VMID is free | Updating needs a template that already exists | Use "create new template" instead |
 | "Linked clones" refusal | Something is cloned from that template and still depends on its disk. Clones on other cluster nodes count too. If the check can't be read, the tool plays it safe | Remove or detach the clones, or use a different VMID. The template is never changed while clones exist |
