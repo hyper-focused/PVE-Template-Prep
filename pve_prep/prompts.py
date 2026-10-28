@@ -648,11 +648,11 @@ def _occupied(vmids: tuple[int, ...], vmids_in_use) -> set[int] | None:
 
 
 def _guest_role(guest_role, vmid: int, *, default: str) -> str:
-    """template, vm, clone, or blocked. An unreadable check is blocked."""
+    """template, vm, clone, unfinished, or blocked. An unreadable check is blocked."""
     if guest_role is None:
         return default
     role = guest_role(vmid)
-    if role in {"template", "vm", "clone", "blocked"}:
+    if role in {"template", "vm", "clone", "unfinished", "blocked"}:
         return role
     return "blocked"
 
@@ -673,6 +673,11 @@ def _replace_reason(vmid: int, role: str) -> str | None:
         return (
             f"VMID {vmid} is a linked clone. "
             "It will not be changed. Type a template VMID."
+        )
+    if role == "unfinished":
+        return (
+            f"VMID {vmid} is not a template; its disk update did not finish. "
+            f"It will not be changed. Run qm template {vmid}, then run the update again."
         )
     return (
         f"VMID {vmid} has linked clones, or the check could not be read. "

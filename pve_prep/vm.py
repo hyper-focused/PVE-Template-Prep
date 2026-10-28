@@ -203,19 +203,26 @@ def config_tags(config_text: str) -> list[str]:
 def swap_marker(vmid: int) -> str:
     """Tag a template carries while its boot disk is being swapped.
 
-    The VMID is part of the tag, so a clone of a half-swapped guest does
-    not inherit the right to be treated as a template.
+    The tag only names what happened. Anyone who can edit tags can set it,
+    so it never makes a guest count as a template.
     """
     return f"pve-prep-swap-{int(vmid)}"
 
 
-def counts_as_template(config_text: str, vmid: int) -> bool:
-    """A template, or this tool's own template caught mid disk swap.
+def unfinished_swap(config_text: str, vmid: int) -> bool:
+    """Not a template, but carries this VMID's swap marker.
 
-    A failed swap can leave the template flag cleared. The marker tag lets
-    a rerun finish the swap instead of refusing a "normal VM".
+    A disk swap whose template flag could not be restored looks like this.
+    It is refused like any normal VM, with a message that says how to finish.
     """
-    return is_template(config_text) or swap_marker(vmid) in config_tags(config_text)
+    return not is_template(config_text) and swap_marker(vmid) in config_tags(config_text)
+
+
+def unfinished_swap_reason(vmid: int) -> str:
+    return (
+        f"VM {vmid} is not a template; its disk update did not finish. "
+        f"Run qm template {vmid}, then run the update again"
+    )
 
 
 _CLUSTER_NODES = Path("/etc/pve/nodes")
@@ -478,7 +485,9 @@ def refuse_replace_target(
     """
     if is_linked_clone(config_text):
         raise VmError(f"VM {vmid} is a linked clone; it was not changed")
-    if not counts_as_template(config_text, vmid):
+    if unfinished_swap(config_text, vmid):
+        raise VmError(f"{unfinished_swap_reason(vmid)}. It was not changed")
+    if not is_template(config_text):
         raise VmError(f"VM {vmid} is not a template; it was not changed")
     _refuse_linked_clones(run, vmid, config_text, nodes_root)
 
@@ -1197,8 +1206,9 @@ def _replace_template_disk(
 
     The same qm set that clears the flag adds the swap marker tag, so the
     guest is never a plain VM without it. If the flag cannot be put back,
-    the marker stays and a rerun finishes the swap. The guest's own tags
-    are restored once it is a template again.
+    the marker stays to say why, and the guest is refused until someone
+    runs qm template. The guest's own tags are restored once it is a
+    template again, which also clears a marker an earlier run left.
 
     Deleting the previous volume happens after the new disk is attached.
     A failure there is cleanup: the template is updated, and the error is
@@ -1220,9 +1230,8 @@ def _replace_template_disk(
     tags = config_tags(config_text)
     marker = swap_marker(vmid)
     stuck = (
-        f"VM {vmid} is not a template right now. It keeps tag {marker}, so "
-        f"this tool still treats it as one: rerun the update to finish, "
-        f"or run qm template {vmid}"
+        f"VM {vmid} is not a template right now and keeps tag {marker}. "
+        f"Run qm template {vmid}, then run the update again"
     )
     marked = _tags_value([*tags, marker])
     _must(

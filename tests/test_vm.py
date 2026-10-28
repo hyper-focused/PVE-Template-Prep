@@ -21,7 +21,8 @@ from pve_prep.vm import (
     insert_disk,
     new_unused_volid,
     unused_volumes,
-    counts_as_template,
+    is_template,
+    unfinished_swap,
     parse_linked_clone_owners,
     parse_os_disk,
     parse_qm_status,
@@ -191,12 +192,14 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
         after = "unused0: local-lvm:vm-9001-disk-1\nunused1: local-lvm:vm-9001-disk-2\n"
         self.assertIsNone(new_unused_volid("", after))
 
-    def test_swap_marker_counts_only_for_its_own_vmid(self) -> None:
-        self.assertTrue(counts_as_template("template: 1\n", 9001))
-        self.assertTrue(counts_as_template("tags: prod;pve-prep-swap-9001\n", 9001))
-        self.assertFalse(counts_as_template("tags: prod;pve-prep-swap-9001\n", 9002))
-        self.assertFalse(counts_as_template("name: vm\n", 9001))
-        self.assertFalse(counts_as_template("name: vm\n[snap]\ntemplate: 1\n", 9001))
+    def test_swap_marker_never_makes_a_template(self) -> None:
+        self.assertTrue(is_template("template: 1\n"))
+        self.assertFalse(is_template("tags: prod;pve-prep-swap-9001\n"))
+        self.assertFalse(is_template("name: vm\n[snap]\ntemplate: 1\n"))
+        self.assertTrue(unfinished_swap("tags: prod;pve-prep-swap-9001\n", 9001))
+        self.assertFalse(unfinished_swap("tags: prod;pve-prep-swap-9001\n", 9002))
+        self.assertFalse(unfinished_swap("template: 1\ntags: pve-prep-swap-9001\n", 9001))
+        self.assertFalse(unfinished_swap("name: vm\n", 9001))
 
     def test_template_commands_shape(self) -> None:
         cmds = template_commands(
@@ -460,6 +463,21 @@ class CreateTemplateTests(unittest.TestCase):
         with self.assertRaises(VmError) as caught:
             create_template(**_create(destroy_ok=True, run=run))
         self.assertIn("not a template", str(caught.exception))
+        self.assertNotIn(["qm", "destroy", "910"], run.calls)
+
+    def test_unfinished_swap_is_not_destroyed(self) -> None:
+        run = FakeRun(
+            [
+                (0, "status: stopped\n"),
+                (0, "tags: prod;pve-prep-swap-910\nscsi0: NFS-SATA-SSD1:base-910-disk-0\n"),
+            ]
+        )
+        with self.assertRaises(VmError) as caught:
+            create_template(**_create(destroy_ok=True, run=run))
+        message = str(caught.exception)
+        self.assertIn("did not finish", message)
+        self.assertIn("qm template 910", message)
+        self.assertEqual(len(run.calls), 2)
         self.assertNotIn(["qm", "destroy", "910"], run.calls)
 
     def test_linked_clone_is_not_destroyed(self) -> None:
@@ -1142,24 +1160,60 @@ class InsertDiskTests(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn("could not be restored", message)
         self.assertIn("pve-prep-swap-910", message)
-        self.assertIn("qm template 910", message)
+        self.assertIn("Run qm template 910, then run the update again", message)
         self.assertEqual(run.calls[-1], ["qm", "template", "910"])
 
-    def test_marked_guest_resumes_a_failed_swap(self) -> None:
+    def test_unfinished_swap_is_refused_until_qm_template(self) -> None:
         old = "NFS-SATA-SSD1:base-910-disk-0"
         orphan = "NFS-SATA-SSD1:vm-910-disk-1"
-        new = "NFS-SATA-SSD1:vm-910-disk-2"
         with private_tempdir() as tmp:
             run = FakeRun(
                 [
                     (0, "status: stopped\n"),
                     (0, f"tags: pve-prep-swap-910\nscsi0: {old}\nunused0: {orphan}\n"),
+                ]
+            )
+            with self.assertRaises(VmError) as caught:
+                self._insert(run, tmp)
+        message = str(caught.exception)
+        self.assertIn("did not finish", message)
+        self.assertIn("Run qm template 910, then run the update again", message)
+        self.assertEqual(len(run.calls), 2)
+
+    def test_forged_marker_does_not_unlock_a_normal_vm(self) -> None:
+        old = "NFS-SATA-SSD1:vm-910-disk-0"
+        run = FakeRun(
+            [
+                (0, "status: stopped\n"),
+                (0, f"tags: web;pve-prep-swap-910\nboot: order=scsi0\nscsi0: {old}\n"),
+            ]
+        )
+        with self.assertRaises(VmError):
+            insert_disk(
+                vmid=910,
+                storage=STORAGE,
+                image_path=IMAGE,
+                disk_policy="overwrite",
+                dry_run=False,
+                run=run,
+            )
+        self.assertEqual(len(run.calls), 2)
+        self.assertFalse(any(call[:3] == ["qm", "set", "910"] for call in run.calls))
+
+    def test_template_with_a_leftover_marker_updates_and_drops_it(self) -> None:
+        old = "NFS-SATA-SSD1:base-910-disk-0"
+        new = "NFS-SATA-SSD1:vm-910-disk-1"
+        with private_tempdir() as tmp:
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, f"template: 1\ntags: web;pve-prep-swap-910\nscsi0: {old}\n"),
                     (0, "[]"),
                     (0, ""),
                     (0, ""),
-                    (0, f"scsi0: {old}\nunused0: {orphan}\nunused1: {new}\n"),
+                    (0, f"scsi0: {old}\nunused0: {new}\n"),
                     (0, ""),
-                    (0, f"scsi0: {new}\nunused0: {orphan}\nunused1: {old}\n"),
+                    (0, f"scsi0: {new}\nunused0: {old}\n"),
                     (0, ""),
                     (0, ""),
                     (0, ""),
@@ -1167,9 +1221,8 @@ class InsertDiskTests(unittest.TestCase):
             )
             result = self._insert(run, tmp)
         self.assertEqual(result.volid, new)
-        self.assertTrue(result.kept_template)
-        self.assertEqual(run.calls[3], ["qm", "set", "910", "--template", "0", "--tags", "pve-prep-swap-910"])
-        self.assertEqual(run.calls[-2:], [["qm", "template", "910"], ["qm", "set", "910", "--delete", "tags"]])
+        self.assertEqual(run.calls[3], ["qm", "set", "910", "--template", "0", "--tags", "web;pve-prep-swap-910"])
+        self.assertEqual(run.calls[-2:], [["qm", "template", "910"], ["qm", "set", "910", "--tags", "web"]])
 
     def test_another_vmids_marker_does_not_unlock_a_normal_vm(self) -> None:
         run = FakeRun(
