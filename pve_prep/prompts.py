@@ -1115,6 +1115,60 @@ def _ask_guest_settings(read_line, write, *, hardware: bool, convert: bool, coun
     return GuestSettings(password_auth, permit_root, bridge, memory_mb, cores, make_template)
 
 
+_UPDATE_ROWS = (
+    ("No automated updates", "no"),
+    ("Weekly automated updates", "weekly"),
+    ("Monthly automated updates", "monthly"),
+)
+_UPDATE_NOTE = (
+    "These new templates can get a cron script that replaces the boot disk "
+    "when the upstream image checksum changes.\n"
+    "It does not apply to an update of an existing template or to a standalone image.\n"
+    "Enter does not install anything."
+)
+
+
+def ask_unattended_schedule(read_line, write) -> str | None:
+    """Cron schedule for new templates. Enter installs nothing.
+
+    weekly or monthly is the schedule. None means no cron script.
+    """
+    _section(read_line, write, "Automated updates")
+    _say(read_line, write, _UPDATE_NOTE, "note")
+    if ui.enabled(read_line):
+        picked = _pick(
+            read_line,
+            write,
+            "Choose a schedule. Highlight a selection and press enter",
+            list(_UPDATE_ROWS),
+            default="no",
+        )
+    else:
+        for index, (title, _value) in enumerate(_UPDATE_ROWS, start=1):
+            write(f"  {index}) {title}\n")
+        picked = _ask_choice(
+            read_line,
+            write,
+            "Select [1]: ",
+            {
+                "1": "no",
+                "n": "no",
+                "no": "no",
+                "2": "weekly",
+                "weekly": "weekly",
+                "3": "monthly",
+                "monthly": "monthly",
+            },
+            "1",
+            "pick 1, 2, or 3",
+        )
+    done = {value: f"{title}." for title, value in _UPDATE_ROWS}
+    _selected(read_line, write, done[picked])
+    if picked == "no":
+        return None
+    return picked
+
+
 def ask_cache_cleanup(read_line, write, *, cache: str, failed: bool) -> bool:
     """After the builds. Enter keeps working files. y deletes them.
 
