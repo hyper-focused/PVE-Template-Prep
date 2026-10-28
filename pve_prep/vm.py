@@ -230,11 +230,14 @@ class InsertResult:
 
     kept_template means the guest was already a template and still is.
     backup_dir is set when the old disk was copied there first.
+    cleanup_error is set when the new disk is the boot disk and the guest
+    is a template again, but deleting the previous volume failed.
     """
 
     volid: str
     kept_template: bool = False
     backup_dir: str = ""
+    cleanup_error: str = ""
 
 
 def _linked_child(template_vmid: int) -> re.Pattern[str]:
@@ -1126,17 +1129,17 @@ def create_template(
     return volid
 
 
-def _attach_boot_disk(run: Run, *, vmid: int, config_text: str, volid: str) -> None:
-    """Point the boot disk at volid. The old boot volume is deleted."""
+def _attach_boot_disk(run: Run, *, vmid: int, config_text: str, volid: str) -> str:
+    """Point the boot disk at volid. Returns the previous boot volume, or ""."""
     current = select_boot_disk(config_text)
     attached = f"{volid},discard=on,ssd=1"
     if current is not None:
         bus, old_volid = current
         _must(run, ["qm", "set", str(vmid), f"--{bus}", attached], vmid=vmid, destroyed=False)
-        _delete_unused_volid(run, vmid=vmid, volid=old_volid)
-        return
+        return old_volid
     slot = next_scsi_index(config_text)
     _must(run, ["qm", "set", str(vmid), f"--scsi{slot}", attached], vmid=vmid, destroyed=False)
+    return ""
 
 
 def _tags_value(tags: list[str]) -> str:
@@ -1196,6 +1199,11 @@ def _replace_template_disk(
     guest is never a plain VM without it. If the flag cannot be put back,
     the marker stays and a rerun finishes the swap. The guest's own tags
     are restored once it is a template again.
+
+    Deleting the previous volume happens after the new disk is attached.
+    A failure there is cleanup: the template is updated, and the error is
+    returned on InsertResult. A failure before the attach still rolls the
+    flag back.
     """
     saved = ""
     if disk_policy == "backup" and (copies_done or list_os_disks(config_text)):
@@ -1235,7 +1243,7 @@ def _replace_template_disk(
             destroyed=False,
             before_text=config_text,
         )
-        _attach_boot_disk(run, vmid=vmid, config_text=config_text, volid=volid)
+        old_volid = _attach_boot_disk(run, vmid=vmid, config_text=config_text, volid=volid)
     except VmError as exc:
         note = _discard_import(run, vmid=vmid, volid=volid) if volid else ""
         restored = run(["qm", "template", str(vmid)])
@@ -1243,12 +1251,24 @@ def _replace_template_disk(
             raise VmError(f"{exc}{note}; the template flag could not be restored. {stuck}") from exc
         _drop_swap_marker(run, vmid=vmid, tags=tags)
         raise VmError(f"{exc}{note}; the template flag was restored") from exc
+    cleanup_error = ""
+    if old_volid:
+        try:
+            _delete_unused_volid(run, vmid=vmid, volid=old_volid)
+        except VmError as exc:
+            cleanup_error = str(exc)
     try:
         _must(run, ["qm", "template", str(vmid)], vmid=vmid, destroyed=False)
     except VmError as exc:
-        raise VmError(f"{exc}; the new disk is attached. {stuck}") from exc
+        note = f" Old disk cleanup failed: {cleanup_error}." if cleanup_error else ""
+        raise VmError(f"{exc}; the new disk is attached.{note} {stuck}") from exc
     _drop_swap_marker(run, vmid=vmid, tags=tags)
-    return InsertResult(volid, kept_template=True, backup_dir=saved)
+    return InsertResult(
+        volid,
+        kept_template=True,
+        backup_dir=saved,
+        cleanup_error=cleanup_error,
+    )
 
 
 def insert_disk(

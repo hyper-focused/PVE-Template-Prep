@@ -462,6 +462,24 @@ class OrchestratorTest(unittest.TestCase):
             "Template 910 kept. Previous disk deleted.",
             buf.getvalue(),
         )
+        cleaned = SimpleNamespace(
+            volid="dir-templates:vm-910-disk-1",
+            kept_template=True,
+            backup_dir="/var/backups/pve-template-prep",
+            cleanup_error="volume is locked",
+        )
+        MOD.insert_disk = mock.MagicMock(return_value=cleaned)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            MOD.run_one(replaced, "12", 910)
+        self.assertIn(
+            "Debian 12 VM disk image created and imported. Template 910 updated. "
+            "Old disk saved in /var/backups/pve-template-prep. "
+            "Old disk cleanup failed: volume is locked.",
+            buf.getvalue(),
+        )
+        self.assertNotIn("Previous disk deleted.", buf.getvalue())
+        self.assertNotIn("template flag was restored", buf.getvalue())
 
     def test_main_continues_after_second_release_fails(self) -> None:
         job = _image_job(dry_run=True, prep=True)
