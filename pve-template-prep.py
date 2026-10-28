@@ -23,7 +23,9 @@ from pve_prep.catalog import normalize_release, releases_for
 from pve_prep.customize import apply as customize_apply
 from pve_prep.customize import argv as customize_argv
 from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, publish
-from pve_prep.job import Job, action_for
+from pve_prep.enroll import ENROLL_DIR
+from pve_prep.job import DEFAULT_CACHE, Job, action_for, converts_to_template
+from pve_prep.offer import offer_created
 from pve_prep.prompts import PromptAbort, ask_cache_cleanup, interview
 from pve_prep.ui import arm, quiet_echo, tone
 from pve_prep.vm import (
@@ -401,6 +403,85 @@ def _report_backups(job: Job, started: float) -> None:
         print(f"VM Disk image backups located at {job.backup_dir}")
 
 
+def _digest_for(distro: str, release: str) -> tuple[str, str]:
+    """Published checksum for one release, and the algorithm name.
+
+    A catalog row with no filename is resolved first. The checksum file is
+    read inside _expected_digest; only the digest is returned.
+    """
+    from pve_prep.catalog import finalize_index
+    from pve_prep.download import _expected_digest, _read_text
+
+    spec = _spec_for(distro, release)
+    if not spec.filename:
+        spec = finalize_index(spec, _read_text(spec.url))
+    _text, digest = _expected_digest(spec)
+    return digest, spec.checksum_alg
+
+
+def _created_templates(
+    job: Job, succeeded: list[tuple[str, int | None]]
+) -> list[tuple[str, int]]:
+    """Releases that finished and were converted to templates."""
+    return [
+        (release, vmid)
+        for release, vmid in succeeded
+        if vmid is not None and converts_to_template(job, vmid)
+    ]
+
+
+def _unattended_job() -> Job:
+    """Stand-in whose preflight requires every tool a refresh calls."""
+    return Job(
+        distro="debian",
+        releases=("12",),
+        mode="image",
+        disk_format="qcow2",
+        dest_dir="",
+        storage="local",
+        cache_dir=DEFAULT_CACHE,
+        collision="overwrite",
+        vmids=(100,),
+        prep=True,
+        bridge="vmbr0",
+        memory_mb=2048,
+        cores=2,
+        dry_run=False,
+        destroy_vmids=frozenset(),
+    )
+
+
+def _run_unattended(schedule: str, *, dry_run: bool) -> int:
+    """Refresh one schedule. No interview, no update prompt, no cache question."""
+    from pve_prep.unattended import run_unattended
+
+    if not dry_run:
+        preflight(_unattended_job())
+    code = run_unattended(
+        schedule,
+        directory=ENROLL_DIR,
+        digest_for=_digest_for,
+        run=default_run,
+        perform=run_one,
+        storage_kind=storage_kind,
+        nodes_root=Path("/etc/pve/nodes"),
+        dry_run=dry_run,
+    )
+    if code != 0:
+        print(f"cache kept: {DEFAULT_CACHE}")
+        print("a release failed, so the download stays")
+        return 1
+    if dry_run:
+        return 0
+    try:
+        clear_cache(DEFAULT_CACHE)
+    except DownloadError as exc:
+        print(f"FAIL cache: {exc}")
+        return 1
+    print(f"deleted the working files in {DEFAULT_CACHE}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pve-template-prep",
@@ -423,8 +504,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="show each virt-customize command instead of the progress bar",
     )
+    parser.add_argument(
+        "--unattended",
+        choices=("weekly", "monthly"),
+        help="refresh enrolled templates for this schedule without prompting",
+    )
     args = parser.parse_args(argv)
     print(f"{parser.prog} {__version__}")
+    if args.unattended:
+        return _run_unattended(args.unattended, dry_run=args.dry_run)
     failed_update = _consider_update(Path(__file__).resolve())
     if failed_update:
         return failed_update
@@ -461,6 +549,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL: {exc}")
         failed = True
         pairs = []
+    succeeded: list[tuple[str, int | None]] = []
     for release, vmid in pairs:
         try:
             run_one(job, release, vmid)
@@ -472,7 +561,25 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"FAIL {release}: {exc}")
             failed = True
+        else:
+            succeeded.append((release, vmid))
     print("done")
+    try:
+        offer_created(
+            reader,
+            _write,
+            created=_created_templates(job, succeeded),
+            distro=job.distro,
+            password_auth=job.password_auth,
+            permit_root=job.permit_root,
+            digest_for=_digest_for,
+            program=str(Path(__file__).resolve()),
+            directory=ENROLL_DIR,
+            cron_directory=None,
+            dry_run=job.dry_run,
+        )
+    except PromptAbort:
+        pass
     if _settle_cache(job, failed, reader):
         failed = True
     _report_backups(job, started)

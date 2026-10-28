@@ -856,5 +856,182 @@ class OrchestratorTest(unittest.TestCase):
         ):
             MOD.main([])
 
+    def test_unattended_skips_the_interview(self) -> None:
+        buf = io.StringIO()
+        interview = mock.Mock(side_effect=AssertionError("asked"))
+        with (
+            mock.patch.object(MOD, "interview", interview),
+            mock.patch.object(MOD, "_consider_update", side_effect=AssertionError("update")),
+            mock.patch("pve_prep.unattended.run_unattended", return_value=0) as refresh,
+            mock.patch.object(MOD, "clear_cache") as clear_cache,
+            mock.patch.object(MOD, "preflight") as preflight,
+            redirect_stdout(buf),
+        ):
+            code = MOD.main(["--unattended", "weekly"])
+        self.assertEqual(code, 0)
+        interview.assert_not_called()
+        refresh.assert_called_once()
+        self.assertEqual(refresh.call_args.args[0], "weekly")
+        kwargs = refresh.call_args.kwargs
+        self.assertIs(kwargs["digest_for"], MOD._digest_for)
+        self.assertIs(kwargs["perform"], MOD.run_one)
+        self.assertIs(kwargs["storage_kind"], MOD.storage_kind)
+        self.assertIs(kwargs["run"], MOD.default_run)
+        self.assertEqual(kwargs["nodes_root"], Path("/etc/pve/nodes"))
+        self.assertEqual(kwargs["directory"], MOD.ENROLL_DIR)
+        job = preflight.call_args.args[0]
+        self.assertEqual(job.mode, "image")
+        self.assertTrue(job.prep)
+        self.assertEqual(job.vmids, (100,))
+        self.assertEqual(job.disk_format, "qcow2")
+        self.assertEqual(job.distro, "debian")
+        self.assertEqual(job.releases, ("12",))
+        self.assertEqual(job.storage, "local")
+        self.assertEqual(job.cache_dir, MOD.DEFAULT_CACHE)
+        self.assertEqual(job.collision, "overwrite")
+        self.assertEqual(job.bridge, "vmbr0")
+        self.assertEqual(job.memory_mb, 2048)
+        self.assertEqual(job.cores, 2)
+        self.assertFalse(job.dry_run)
+        self.assertEqual(job.destroy_vmids, frozenset())
+        clear_cache.assert_called_once_with(MOD.DEFAULT_CACHE)
+        text = buf.getvalue()
+        self.assertTrue(text.startswith(f"pve-template-prep {pve_prep.__version__}\n"))
+        self.assertIn(f"deleted the working files in {MOD.DEFAULT_CACHE}", text)
+
+    def test_unattended_failure_keeps_the_cache(self) -> None:
+        buf = io.StringIO()
+        with (
+            mock.patch.object(MOD, "interview", side_effect=AssertionError("asked")),
+            mock.patch("pve_prep.unattended.run_unattended", return_value=1),
+            mock.patch.object(MOD, "clear_cache") as clear_cache,
+            mock.patch.object(MOD, "preflight"),
+            redirect_stdout(buf),
+        ):
+            code = MOD.main(["--unattended", "monthly"])
+        self.assertEqual(code, 1)
+        clear_cache.assert_not_called()
+        text = buf.getvalue()
+        self.assertIn(f"cache kept: {MOD.DEFAULT_CACHE}", text)
+        self.assertIn("a release failed, so the download stays", text)
+
+    def test_unattended_cache_delete_failure(self) -> None:
+        buf = io.StringIO()
+        with (
+            mock.patch.object(MOD, "interview", side_effect=AssertionError("asked")),
+            mock.patch("pve_prep.unattended.run_unattended", return_value=0),
+            mock.patch.object(MOD, "clear_cache", side_effect=MOD.DownloadError("nope")),
+            mock.patch.object(MOD, "preflight"),
+            redirect_stdout(buf),
+        ):
+            code = MOD.main(["--unattended", "weekly"])
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL cache: nope", buf.getvalue())
+
+    def test_unattended_dry_run_skips_preflight_and_cache(self) -> None:
+        with (
+            mock.patch.object(MOD, "interview", side_effect=AssertionError("asked")),
+            mock.patch("pve_prep.unattended.run_unattended", return_value=0) as refresh,
+            mock.patch.object(MOD, "clear_cache") as clear_cache,
+            mock.patch.object(MOD, "preflight") as preflight,
+            redirect_stdout(io.StringIO()),
+        ):
+            code = MOD.main(["--dry-run", "--unattended", "weekly"])
+        self.assertEqual(code, 0)
+        preflight.assert_not_called()
+        clear_cache.assert_not_called()
+        self.assertIs(refresh.call_args.kwargs["dry_run"], True)
+
+    def test_successful_template_offers_created_vmids(self) -> None:
+        job = _template_job(dry_run=True)
+        with (
+            mock.patch.object(MOD, "interview", return_value=job),
+            mock.patch.object(MOD, "run_one"),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=False),
+            mock.patch.object(MOD, "offer_created") as offer,
+            redirect_stdout(io.StringIO()),
+        ):
+            code = MOD.main([])
+        self.assertEqual(code, 0)
+        offer.assert_called_once()
+        kwargs = offer.call_args.kwargs
+        self.assertEqual(kwargs["created"], [("12", 910), ("13", 911)])
+        self.assertEqual(kwargs["distro"], job.distro)
+        self.assertEqual(kwargs["password_auth"], job.password_auth)
+        self.assertEqual(kwargs["permit_root"], job.permit_root)
+        self.assertIs(kwargs["digest_for"], MOD._digest_for)
+        self.assertEqual(kwargs["program"], str(Path(MOD.__file__).resolve()))
+        self.assertEqual(kwargs["directory"], MOD.ENROLL_DIR)
+        self.assertIsNone(kwargs["cron_directory"])
+        self.assertEqual(kwargs["dry_run"], job.dry_run)
+        self.assertIs(offer.call_args.args[0], MOD._read_line)
+        self.assertIs(offer.call_args.args[1], MOD._write)
+
+    def test_offer_abort_still_asks_about_the_cache(self) -> None:
+        job = _template_job(dry_run=True)
+        with (
+            mock.patch.object(MOD, "interview", return_value=job),
+            mock.patch.object(MOD, "run_one"),
+            mock.patch.object(MOD, "offer_created", side_effect=MOD.PromptAbort("eof")),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=False) as ask,
+            redirect_stdout(io.StringIO()),
+        ):
+            code = MOD.main([])
+        self.assertEqual(code, 0)
+        ask.assert_called_once()
+        self.assertFalse(ask.call_args.kwargs["failed"])
+
+    def test_image_insert_is_not_a_created_template(self) -> None:
+        job = replace(
+            _image_job(releases=("12",), dry_run=False),
+            mode="image",
+            vmids=(910,),
+            storage="dir-templates",
+            make_template=False,
+            template_vmids=frozenset(),
+        )
+        self.assertFalse(MOD.converts_to_template(job, 910))
+        self.assertEqual(MOD._created_templates(job, [("12", 910)]), [])
+
+    def test_digest_for_finalizes_an_empty_filename(self) -> None:
+        spec = SimpleNamespace(
+            filename="",
+            url="https://example.test/index",
+            checksum_alg="256",
+        )
+        finalized = SimpleNamespace(
+            filename="Fedora.qcow2",
+            url="https://example.test/Fedora.qcow2",
+            checksum_alg="256",
+        )
+        with (
+            mock.patch.object(MOD, "_spec_for", return_value=spec),
+            mock.patch("pve_prep.catalog.finalize_index", return_value=finalized) as finalize,
+            mock.patch("pve_prep.download._read_text", return_value="<html>") as read_text,
+            mock.patch("pve_prep.download._expected_digest", return_value=("sum", "ab" * 32)) as expected,
+        ):
+            digest, alg = MOD._digest_for("fedora", "42")
+        finalize.assert_called_once_with(spec, "<html>")
+        read_text.assert_called_once_with("https://example.test/index")
+        expected.assert_called_once_with(finalized)
+        self.assertEqual(digest, "ab" * 32)
+        self.assertEqual(alg, "256")
+
+    def test_digest_for_uses_a_named_file(self) -> None:
+        spec = SimpleNamespace(
+            filename="debian-12.qcow2",
+            url="https://example.test/debian-12.qcow2",
+            checksum_alg="512",
+        )
+        with (
+            mock.patch.object(MOD, "_spec_for", return_value=spec),
+            mock.patch("pve_prep.catalog.finalize_index") as finalize,
+            mock.patch("pve_prep.download._expected_digest", return_value=(None, "cd" * 64)),
+        ):
+            digest, alg = MOD._digest_for("debian", "12")
+        finalize.assert_not_called()
+        self.assertEqual((digest, alg), ("cd" * 64, "512"))
+
+
 if __name__ == "__main__":
     unittest.main()
