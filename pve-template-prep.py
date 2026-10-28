@@ -36,7 +36,8 @@ from pve_prep.vm import (
     os_disk_format,
     os_disk_storage,
     is_linked_clone,
-    counts_as_template,
+    is_template,
+    unfinished_swap,
     prepare_replace,
     refuse_replace_target,
     vmid_config_missing,
@@ -126,10 +127,11 @@ def vm_has_disks(vmid: int) -> bool | None:
 
 
 def guest_role(vmid: int) -> str | None:
-    """template, vm, clone, blocked, or None when qm config cannot be read.
+    """template, vm, clone, unfinished, blocked, or None when unreadable.
 
     None and any other unreadable result are treated as blocked. A template
-    that still has linked clones is blocked. A normal VM is vm.
+    that still has linked clones is blocked. A normal VM is vm. A normal VM
+    carrying its own swap marker is unfinished, and is refused like a VM.
     """
     try:
         proc = subprocess.run(
@@ -144,7 +146,9 @@ def guest_role(vmid: int) -> str | None:
     text = proc.stdout or ""
     if is_linked_clone(text):
         return "clone"
-    if not counts_as_template(text, vmid):
+    if unfinished_swap(text, vmid):
+        return "unfinished"
+    if not is_template(text):
         return "vm"
     try:
         refuse_replace_target(default_run, vmid, text, None)

@@ -1089,6 +1089,34 @@ class InterviewTest(unittest.TestCase):
         )
         self.assertIn("bookworm VM Template ID [9001]: ", blob)
 
+    def test_unfinished_swap_is_refused_on_every_action(self) -> None:
+        refusal = (
+            "VMID 910 is not a template; its disk update did not finish. "
+            "It will not be changed. Run qm template 910, then run the update again."
+        )
+        script = _Script(["", "1", "1", "910", "", "1", "", "", "", "", "", "", "yes"])
+        job = script.run(
+            dry_run=False,
+            storages=["dir-templates"],
+            in_use={910},
+            disks={910},
+            roles={910: "unfinished"},
+        )
+        self.assertEqual(job.vmids, (9001,))
+        self.assertEqual(job.destroy_vmids, frozenset())
+        self.assertIn(refusal, "".join(script.written))
+        image = _Script(["2", "1", "1", "910", "911", "", "", "", "yes"])
+        updated = image.run(
+            dry_run=False,
+            in_use={910, 911},
+            disks={911},
+            roles={910: "unfinished", 911: "template"},
+            placed={911: "nfs-templates"},
+            formats={911: "qcow2"},
+        )
+        self.assertEqual(updated.vmids, (911,))
+        self.assertIn(refusal, "".join(image.written))
+
     def test_linked_clone_is_refused_on_every_action(self) -> None:
         image = _Script(["2", "1", "1", "910", "911", "", "", "", "yes"])
         published = image.run(
