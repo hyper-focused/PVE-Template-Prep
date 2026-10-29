@@ -4,7 +4,7 @@ All notable changes to pve-template-prep. Newest first. The format follows [Keep
 
 An installed copy offers a new release when the version string on `main` changes. Changes merged without a version bump are listed under **Unreleased** and arrive only through a freshly downloaded `install.sh`, which upgrades in place.
 
-## Unreleased
+## 1.4.0 - 2026-10-29
 
 ### Changed
 - `install.sh` ships `cronscript.py`, `enroll.py`, `offer.py`, and `unattended.py`. It copies only the modules it names, so a branch install that omitted them would place the new entry script and then fail on import. The install check imports those four modules.
