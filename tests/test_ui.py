@@ -297,6 +297,13 @@ class VendorTest(unittest.TestCase):
         self.assertEqual("".join(text for _style, text in tokens).strip(), yes)
         rules = dict(ui.widget_style().style_rules)
         self.assertEqual(rules["success"], rules["answer"])
+        from prompt_toolkit.document import Document
+
+        lexer = ui._input_lexer(danger_word=None, yes_green=True)
+        self.assertEqual(lexer.lex_document(Document("y"))(0), [("class:success", "y")])
+        self.assertEqual(lexer.lex_document(Document("Yes"))(0), [("class:success", "Yes")])
+        self.assertEqual(lexer.lex_document(Document("n"))(0), [("class:text", "n")])
+        self.assertEqual(lexer.lex_document(Document("no"))(0), [("class:text", "no")])
 
         tokens = ui.prompt_tokens("bookworm VM Template ID", hint="[9001]")
         self.assertEqual(tokens[-2:], [("class:instruction", "[9001]"), ("class:question", ": ")])
@@ -505,7 +512,7 @@ class WidgetInterviewTest(unittest.TestCase):
 
         seen_texts: list[str] = []
 
-        def text(message, default="", hint=None, danger_word=None, success_word=None):
+        def text(message, default="", hint=None, danger_word=None, success_word=None, yes_green=False):
             self.assertTrue(message)
             self.assertNotIn("[", message)
             seen_texts.append(f"{message} {hint}:" if hint else message)
@@ -517,6 +524,7 @@ class WidgetInterviewTest(unittest.TestCase):
                 self.assertIsNone(success_word)
             if "'YES'" in message:
                 self.assertEqual(success_word, "YES")
+            self.assertEqual(yes_green, bool(hint and hint.startswith("(y/n)")))
             return texts.pop(0)
 
         def confirm_capture(message, default=True):

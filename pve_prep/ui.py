@@ -489,6 +489,37 @@ def prompt_tokens(
     return tokens
 
 
+def _input_lexer(*, danger_word: str | None, yes_green: bool):
+    """How typed characters are colored.
+
+    A delete gate is red. A yes/no field paints y or yes in the success
+    color and leaves n in the plain text color. Every other field uses
+    the answer color for the whole value.
+    """
+    _ensure_vendor()
+    from prompt_toolkit.document import Document
+    from prompt_toolkit.lexers import Lexer, SimpleLexer
+
+    if danger_word:
+        return SimpleLexer("class:danger")
+    if not yes_green:
+        return SimpleLexer("class:answer")
+
+    class _YesLexer(Lexer):
+        def lex_document(self, document: Document):
+            def get_line(lineno: int):
+                line = document.lines[lineno]
+                if line.lower() in {"y", "ye", "yes"}:
+                    return [("class:success", line)]
+                if line:
+                    return [("class:text", line)]
+                return []
+
+            return get_line
+
+    return _YesLexer()
+
+
 def text(
     message: str,
     *,
@@ -496,16 +527,16 @@ def text(
     hint: str | None = None,
     danger_word: str | None = None,
     success_word: str | None = None,
+    yes_green: bool = False,
     **kwargs,
 ):
     """Empty string is an answer. None means cancelled.
 
     A prompt_toolkit session, not questionary.text, because the question
     is formatted text: danger_word is red in the question and in the field.
-    success_word is the success color in the question. The field stays the
-    answer color.
+    success_word is the success color in the question. On a yes/no field,
+    a typed y or yes is that same color.
     """
-    from prompt_toolkit.lexers import SimpleLexer
     from prompt_toolkit.shortcuts import PromptSession
     from prompt_toolkit.styles import merge_styles
     from questionary.constants import DEFAULT_STYLE
@@ -513,7 +544,7 @@ def text(
     session = PromptSession(
         prompt_tokens(message, hint=hint, danger_word=danger_word, success_word=success_word),
         style=merge_styles([DEFAULT_STYLE, widget_style(instruction="highlight")]),
-        lexer=SimpleLexer("class:danger" if danger_word else "class:answer"),
+        lexer=_input_lexer(danger_word=danger_word, yes_green=yes_green),
         **_app_kwargs(),
         **kwargs,
     )

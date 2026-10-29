@@ -67,7 +67,7 @@ Python 3, `qm`, `pvesm`, and `qemu-img` are present on a stock PVE 9 node. `gues
 
 On a terminal, choices are menus. On a pipe they are numbered lines. Empty input takes the default. An invalid answer is asked again with a reason. Space marks a release and Enter accepts the list; in every other menu Space or Enter selects the highlighted row. A number highlights that row. Each completed menu is replaced by one line naming the choice.
 
-Yes/no fields show `(y/n) [Yes]:` or `(y/n) [No]:`. Enter accepts the bracketed value. `y`, `yes`, `n`, and `no` answer it. `YES`, `DELETE`, and VMIDs are typed in full. `X` exits at the final gate; end of input exits at any prompt with status 1.
+Yes/no fields show `(y/n) [Yes]:` or `(y/n) [No]:`. Enter accepts the bracketed value. `y`, `yes`, `n`, and `no` answer it. On a terminal, a typed `y` or `yes` is the success color. `YES`, `DELETE`, and VMIDs are typed in full. `X` exits at the final gate; end of input exits at any prompt with status 1.
 
 ### 1. What to build
 
@@ -146,7 +146,7 @@ Section **Confirm Selections** states the consequence in one line and asks for o
 
 When this run successfully created a guest and converted it with `qm template`, the enrollment question comes after the builds finish and before the cache question. See [ENROLLED TEMPLATES](#enrolled-templates).
 
-`Delete working files in /var/tmp/pve-template-prep/cache? (y/n) [No]:`. See [CACHE AND BACKUPS](#cache-and-backups). When the run wrote a disk backup, it prints `VM Disk image backups located at /var/backups/pve-template-prep`.
+`Retain the working files in /var/tmp/pve-template-prep/cache? (y/n) [Yes]:`. Enter and `y` keep them. `n` deletes them. See [CACHE AND BACKUPS](#cache-and-backups). When the run wrote a disk backup, it prints `VM Disk image backups located at /var/backups/pve-template-prep`.
 
 ## STORAGE
 
@@ -279,7 +279,7 @@ Commits that keep the same version string are not offered. They are picked up by
 
 | Directory | Contents | Cleanup |
 | --- | --- | --- |
-| `/var/tmp/pve-template-prep/cache/` | Downloads and `.work` files. Mode `0700`, root. | Removed by answering yes to the cache question. A cache hit prints `reuse` and the path. |
+| `/var/tmp/pve-template-prep/cache/` | Downloads and `.work` files. Mode `0700`, root. | Removed by answering no to the cache question. A cache hit prints `reuse` and the path. |
 | `/var/backups/pve-template-prep/` | Disk backups named `vm-<vmid>-<bus>.bak.<UTC>.qcow2`. Mode `0700`, root. Created on first use. | Never opened by cleanup. A backup left in the cache by an older release is skipped as well. |
 
 Every directory on the way to either directory must belong to root and must not be writable by other users unless it is sticky, as `/var/tmp` is. Symlinks are followed and the target is checked the same way. Otherwise the run stops with `unsafe cache dir` or `unsafe backup dir` and the owner's uid. If another user created `/var/tmp/pve-template-prep`, remove it and run again.

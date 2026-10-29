@@ -76,6 +76,7 @@ def _ask_text(
     default: str = "",
     danger_word: str | None = None,
     success_word: str | None = None,
+    yes_green: bool = False,
 ) -> str:
     """Free text. The widget shows prompt; the plain path writes it."""
     if ui.enabled(read_line):
@@ -87,6 +88,7 @@ def _ask_text(
             hint=hint,
             danger_word=danger_word,
             success_word=success_word,
+            yes_green=yes_green,
         )
         if value is None:
             raise PromptAbort("exit")
@@ -998,7 +1000,7 @@ def _ask_bool(read_line, write, prompt: str, default: bool) -> bool:
     """Yes or no. Enter accepts the bracket. y and n answer it."""
     field = _yn_prompt(prompt, default)
     while True:
-        raw = _ask_text(read_line, write, field).lower()
+        raw = _ask_text(read_line, write, field, yes_green=True).lower()
         if raw == "":
             return default
         if raw in {"y", "yes"}:
@@ -1182,19 +1184,19 @@ def ask_unattended_schedule(read_line, write) -> str | None:
 
 
 def ask_cache_cleanup(read_line, write, *, cache: str, failed: bool) -> bool:
-    """After the builds. Enter keeps working files. y deletes them.
+    """After the builds. Enter and y retain the working files. n deletes them.
 
-    Disk backups are not in the cache and are never deleted. A failed
-    release says the download is still in the cache, and Enter keeps it.
+    Returns True when the files should be deleted. Disk backups are not in
+    the cache and are never deleted. A failed release says the download is
+    still in the cache, and Enter still retains it.
     """
+    note = ""
     if failed:
-        prompt = (
+        note = (
             f"A release failed. Working files are still in {cache}, including the download.\n"
-            f"Delete working files in {cache}?\n"
         )
-    else:
-        prompt = f"Delete working files in {cache}?\n"
-    return _ask_bool(read_line, write, prompt, False)
+    retain = _ask_bool(read_line, write, f"{note}Retain the working files in {cache}?\n", True)
+    return not retain
 
 
 def _diskless(vm_has_disks, vmid: int) -> bool:

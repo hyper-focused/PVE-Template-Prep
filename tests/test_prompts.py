@@ -1201,12 +1201,12 @@ class InterviewTest(unittest.TestCase):
         )
         blob = "".join(kept.written)
         self.assertNotIn("backups", blob)
-        self.assertIn(f"Delete working files in {DEFAULT_CACHE}?", blob)
+        self.assertIn(f"Retain the working files in {DEFAULT_CACHE}?", blob)
         self.assertIn(
-            f"Delete working files in {DEFAULT_CACHE}? (y/n) [No]: ",
+            f"Retain the working files in {DEFAULT_CACHE}? (y/n) [Yes]: ",
             blob,
         )
-        failed = _Script(["y"])
+        failed = _Script(["n"])
         self.assertTrue(
             ask_cache_cleanup(
                 failed.read_line,

@@ -367,7 +367,7 @@ def _pairs(job: Job) -> list[tuple[str, int | None]]:
 def _settle_cache(job: Job, failed: bool, read_line) -> bool:
     """Ask about working files once the run is over.
 
-    Enter keeps them. y deletes them. Disk backups are elsewhere and stay.
+    Enter and y retain them. n deletes them. Disk backups are elsewhere and stay.
     A failed release still asks, and Enter keeps the download. Dry-run asks
     and does not delete. EOF keeps the files. Returns True when a delete was
     asked for and did not happen.
