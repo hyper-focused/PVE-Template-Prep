@@ -275,7 +275,7 @@ def widget_style(*, instruction: str = "note"):
         [
             ("qmark", _style("header")),
             ("question", _style("header")),
-            ("answer", _style("success")),
+            ("answer", _style("success") + " nobold"),
             ("pointer", _style("highlight")),
             # prompt_toolkit's own style reverses selected rows. The palette colors them instead.
             ("highlighted", _style("highlight") + " noreverse"),
@@ -493,8 +493,8 @@ def _input_lexer(*, danger_word: str | None, yes_green: bool):
     """How typed characters are colored.
 
     A delete gate is red. A yes/no field paints y or yes in the success
-    color and leaves n in the plain text color. Every other field uses
-    the answer color for the whole value.
+    color and leaves n in the plain text color. Every other field paints
+    the whole value in that same success color.
     """
     _ensure_vendor()
     from prompt_toolkit.document import Document
@@ -503,7 +503,7 @@ def _input_lexer(*, danger_word: str | None, yes_green: bool):
     if danger_word:
         return SimpleLexer("class:danger")
     if not yes_green:
-        return SimpleLexer("class:answer")
+        return SimpleLexer("class:success")
 
     class _YesLexer(Lexer):
         def lex_document(self, document: Document):

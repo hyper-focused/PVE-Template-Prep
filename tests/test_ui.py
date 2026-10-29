@@ -296,7 +296,7 @@ class VendorTest(unittest.TestCase):
         self.assertNotIn(("class:success", "'YES'"), tokens)
         self.assertEqual("".join(text for _style, text in tokens).strip(), yes)
         rules = dict(ui.widget_style().style_rules)
-        self.assertEqual(rules["success"], rules["answer"])
+        self.assertEqual(rules["answer"], rules["success"] + " nobold")
         from prompt_toolkit.document import Document
 
         lexer = ui._input_lexer(danger_word=None, yes_green=True)
@@ -347,7 +347,7 @@ class VendorTest(unittest.TestCase):
                         "Use this VM template config?", hint="(y/n) [Yes]", input=pipe, output=DummyOutput()
                     )
                 self.assertEqual(typed, "")
-                self.assertEqual(seen["lexer"].style, "class:answer")
+                self.assertEqual(seen["lexer"].style, "class:success")
         finally:
             signal.alarm(0)
 

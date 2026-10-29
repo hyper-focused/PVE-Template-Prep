@@ -8,7 +8,7 @@ An installed copy offers a new release when the version string on `main` changes
 
 ### Changed
 - The cache question asks `Retain the working files in /var/tmp/pve-template-prep/cache? (y/n) [Yes]:`. Enter and `y` keep the files. `n` deletes them. A failed release still says the download is there, and Enter still keeps it.
-- On a yes/no field, a typed `y` or `yes` is the success color. `n` stays the plain text color. A pipe stays plain.
+- On a yes/no field, a typed `y` or `yes` is the success color. `n` stays the plain text color. A value typed into any other field, such as a VMID, uses that same color. A pipe stays plain.
 - On the confirm gate, `YES` is the success color. The quotes around it stay with the question. A pipe stays plain.
 - An unattended refresh mails one sentence per guest. A matching image says the VMID is current. A finished swap says `SUCCESSFUL` and names `/var/backups/pve-template-prep/`. A failure says `FAILED` and what was left in place: the existing disk was not changed, the guest is running or missing or not a template, the boot disk is on block storage, guest preparation failed, or the new disk is attached and `qm template` still has to be run. A swap that left the previous disk unused stays `SUCCESSFUL` and says so. The build narration and the `virt-customize` log are not mailed. A failure, and that leftover-disk case, replaces `/var/log/pve-template-prep/<vmid>.log` (mode `0600`) and the sentence names the file.
 - `install.sh` breaks the closing notes into the download line, the install line, and a short footer. The success line is a medium light green, the two labels are cyan, and the commands are bold. A pipe, `NO_COLOR`, or `TERM=dumb` stays plain.

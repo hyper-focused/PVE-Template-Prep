@@ -67,7 +67,7 @@ Python 3, `qm`, `pvesm`, and `qemu-img` are present on a stock PVE 9 node. `gues
 
 On a terminal, choices are menus. On a pipe they are numbered lines. Empty input takes the default. An invalid answer is asked again with a reason. Space marks a release and Enter accepts the list; in every other menu Space or Enter selects the highlighted row. A number highlights that row. Each completed menu is replaced by one line naming the choice.
 
-Yes/no fields show `(y/n) [Yes]:` or `(y/n) [No]:`. Enter accepts the bracketed value. `y`, `yes`, `n`, and `no` answer it. On a terminal, a typed `y` or `yes` is the success color. `YES`, `DELETE`, and VMIDs are typed in full. `X` exits at the final gate; end of input exits at any prompt with status 1.
+Yes/no fields show `(y/n) [Yes]:` or `(y/n) [No]:`. Enter accepts the bracketed value. `y`, `yes`, `n`, and `no` answer it. On a terminal, a typed `y` or `yes` is the success color, and so is a value typed into any other field. `n` stays plain. `YES`, `DELETE`, and VMIDs are typed in full. `X` exits at the final gate; end of input exits at any prompt with status 1.
 
 ### 1. What to build
 
