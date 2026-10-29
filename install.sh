@@ -97,6 +97,24 @@ for name in "${MODULES[@]}" "${DATA_FILES[@]}"; do
     exit 1
   fi
 done
+
+# Same string -V prints. Parsed, not imported as the program.
+version="$(
+  PYTHONPATH="$src" python3 - "$src/pve_prep/__init__.py" <<'PY'
+import sys
+from pathlib import Path
+
+from pve_prep.update import parse_version, version_key
+
+found = parse_version(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if found is None or version_key(found) is None:
+    raise SystemExit(1)
+print(found)
+PY
+)" || {
+  echo "pve_prep/__init__.py has no x.y.z __version__" >&2
+  exit 1
+}
 for name in "${ROOT_FILES[@]}"; do
   if [[ ! -f "$src/$name" ]]; then
     echo "archive is missing $name" >&2
@@ -156,6 +174,7 @@ copy_tree() {
   done < <(find "$from" -type f -print0)
 }
 
+echo "Installing pve-template-prep ${version}"
 install -d -o root -g root -m 0755 "$DEST"
 install -d -o root -g root -m 0755 "$DEST/pve_prep"
 install -o root -g root -m 0755 "$src/pve-template-prep.py" "$DEST/pve-template-prep.py"
@@ -312,6 +331,6 @@ fi
 install -d -o root -g root -m 0755 "$(dirname "$BIN_LINK")"
 ln -sfn "$DEST/pve-template-prep.py" "$BIN_LINK"
 
-echo "Installed ${DEST}"
+echo "Installed pve-template-prep ${version} in ${DEST}"
 echo "Run: sudo pve-template-prep"
 echo "Dry run, no root: pve-template-prep --dry-run"

@@ -7,6 +7,7 @@ An installed copy offers a new release when the version string on `main` changes
 ## 1.4.0 - 2026-10-29
 
 ### Changed
+- `install.sh` prints the version it is installing. The string is `__version__` in that archive's `pve_prep/__init__.py`, the same one `-V` reports. An archive without an `x.y.z` version stops before it writes the install directory.
 - `install.sh` ships `cronscript.py`, `enroll.py`, `offer.py`, and `unattended.py`. It copies only the modules it names, so a branch install that omitted them would place the new entry script and then fail on import. The install check imports those four modules.
 
 ### Added
