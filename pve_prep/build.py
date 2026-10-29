@@ -95,7 +95,7 @@ def _stage_replace(job, vmid: int, tools, *, backup: bool) -> None:
         backup_dir=job.backup_dir,
         run=tools.run,
     )
-    if backup:
+    if backup and not job.quiet:
         if copied:
             print("VM disk copy completed, building new template images now...")
         else:
@@ -103,7 +103,7 @@ def _stage_replace(job, vmid: int, tools, *, backup: bool) -> None:
 
 
 def _prepare(job, spec, tools, *, cache_format: str, label: str) -> Path:
-    src = tools.fetch_verified(spec, Path(job.cache_dir), dry_run=job.dry_run)
+    src = tools.fetch_verified(spec, Path(job.cache_dir), dry_run=job.dry_run, quiet=job.quiet)
     work = Path(job.cache_dir) / (published_name(job.distro, spec.release, cache_format) + ".work")
     # qemu-img -p draws the bar. The label is the only name that bar gets.
     if not job.dry_run and stdout_is_tty():
@@ -120,6 +120,7 @@ def _prepare(job, spec, tools, *, cache_format: str, label: str) -> Path:
             dry_run=job.dry_run,
             verbose=job.verbose,
             label=label,
+            quiet=job.quiet,
         )
     return work
 

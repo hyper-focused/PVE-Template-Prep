@@ -109,6 +109,7 @@ class _Outcome:
         self.algs: dict[int, str | None] = {}
         self.asked: list[tuple[str, str]] = []
         self.kinds: list[str] = []
+        self.logs: dict[str, str] = {}
 
 
 def _run(
@@ -120,6 +121,7 @@ def _run(
     perform=None,
     digest_error: BaseException | None = None,
     dry_run: bool = False,
+    log_directory: Path | str | None = None,
 ) -> _Outcome:
     outcome = _Outcome()
     with private_tempdir() as tmp:
@@ -140,17 +142,20 @@ def _run(
             outcome.kinds.append(storage)
             return storage_kind
 
-        def wrapped(job: Job, release: str, vmid: int) -> None:
+        def wrapped(job: Job, release: str, vmid: int):
             outcome.jobs.append((job, release, vmid))
             if perform is not None:
-                perform(job, release, vmid)
+                return perform(job, release, vmid)
+            return None
 
+        logs = root / "log" if log_directory is None else Path(log_directory)
         outcome.fake = FakeRun(steps)
         buffer = StringIO()
         with redirect_stdout(buffer):
             outcome.code = run_unattended(
                 "weekly",
                 directory=root,
+                log_directory=logs,
                 digest_for=digest_for,
                 run=outcome.fake,
                 perform=wrapped,
@@ -159,6 +164,8 @@ def _run(
                 dry_run=dry_run,
             )
         outcome.out = buffer.getvalue()
+        if logs.is_dir():
+            outcome.logs = {path.name: path.read_text(encoding="utf-8") for path in logs.glob("*.log")}
         for record in records:
             loaded = load_enrollment(record.vmid, directory=root)
             outcome.digests[record.vmid] = None if loaded is None else loaded.digest
@@ -224,8 +231,11 @@ class UnattendedTests(unittest.TestCase):
         _assert_insert(self, job, record, _STORAGE, "raw")
         self.assertEqual(done.digests[910], _NEW)
         self.assertEqual(done.fake.calls, _commands(910))
-        self.assertNotIn("is current", done.out)
-        self.assertNotIn("FAIL", done.out)
+        self.assertTrue(job.quiet)
+        self.assertIn("Update of ubuntu 24.04 VM template disk image SUCCESSFUL.", done.out)
+        self.assertIn("/var/backups/pve-template-prep/", done.out)
+        self.assertNotIn("FAILED", done.out)
+        self.assertEqual(done.logs, {})
 
     def test_algorithm_change_is_stored_with_the_new_digest(self) -> None:
         published = "cd" * 64
@@ -246,9 +256,12 @@ class UnattendedTests(unittest.TestCase):
         self.assertEqual(release, record.release)
         self.assertEqual(vmid, record.vmid)
         self.assertTrue(job.dry_run)
+        self.assertFalse(job.quiet)
         self.assertEqual(action_for(job, record.vmid), "insert")
         self.assertEqual(done.digests[910], _OLD)
-        self.assertNotIn("FAIL", done.out)
+        self.assertIn("would be updated", done.out)
+        self.assertIn("Nothing was changed.", done.out)
+        self.assertNotIn("SUCCESSFUL", done.out)
 
     def test_perform_failure_keeps_the_digest_and_continues(self) -> None:
         first = _record(vmid=910, release="24.04", digest=_OLD, password_auth=True)
@@ -274,8 +287,12 @@ class UnattendedTests(unittest.TestCase):
         self.assertEqual([vmid for _job, _release, vmid in done.jobs], [910, 920])
         self.assertEqual(done.digests[910], _OLD)
         self.assertEqual(done.digests[920], _NEW)
-        self.assertIn("FAIL 24.04: disk swap failed", done.out)
-        self.assertNotIn("FAIL 22.04", done.out)
+        self.assertIn("Update of ubuntu 24.04 VM template disk image FAILED.", done.out)
+        self.assertIn("disk swap failed.", done.out)
+        self.assertIn("No changes to your existing disk image were made.", done.out)
+        self.assertIn("910.log", done.out)
+        self.assertIn("disk swap failed", done.logs["910.log"])
+        self.assertIn("Update of ubuntu 22.04 VM template disk image SUCCESSFUL.", done.out)
         failed_job = done.jobs[0][0]
         continued = done.jobs[1][0]
         self.assertTrue(failed_job.password_auth)
@@ -289,7 +306,8 @@ class UnattendedTests(unittest.TestCase):
         self.assertEqual(done.code, 1)
         self.assertEqual(done.jobs, [])
         self.assertEqual(done.digests[910], _OLD)
-        self.assertIn("FAIL 24.04: VM 910 is running", done.out)
+        self.assertIn("VMID 910 is running, so the disk was left unchanged.", done.out)
+        self.assertIn("VM 910 is running", done.logs["910.log"])
         self.assertEqual(done.fake.calls, [["qm", "status", "910"]])
         self.assertEqual(done.asked, [])
 
@@ -298,7 +316,8 @@ class UnattendedTests(unittest.TestCase):
         self.assertEqual(done.code, 1)
         self.assertEqual(done.jobs, [])
         self.assertEqual(done.digests[910], _OLD)
-        self.assertIn("not a template", done.out)
+        self.assertIn("VMID 910 is not a template, so the disk was left unchanged.", done.out)
+        self.assertIn("not a template", done.logs["910.log"])
         self.assertEqual(done.fake.calls, _commands(910, pvesm=False))
         self.assertEqual(done.asked, [])
 
@@ -307,7 +326,8 @@ class UnattendedTests(unittest.TestCase):
         self.assertEqual(done.code, 1)
         self.assertEqual(done.jobs, [])
         self.assertEqual(done.digests[910], _OLD)
-        self.assertIn("FAIL 24.04: VMID 910 is a container", done.out)
+        self.assertIn("VMID 910 is a container, so it was left unchanged.", done.out)
+        self.assertIn("VMID 910 is a container", done.logs["910.log"])
         self.assertEqual(done.fake.calls, _commands(910, config=False, pvesm=False))
 
     def test_missing_pct_is_a_failure(self) -> None:
@@ -315,15 +335,17 @@ class UnattendedTests(unittest.TestCase):
         self.assertEqual(done.code, 1)
         self.assertEqual(done.jobs, [])
         self.assertEqual(done.digests[910], _OLD)
-        self.assertIn("pct", done.out)
-        self.assertIn("FAIL 24.04:", done.out)
+        self.assertIn("A required program could not be run (pct).", done.out)
+        self.assertIn("No changes to your existing disk image were made.", done.out)
+        self.assertIn("pct", done.logs["910.log"])
         self.assertEqual(done.fake.calls, _commands(910, config=False, pvesm=False))
 
     def test_missing_vm_is_a_failure(self) -> None:
         done = _run([_record()], [(2, "Configuration file does not exist\n")])
         self.assertEqual(done.code, 1)
         self.assertEqual(done.jobs, [])
-        self.assertIn("FAIL 24.04: VM 910 does not exist", done.out)
+        self.assertIn("VMID 910 was not found, so nothing was changed.", done.out)
+        self.assertIn("VM 910 does not exist", done.logs["910.log"])
         self.assertEqual(done.fake.calls, [["qm", "status", "910"]])
 
     def test_no_enrollment_file_does_nothing(self) -> None:
@@ -339,8 +361,9 @@ class UnattendedTests(unittest.TestCase):
         self.assertEqual(done.code, 1)
         self.assertEqual(done.jobs, [])
         self.assertEqual(done.digests[910], _OLD)
-        self.assertIn(_STORAGE, done.out)
-        self.assertIn("zfspool", done.out)
+        self.assertIn("The boot disk is on block storage, which this update does not replace.", done.out)
+        self.assertIn(_STORAGE, done.logs["910.log"])
+        self.assertIn("zfspool", done.logs["910.log"])
         self.assertEqual(done.kinds, [_STORAGE])
         self.assertEqual(done.asked, [])
         self.assertEqual(done.fake.calls, _commands(910))
@@ -350,7 +373,9 @@ class UnattendedTests(unittest.TestCase):
         self.assertEqual(done.code, 1)
         self.assertEqual(done.jobs, [])
         self.assertEqual(done.digests[910], _OLD)
-        self.assertIn("FAIL 24.04: checksum host down", done.out)
+        self.assertIn("The published image could not be checked or downloaded.", done.out)
+        self.assertIn("No changes to your existing disk image were made.", done.out)
+        self.assertIn("checksum host down", done.logs["910.log"])
         self.assertEqual(done.asked, [("ubuntu", "24.04")])
 
     def test_bad_disk_format_is_not_swapped(self) -> None:
@@ -360,7 +385,60 @@ class UnattendedTests(unittest.TestCase):
         self.assertEqual(done.jobs, [])
         self.assertEqual(done.digests[910], _OLD)
         self.assertEqual(done.kinds, [])
-        self.assertIn("FAIL 24.04:", done.out)
+        self.assertIn("The boot disk is not raw or qcow2, so it was left unchanged.", done.out)
+        self.assertIn("not raw or qcow2", done.logs["910.log"])
+
+    def test_attached_failure_says_the_new_disk_is_in_place(self) -> None:
+        def perform(_job: Job, _release: str, _vmid: int) -> None:
+            raise RuntimeError("qm template failed; the new disk is attached. Run qm template 910")
+
+        done = _run([_record()], _gate(), perform=perform)
+        self.assertEqual(done.code, 1)
+        self.assertEqual(done.digests[910], _OLD)
+        self.assertIn("The new disk is attached, but VMID 910 is not a template.", done.out)
+        self.assertIn("Run qm template 910", done.out)
+        self.assertNotIn("No changes to your existing disk image were made.", done.out)
+        self.assertIn("the new disk is attached", done.logs["910.log"])
+
+    def test_cleanup_failure_is_still_a_successful_update(self) -> None:
+        detail = (
+            "ubuntu 24.04 VM disk image created and imported. Template 910 updated. "
+            "Old disk saved in /var/backups/pve-template-prep. Old disk cleanup failed: volume is locked."
+        )
+
+        def perform(_job: Job, _release: str, _vmid: int) -> str:
+            return detail
+
+        done = _run([_record()], _gate(), perform=perform)
+        self.assertEqual(done.code, 0)
+        self.assertEqual(done.digests[910], _NEW)
+        self.assertIn("SUCCESSFUL.", done.out)
+        self.assertIn("The previous disk could not be deleted and was left unused.", done.out)
+        self.assertIn("910.log", done.out)
+        self.assertIn("volume is locked", done.logs["910.log"])
+
+    def test_unfinished_swap_tells_the_operator_to_finish(self) -> None:
+        config = f"tags: pve-prep-swap-910\nscsi0: {_STORAGE}:base-910-disk-0.raw\n"
+        done = _run([_record()], _gate(config))
+        self.assertEqual(done.code, 1)
+        self.assertEqual(done.digests[910], _OLD)
+        self.assertIn("Its last disk update did not finish.", done.out)
+        self.assertIn("Run qm template 910", done.out)
+        self.assertIn("This run left the disk as it found it.", done.out)
+        self.assertNotIn("No changes to your existing disk image were made.", done.out)
+        self.assertIn("its disk update did not finish", done.logs["910.log"])
+
+    def test_log_write_failure_keeps_the_reason_in_the_sentence(self) -> None:
+        def perform(_job: Job, _release: str, _vmid: int) -> None:
+            raise RuntimeError("disk swap failed")
+
+        done = _run([_record()], _gate(), perform=perform, log_directory="logs")
+        self.assertEqual(done.code, 1)
+        self.assertEqual(done.digests[910], _OLD)
+        self.assertIn("disk swap failed.", done.out)
+        self.assertIn("No changes to your existing disk image were made.", done.out)
+        self.assertIn("The detail log could not be written:", done.out)
+        self.assertEqual(done.logs, {})
 
 
 if __name__ == "__main__":

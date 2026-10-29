@@ -186,7 +186,7 @@ class OrchestratorTest(unittest.TestCase):
     def test_image_order_fetch_convert_apply_publish(self) -> None:
         order: list[str] = []
 
-        def fetch(spec, cache, dry_run=False):
+        def fetch(spec, cache, dry_run=False, quiet=False):
             order.append("fetch")
             self.assertEqual(spec.release, "12")
             self.assertEqual(spec.family, "deb")
@@ -210,6 +210,7 @@ class OrchestratorTest(unittest.TestCase):
             dry_run=False,
             verbose=False,
             label="",
+            quiet=False,
         ):
             order.append("apply")
             self.assertEqual(disk_format, "raw")
@@ -486,7 +487,7 @@ class OrchestratorTest(unittest.TestCase):
         job = _image_job(dry_run=True, prep=True)
         calls = {"n": 0}
 
-        def fetch(spec, cache, dry_run=False):
+        def fetch(spec, cache, dry_run=False, quiet=False):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise RuntimeError("boom")
@@ -897,7 +898,7 @@ class OrchestratorTest(unittest.TestCase):
         clear_cache.assert_called_once_with(MOD.DEFAULT_CACHE)
         text = buf.getvalue()
         self.assertTrue(text.startswith(f"pve-template-prep {pve_prep.__version__}\n"))
-        self.assertIn(f"deleted the working files in {MOD.DEFAULT_CACHE}", text)
+        self.assertNotIn("deleted the working files", text)
 
     def test_unattended_failure_keeps_the_cache(self) -> None:
         buf = io.StringIO()
@@ -911,9 +912,7 @@ class OrchestratorTest(unittest.TestCase):
             code = MOD.main(["--unattended", "monthly"])
         self.assertEqual(code, 1)
         clear_cache.assert_not_called()
-        text = buf.getvalue()
-        self.assertIn(f"cache kept: {MOD.DEFAULT_CACHE}", text)
-        self.assertIn("a release failed, so the download stays", text)
+        self.assertNotIn("cache kept:", buf.getvalue())
 
     def test_unattended_cache_delete_failure(self) -> None:
         buf = io.StringIO()
@@ -926,7 +925,7 @@ class OrchestratorTest(unittest.TestCase):
         ):
             code = MOD.main(["--unattended", "weekly"])
         self.assertEqual(code, 1)
-        self.assertIn("FAIL cache: nope", buf.getvalue())
+        self.assertIn(f"Working files in {MOD.DEFAULT_CACHE} were kept: nope", buf.getvalue())
 
     def test_unattended_dry_run_skips_preflight_and_cache(self) -> None:
         with (

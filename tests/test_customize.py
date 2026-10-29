@@ -6,8 +6,9 @@ import io
 import os
 import unittest
 from contextlib import contextmanager, redirect_stdout
+from unittest import mock
 
-from pve_prep.customize import _PrepMeter, _format_bar, _phase_of, apply, argv
+from pve_prep.customize import CustomizeError, _PrepMeter, _format_bar, _phase_of, apply, argv
 
 
 def _commands(args: list[str]) -> list[str]:
@@ -222,6 +223,24 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertNotIn("Preparing", buf.getvalue())
         self.assertNotIn("/100%", buf.getvalue())
+
+    def test_quiet_failure_keeps_the_log_off_stdout(self) -> None:
+        with mock.patch(
+            "pve_prep.customize._run_with_bar", return_value=(1, "secret log\n")
+        ):
+            with redirect_stdout(io.StringIO()) as out:
+                with self.assertRaises(CustomizeError) as caught:
+                    apply("disk.img", "deb", quiet=True)
+        self.assertEqual(caught.exception.log, "secret log\n")
+        self.assertEqual(out.getvalue(), "")
+
+    def test_quiet_success_discards_the_captured_log(self) -> None:
+        with mock.patch(
+            "pve_prep.customize._run_with_bar", return_value=(0, "secret log\n")
+        ):
+            with redirect_stdout(io.StringIO()) as out:
+                apply("disk.img", "deb", quiet=True)
+        self.assertEqual(out.getvalue(), "")
 
 
 if __name__ == "__main__":

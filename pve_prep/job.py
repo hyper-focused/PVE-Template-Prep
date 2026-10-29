@@ -50,6 +50,8 @@ class Job:
     verbose: bool = False
     # Boot disks whose import format is the one already in the VM config.
     kept_format: tuple[tuple[int, str], ...] = ()
+    # Unattended cron. Hide the build narration and the virt-customize log.
+    quiet: bool = False
 
 
 def published_name(distro: str, release: str, disk_format: str) -> str:

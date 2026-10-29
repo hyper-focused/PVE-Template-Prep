@@ -340,17 +340,20 @@ def _announce(text: str, role: str) -> None:
         print(text)
 
 
-def run_one(job: Job, release: str, vmid: int | None) -> None:
+def run_one(job: Job, release: str, vmid: int | None) -> str:
     spec = _spec_for(job.distro, release)
     label = _product(spec, job.distro, release)
     action = action_for(job, vmid)
-    print()
-    _announce(opening(action, label, job, vmid), "accent")
-    print()
+    if not job.quiet:
+        print()
+        _announce(opening(action, label, job, vmid), "accent")
+        print()
     tools = _tools()
     done = run_fetched(job, spec, vmid, label, tools)
-    print()
-    _announce(done, "body")
+    if not job.quiet:
+        print()
+        _announce(done, "body")
+    return done
 
 
 def _pairs(job: Job) -> list[tuple[str, int | None]]:
@@ -468,17 +471,14 @@ def _run_unattended(schedule: str, *, dry_run: bool) -> int:
         dry_run=dry_run,
     )
     if code != 0:
-        print(f"cache kept: {DEFAULT_CACHE}")
-        print("a release failed, so the download stays")
         return 1
     if dry_run:
         return 0
     try:
         clear_cache(DEFAULT_CACHE)
     except DownloadError as exc:
-        print(f"FAIL cache: {exc}")
+        print(f"Working files in {DEFAULT_CACHE} were kept: {exc}")
         return 1
-    print(f"deleted the working files in {DEFAULT_CACHE}")
     return 0
 
 

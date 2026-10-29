@@ -266,7 +266,13 @@ def _expected_digest(spec: ImageSpec) -> tuple[str | None, str]:
     return text, digest
 
 
-def fetch_verified(spec: ImageSpec, cache_dir: Path, *, dry_run: bool = False) -> Path:
+def fetch_verified(
+    spec: ImageSpec,
+    cache_dir: Path,
+    *,
+    dry_run: bool = False,
+    quiet: bool = False,
+) -> Path:
     """Download spec into cache_dir and verify it. Reuse a matching cache hit."""
     cache_dir = Path(cache_dir)
     if dry_run:
@@ -284,7 +290,8 @@ def fetch_verified(spec: ImageSpec, cache_dir: Path, *, dry_run: bool = False) -
     _prepare_cache(cache_dir)
     if not spec.filename:
         spec = finalize_index(spec, _read_text(spec.url))
-        print(f"resolved {spec.distro} {spec.release} -> {spec.url}")
+        if not quiet:
+            print(f"resolved {spec.distro} {spec.release} -> {spec.url}")
     filename = spec.filename
     source = spec.url
     checksum_text, published = _expected_digest(spec)

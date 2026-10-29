@@ -122,6 +122,8 @@ The unattended swap does not detach the boot disk first. Detach, then attach, le
 
 The run assumes the boot disk was not customized after creation. It does not look for those edits. A newer published checksum replaces the disk, and the backup is what remains of the previous one.
 
+Cron is not a terminal, so a pipe would otherwise mail the guest-prep log and the build narration. An unattended run hides both. The mail is one sentence. A matching checksum says the VMID is current. A finished swap says the update was successful and names `/var/backups/pve-template-prep/`. A failure says it failed and what was left in place: the existing disk was not changed, the guest is running or missing or not a template, the boot disk is on block storage, guest preparation failed, or the new disk is attached and `qm template` still has to be run. A marker left by a swap that did not finish says to run `qm template` and that this run left the disk as it found it. Deleting the old volume is still cleanup, so that sentence stays a success and says the previous disk was left unused. The virt-customize log and the raw error go to `/var/log/pve-template-prep/<vmid>.log`, mode `0600`, replaced on the next run that needs a detail file. The sentence names that path. If the file cannot be written, the sentence says so and keeps the reason.
+
 ## Linked clones
 
 A linked clone depends on the template's base volume, so replacing that volume under it corrupts the clone. The check reads every guest configuration under `/etc/pve/nodes`, not just the local node, plus the storage volume list, because clones on shared storage may live anywhere in the cluster. If either source cannot be read the guest is left alone: refusing a safe replacement costs a retry; allowing an unsafe one costs data.
@@ -136,7 +138,7 @@ The palette is data. Each role has one 256-color index and one ANSI fallback per
 
 ## Progress output
 
-`virt-customize` prints `[  15.6]` as elapsed seconds, not percent, so showing its log as a progress bar would lie. On a terminal the tool shows one estimated line instead and hides the log, which `-v` restores. A pipe gets the log, since there is no line to rewrite. On failure the captured log is printed before the error so the cause is not lost with the progress line.
+`virt-customize` prints `[  15.6]` as elapsed seconds, not percent, so showing its log as a progress bar would lie. On a terminal the tool shows one estimated line instead and hides the log, which `-v` restores. A pipe gets the log, since there is no line to rewrite. On failure the captured log is printed before the error so the cause is not lost with the progress line. An unattended run captures that log and does not print it. The file named in the cron sentence is where it goes.
 
 ## Updates compare the version string, not the commit
 

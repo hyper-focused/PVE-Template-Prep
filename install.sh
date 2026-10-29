@@ -47,6 +47,7 @@ MODULES=(
   job.py
   offer.py
   prompts.py
+  runlog.py
   safedir.py
   termbg.py
   ui.py
@@ -310,6 +311,7 @@ import pve_prep.catalog  # noqa: E402
 import pve_prep.cronscript  # noqa: E402
 import pve_prep.enroll  # noqa: E402
 import pve_prep.offer  # noqa: E402
+import pve_prep.runlog  # noqa: E402
 import pve_prep.unattended  # noqa: E402
 from pve_prep.ui import load_palette  # noqa: E402
 
