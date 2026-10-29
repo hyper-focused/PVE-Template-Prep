@@ -108,7 +108,7 @@ All images are the distro's official 64-bit cloud images, checked against the ch
 | Ubuntu | 22.04, 24.04, 26.04 | `cloud-images.ubuntu.com` server cloudimg, `SHA256SUMS` |
 | AlmaLinux | 8, 9, 10 | `repo.almalinux.org` GenericCloud, `CHECKSUM` |
 | CloudLinux | 8, 9, 10 | `images.cloudlinux.com/catalog.json` supplies the file and its SHA256 |
-| Fedora | 43, 44 | `download.fedoraproject.org` Generic qcow2, picked from the release index |
+| Fedora | 43, 44, 45 (from 2026-11-03) | `download.fedoraproject.org` Generic qcow2, picked from the release index |
 
 Each distro is one file in `pve_prep/distros/`, and a release is one row in it. No CentOS, no Rocky, no UEFI images, in this version.
 

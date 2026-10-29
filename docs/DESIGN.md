@@ -69,7 +69,7 @@ It always runs, on the file, before import or publish. Packages install first. T
 
 An update reads both from `qm config` and does not ask. A wrong storage, or qcow2 imported onto a raw disk, breaks the VM configuration, and a question invites exactly that mistake. `format=` wins; otherwise the filename suffix decides. A volume name with no dot is a block volume, so that VMID is refused before the format matters. Any other `format=` value, including `vmdk`, comes back empty and the VMID is asked again, as does unreadable storage or a missing OS disk. The tool does not guess qcow2.
 
-A full template replace still asks for storage, because the old VM is destroyed and a new one created, so the storage is a real choice. The current disk's storage is moved to the first row and Enter keeps it. The menu widget ignores a default argument, so the recommendation is row order, not a prefilled value. Unreadable storage on that path is a note, not a re-ask.
+A template replaced from the create path still asks for storage, because that path is where a template is moved: the new disk is imported onto the storage picked here, so the storage is a real choice. The current disk's storage is moved to the first row and Enter keeps it. The menu widget ignores a default argument, so the recommendation is row order, not a prefilled value. Unreadable storage on that path is a note, not a re-ask.
 
 A standalone image takes its storage from `storage.cfg` entries whose content includes `import` and that have a `path`. When `pvesm status` returns storages, an ID absent from it is dropped; an empty status keeps every import storage from the file. No import storage ends the interview rather than falling back to a typed directory, which would invite pointing a template at an arbitrary path.
 
@@ -103,7 +103,35 @@ Swapping a template's boot disk clears the template flag for the edit. If puttin
 
 ## The enrollment record is a file, not a tag
 
-An unattended refresh has to know which guests this tool created and converted, which digest was applied, and which SSH answers were used. A Proxmox tag cannot be that record. Anyone who can edit tags can set one. That is why `pve-prep-swap-<vmid>` does not make a guest count as a template: a tag is guest configuration, and treating it as authority let the tool destroy or rewrite a guest it did not create. The proof is a root-only JSON file, `/var/lib/pve-template-prep/<vmid>.json`, written only after this run created the guest and `qm template` succeeded. The update path, a standalone image, and a create left as a normal VM get no file. A template with no file is never selected, so a guest this tool did not create cannot be enrolled by tagging it. The file holds `vmid`, `distro`, `release`, `digest`, `checksum_alg`, `password_auth`, `permit_root`, and `schedule`. Newer means the catalog's current published checksum for that distro and release differs from the stored digest. The digest is rewritten only after the disk swap succeeds, so a failed run leaves the old digest in place and tries again next time.
+An unattended refresh has to know which guests this tool created and converted, which digest was applied, and which SSH answers were used. A Proxmox tag cannot be that record. Anyone who can edit tags can set one. That is why `pve-prep-swap-<vmid>` does not make a guest count as a template: a tag is guest configuration, and treating it as authority let the tool destroy or rewrite a guest it did not create. The proof is a root-only JSON file, `/var/lib/pve-template-prep/<vmid>.json`, written only after this run finished the template and the operator picked weekly or monthly. A standalone image and a create left as a normal VM get no file. A template with no file is never selected, so a guest this tool did not create cannot be enrolled by tagging it. The file holds `vmid`, `distro`, `release`, `digest`, `checksum_alg`, `password_auth`, `permit_root`, and `schedule`. Newer means the catalog's current published checksum for that distro and release differs from the stored digest. The digest is rewritten only after the disk swap succeeds, so a failed run leaves the old digest in place and tries again next time.
+
+## The operator's answer wins over a record
+
+A record on disk is an earlier decision. The person at the terminal is the current one. When a run finishes a template, new or replaced, the schedule question is asked for that VMID, and the answer replaces whatever was there: weekly or monthly writes this run's release and SSH answers, and no removes the record. Leaving an old record in place after a no would let cron replace a disk the operator just built by hand, with the release and SSH answers of a run they may not remember. End of input changes nothing, because it is not an answer.
+
+## Records follow the cluster, and only a definite answer removes one
+
+A record whose VMID is gone, or is now a normal VM, a container, or a linked clone, can never be updated again, and retrying it every week only produces failure mail. Every live run removes those records first. The check reads `/etc/pve/.vmlist` and the guest's config on its node, not `qm`, because `qm status` only sees the local node and a template on another node would look missing. If either file cannot be read, the record stays: an outage must not silently turn off updates. A guest whose disk swap did not finish keeps its record, because it is still a template once `qm template` runs.
+
+The checksum policy follows the same line. A downloaded image that does not match its published checksum is a definite answer that something is wrong with the source, so that record is removed and the mail says how to enroll the template again. A failed lookup, an HTTP error, or a 404 from a mirror that has not synced is transient, so the record is kept and the next run tries again. Neither case touches the existing disk: the checksum is verified before the image is converted, and the swap does not start without a verified image.
+
+## A template is never destroyed
+
+The create path used to replace a template by `qm destroy` and then `qm create`. Any failure after the destroy, including a working image that had disappeared from the cache, left the operator with no template at all. A replace is now the update path's disk swap on the existing template, followed by one `qm set` for the name, memory, cores, and bridge the operator asked for. The old disk is deleted only after the new one is attached, so every earlier failure leaves the template as it was. The settings step comes last because it cannot lose data: if it fails, the template is already on the new image and the result says which settings were not applied. Building a whole second VM and swapping VMIDs was considered and set aside: it imports the image twice, and moving a VMID is not atomic either.
+
+`qm create --scsi0 <storage>:0,import-from=<path>` would fold the create and the import into one call on PVE 7.2 and later. The create path keeps `qm importdisk` and the import-by-difference rule, because the swap path needs them anyway and one import route is easier to reason about than two.
+
+## Positive file checks before any guest changes
+
+`qm importdisk` refuses anything that is not a regular file. Learning that after the guest was changed is too late. `qemu-img convert` must leave a regular, non-empty file, or the release fails even when it exits 0. The working image is checked again, by `lstat`, right before `qm create` or the disk swap: a missing, empty, symlinked, or non-regular file stops the release while every template is still whole. A symlink left at the working path is unlinked before conversion, so the converter never writes through it.
+
+## One run at a time
+
+Two runs share `/var/tmp/pve-template-prep/cache`. The end of one run, interactive with a delete answer or any unattended run, cleared the cache while the other was about to import from it, which is how a working image went missing between conversion and `qm importdisk`. A live run, interactive or unattended, takes an exclusive `flock` on `/run/pve-template-prep.lock` before it asks anything or reads any record. A second run stops at once and changes nothing. An unattended run that finds the lock exits 0, because a busy host is not a failure and the next schedule runs again. `flock` is released by the kernel when the process exits, so a crash cannot leave a stale lock, and the file is opened with `O_NOFOLLOW` so a symlink at that path is refused. A dry run changes nothing, so it does not take the lock.
+
+## A release is listed from its release day
+
+A catalog row may carry `available`, a `YYYY-MM-DD` date. Before that day on the host's clock, the release is not in the menu and is refused by name. That lets a release ship in the catalog ahead of time, such as Fedora 45 on its scheduled date of 2026-11-03, without offering a download that does not exist yet. A slipped release fails at download with an HTTP error, before any guest is touched, and the record-keeping rules above treat that as transient.
 
 ## The cron script is a wrapper
 
