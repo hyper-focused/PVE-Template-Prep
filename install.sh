@@ -17,13 +17,17 @@ MODULES=(
   __init__.py
   build.py
   catalog.py
+  cronscript.py
   customize.py
   download.py
+  enroll.py
   job.py
+  offer.py
   prompts.py
   safedir.py
   termbg.py
   ui.py
+  unattended.py
   update.py
   vm.py
 )
@@ -261,6 +265,10 @@ for path in paths:
 sys.path.insert(0, str(vendor))
 sys.path.insert(0, str(root))
 import pve_prep.catalog  # noqa: E402
+import pve_prep.cronscript  # noqa: E402
+import pve_prep.enroll  # noqa: E402
+import pve_prep.offer  # noqa: E402
+import pve_prep.unattended  # noqa: E402
 from pve_prep.ui import load_palette  # noqa: E402
 
 load_palette(root / "pve_prep" / "palette.json")

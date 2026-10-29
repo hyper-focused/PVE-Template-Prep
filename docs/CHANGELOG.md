@@ -6,6 +6,9 @@ An installed copy offers a new release when the version string on `main` changes
 
 ## Unreleased
 
+### Changed
+- `install.sh` ships `cronscript.py`, `enroll.py`, `offer.py`, and `unattended.py`. It copies only the modules it names, so a branch install that omitted them would place the new entry script and then fail on import. The install check imports those four modules.
+
 ### Added
 - **A template this tool just created can be enrolled for a weekly or monthly disk refresh.** The question comes after the builds finish and before the cache question, on a run that created the guest and converted it with `qm template`. The default is no (Enter installs nothing), and that answer applies to every template created in the run. The update path, standalone images, and a create left as a normal VM are not asked and are not enrolled. The record is a root-only JSON file per VMID under `/var/lib/pve-template-prep/`, not a Proxmox tag. A template with no file is never selected. The cron file is `/etc/cron.weekly/pve-template-prep` or `/etc/cron.monthly/pve-template-prep`, mode `0755`, and its body only execs `pve-template-prep --unattended` for that schedule. It does not download or call `qm`. Different text already at that path is left unchanged; later enrollments only add record files. `--unattended` skips the self-update prompt and the interview. A matching published checksum prints that the VMID is current. A different one backs up the live boot disk, attaches a newly prepped image, then deletes the old volume and runs `qm template`. The stored digest is rewritten only after that swap succeeds.
 
