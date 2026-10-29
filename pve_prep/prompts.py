@@ -69,13 +69,25 @@ def _split_hint(prompt: str) -> tuple[str, str | None]:
 
 
 def _ask_text(
-    read_line, write, prompt: str, *, default: str = "", danger_word: str | None = None
+    read_line,
+    write,
+    prompt: str,
+    *,
+    default: str = "",
+    danger_word: str | None = None,
+    success_word: str | None = None,
 ) -> str:
     """Free text. The widget shows prompt; the plain path writes it."""
     if ui.enabled(read_line):
         _begin_widget(write)
         question, hint = _split_hint(prompt.strip())
-        value = ui.text(question, default=default, hint=hint, danger_word=danger_word)
+        value = ui.text(
+            question,
+            default=default,
+            hint=hint,
+            danger_word=danger_word,
+            success_word=success_word,
+        )
         if value is None:
             raise PromptAbort("exit")
         _answered(write)
@@ -1219,7 +1231,13 @@ def _confirm_run(read_line, write, *, message: str, word: str, danger: bool) -> 
         accepted = {"YES", "yes"}
         refused = {"X", "x", "n", "no", "NO"}
     while True:
-        answer = _ask_text(read_line, write, prompt, danger_word=word if danger else None)
+        answer = _ask_text(
+            read_line,
+            write,
+            prompt,
+            danger_word=word if danger else None,
+            success_word=None if danger else word,
+        )
         if answer in accepted:
             return
         if answer in refused:

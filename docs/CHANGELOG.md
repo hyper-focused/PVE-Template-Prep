@@ -7,6 +7,7 @@ An installed copy offers a new release when the version string on `main` changes
 ## 1.4.0 - 2026-10-29
 
 ### Changed
+- On the confirm gate, `YES` is the success color. The quotes around it stay with the question. A pipe stays plain.
 - An unattended refresh mails one sentence per guest. A matching image says the VMID is current. A finished swap says `SUCCESSFUL` and names `/var/backups/pve-template-prep/`. A failure says `FAILED` and what was left in place: the existing disk was not changed, the guest is running or missing or not a template, the boot disk is on block storage, guest preparation failed, or the new disk is attached and `qm template` still has to be run. A swap that left the previous disk unused stays `SUCCESSFUL` and says so. The build narration and the `virt-customize` log are not mailed. A failure, and that leftover-disk case, replaces `/var/log/pve-template-prep/<vmid>.log` (mode `0600`) and the sentence names the file.
 - `install.sh` breaks the closing notes into the download line, the install line, and a short footer. The success line is a medium light green, the two labels are cyan, and the commands are bold. A pipe, `NO_COLOR`, or `TERM=dumb` stays plain.
 - `install.sh` prints the version it is installing. The string is `__version__` in that archive's `pve_prep/__init__.py`, the same one `-V` reports. An archive without an `x.y.z` version stops before it writes the install directory.

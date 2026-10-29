@@ -140,7 +140,7 @@ Section **Confirm Selections** states the consequence in one line and asks for o
 | Existing templates are deleted, no backup | `DELETE` |
 | Existing boot disks are deleted, no backup | `DELETE` |
 
-`X` exits with no change. Under `--dry-run` the screen says nothing has been built.
+`X` exits with no change. On a terminal, `YES` is the success color and `DELETE` is red. The quotes stay with the question. Under `--dry-run` the screen says nothing has been built.
 
 ### After the builds
 

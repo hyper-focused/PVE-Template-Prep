@@ -288,6 +288,16 @@ class VendorTest(unittest.TestCase):
         self.assertEqual("".join(text for _style, text in tokens).strip(), gate)
         self.assertFalse([token for token in tokens if token[0] == "class:instruction"])
 
+        yes = "Type 'YES' to continue or 'X' to exit now:"
+        tokens = ui.prompt_tokens(yes, success_word="YES")
+        self.assertIn(("class:success", "YES"), tokens)
+        self.assertIn(("class:question", "Type '"), tokens)
+        self.assertIn(("class:question", "' to continue or 'X' to exit now:"), tokens)
+        self.assertNotIn(("class:success", "'YES'"), tokens)
+        self.assertEqual("".join(text for _style, text in tokens).strip(), yes)
+        rules = dict(ui.widget_style().style_rules)
+        self.assertEqual(rules["success"], rules["answer"])
+
         tokens = ui.prompt_tokens("bookworm VM Template ID", hint="[9001]")
         self.assertEqual(tokens[-2:], [("class:instruction", "[9001]"), ("class:question", ": ")])
 
@@ -495,7 +505,7 @@ class WidgetInterviewTest(unittest.TestCase):
 
         seen_texts: list[str] = []
 
-        def text(message, default="", hint=None, danger_word=None):
+        def text(message, default="", hint=None, danger_word=None, success_word=None):
             self.assertTrue(message)
             self.assertNotIn("[", message)
             seen_texts.append(f"{message} {hint}:" if hint else message)
@@ -504,6 +514,9 @@ class WidgetInterviewTest(unittest.TestCase):
             if danger_word:
                 self.assertEqual(danger_word, "DELETE")
                 self.assertIn("'DELETE'", message)
+                self.assertIsNone(success_word)
+            if "'YES'" in message:
+                self.assertEqual(success_word, "YES")
             return texts.pop(0)
 
         def confirm_capture(message, default=True):

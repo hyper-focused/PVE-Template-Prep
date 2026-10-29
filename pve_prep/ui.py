@@ -282,6 +282,7 @@ def widget_style(*, instruction: str = "note"):
             ("selected", _style("success") + " noreverse"),
             ("instruction", _style(instruction)),
             ("danger", _style("danger")),
+            ("success", _style("success")),
             ("text", _style("option")),
             ("disabled", _style("note")),
             ("separator", _style("note")),
@@ -449,19 +450,32 @@ def checkbox(message: str, choices, *, instruction: str | None = None, validate=
     return _run(question)
 
 
-def prompt_tokens(message: str, *, hint: str | None = None, danger_word: str | None = None):
+def prompt_tokens(
+    message: str,
+    *,
+    hint: str | None = None,
+    danger_word: str | None = None,
+    success_word: str | None = None,
+):
     """The text prompt line, laid out the way questionary lays out qmark, question, instruction.
 
     hint is the (y/n) [Yes] or [9001] part, drawn as highlight. danger_word
-    is drawn red wherever it appears in the question.
+    is drawn red wherever it appears in the question. success_word is drawn
+    in the success color. The quotes around either word stay with the question.
     """
     tokens = [("class:qmark", " "), ("class:question", " ")]
     body = indent(message)
+    marked = ""
+    mark_class = ""
     if danger_word and danger_word in body:
-        parts = body.split(danger_word)
+        marked, mark_class = danger_word, "class:danger"
+    elif success_word and success_word in body:
+        marked, mark_class = success_word, "class:success"
+    if marked:
+        parts = body.split(marked)
         for index, part in enumerate(parts):
             if index:
-                tokens.append(("class:danger", danger_word))
+                tokens.append((mark_class, marked))
             if part:
                 tokens.append(("class:question", part))
     else:
@@ -481,12 +495,15 @@ def text(
     default: str = "",
     hint: str | None = None,
     danger_word: str | None = None,
+    success_word: str | None = None,
     **kwargs,
 ):
     """Empty string is an answer. None means cancelled.
 
     A prompt_toolkit session, not questionary.text, because the question
     is formatted text: danger_word is red in the question and in the field.
+    success_word is the success color in the question. The field stays the
+    answer color.
     """
     from prompt_toolkit.lexers import SimpleLexer
     from prompt_toolkit.shortcuts import PromptSession
@@ -494,7 +511,7 @@ def text(
     from questionary.constants import DEFAULT_STYLE
 
     session = PromptSession(
-        prompt_tokens(message, hint=hint, danger_word=danger_word),
+        prompt_tokens(message, hint=hint, danger_word=danger_word, success_word=success_word),
         style=merge_styles([DEFAULT_STYLE, widget_style(instruction="highlight")]),
         lexer=SimpleLexer("class:danger" if danger_word else "class:answer"),
         **_app_kwargs(),
