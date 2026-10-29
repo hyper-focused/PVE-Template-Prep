@@ -147,3 +147,7 @@ The update check reads `__version__` from `main` and compares it with the instal
 ## Installer ownership checks
 
 The install runs as root and the tool later runs as root, so the code it loads must not be writable by anyone else. `install.sh` checks that the files are root-owned and not group- or world-writable, refuses a symlinked destination, and refuses system directories such as `/usr` as `DEST`. It treats `pve_prep/*.py` and `distros/*.json` as owned by the installer, because the catalog loads every JSON it finds.
+
+## License
+
+Apache License 2.0. Copyright 2026 Robert Tyree and hyper-focused. `LICENSE` holds the license text and `NOTICE` the attribution; redistribution carries `NOTICE` (section 4(d)). Running the program owes nothing. `vendor/` keeps its own licenses in `vendor/LICENSES`: prompt_toolkit is BSD-3-Clause; questionary and wcwidth are MIT.
