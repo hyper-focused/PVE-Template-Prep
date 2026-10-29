@@ -76,6 +76,7 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     vm.os_disk_format = real_vm.os_disk_format
     vm.import_directories = real_vm.import_directories
     vm.insert_disk = mock.MagicMock(name="insert_disk")
+    vm.set_guest_options = mock.MagicMock(name="set_guest_options")
     vm.backups_since = real_vm.backups_since
 
 
@@ -115,6 +116,8 @@ def _load_orchestrator():
 
 MOD = _load_orchestrator()
 ORIGINAL_RUN = MOD.default_run
+ORIGINAL_CLAIM = MOD._claim_host
+ORIGINAL_LOCK = MOD.acquire_run_lock
 
 
 def _specs(_distro: str):
@@ -177,11 +180,20 @@ class OrchestratorTest(unittest.TestCase):
         MOD.publish = mock.MagicMock(return_value=PublishResult("written"))
         MOD.customize_apply = mock.MagicMock()
         MOD.create_template = mock.MagicMock()
+        MOD.insert_disk = mock.MagicMock(name="insert_disk")
+        MOD.set_guest_options = mock.MagicMock(name="set_guest_options")
+        MOD.prepare_replace = mock.MagicMock(name="prepare_replace", return_value=1)
         MOD.releases_for = mock.MagicMock(side_effect=_specs)
         MOD.parse_storage_ids = mock.MagicMock(return_value=[])
         MOD.default_run = ORIGINAL_RUN
         MOD.clear_cache = mock.MagicMock(name="clear_cache")
         MOD.storage_kind = lambda storage: "dir"
+        MOD._claim_host = mock.MagicMock(name="_claim_host", return_value=0)
+        MOD.acquire_run_lock = mock.MagicMock(name="acquire_run_lock", return_value=-1)
+
+    def tearDown(self) -> None:
+        MOD._claim_host = ORIGINAL_CLAIM
+        MOD.acquire_run_lock = ORIGINAL_LOCK
 
     def test_image_order_fetch_convert_apply_publish(self) -> None:
         order: list[str] = []
@@ -245,7 +257,7 @@ class OrchestratorTest(unittest.TestCase):
         MOD.publish.assert_called_once()
         MOD.create_template.assert_not_called()
 
-    def test_template_destroy_ok_only_for_retyped_vmid(self) -> None:
+    def test_retyped_vmid_swaps_the_disk_and_a_new_vmid_is_created(self) -> None:
         recorded: list[dict] = []
 
         def create_template(**kwargs):
@@ -262,24 +274,59 @@ class OrchestratorTest(unittest.TestCase):
             MOD.run_one(job, "13", 911)
         self.assertIn("qemu-img convert -O qcow2 <os-disk>", first.getvalue())
         self.assertNotIn("qemu-img", second.getvalue())
-        self.assertEqual([item["destroy_ok"] for item in recorded], [True, False])
-        self.assertEqual([item["backup_disks"] for item in recorded], [False, False])
-        self.assertEqual([item["vmid"] for item in recorded], [910, 911])
+
+        MOD.insert_disk.assert_called_once()
+        swap = MOD.insert_disk.call_args.kwargs
+        self.assertEqual(swap["vmid"], 910)
+        self.assertEqual(swap["storage"], "dir-templates")
+        self.assertEqual(swap["disk_policy"], "backup")
+        self.assertTrue(swap["dry_run"])
+        self.assertTrue(swap["image_path"].endswith("debian-12-pve.qcow2.work"))
+        options = MOD.set_guest_options.call_args.kwargs
         self.assertEqual(
-            [item["name"] for item in recorded],
-            ["debian-12-cloud", "debian-13-cloud"],
+            {key: options[key] for key in ("vmid", "name", "memory_mb", "cores", "bridge")},
+            {"vmid": 910, "name": "debian-12-cloud", "memory_mb": 2048, "cores": 2, "bridge": "vmbr0"},
         )
-        self.assertEqual(recorded[0]["storage"], "dir-templates")
-        self.assertEqual(recorded[0]["memory_mb"], 2048)
-        self.assertEqual(recorded[0]["cores"], 2)
-        self.assertEqual(recorded[0]["bridge"], "vmbr0")
-        self.assertTrue(recorded[0]["dry_run"])
-        self.assertTrue(recorded[0]["make_template"])
-        self.assertTrue(recorded[0]["image_path"].endswith("debian-12-pve.qcow2.work"))
-        MOD.run_one(replace(job, make_template=False), "12", 910)
+
+        self.assertEqual([item["vmid"] for item in recorded], [911])
+        created = recorded[0]
+        self.assertNotIn("destroy_ok", created)
+        self.assertEqual(created["name"], "debian-13-cloud")
+        self.assertEqual(created["storage"], "dir-templates")
+        self.assertEqual(created["memory_mb"], 2048)
+        self.assertEqual(created["cores"], 2)
+        self.assertEqual(created["bridge"], "vmbr0")
+        self.assertTrue(created["dry_run"])
+        self.assertTrue(created["make_template"])
+        self.assertTrue(created["image_path"].endswith("debian-13-pve.qcow2.work"))
+        MOD.run_one(replace(job, make_template=False), "13", 911)
         self.assertFalse(recorded[-1]["make_template"])
         MOD.publish.assert_not_called()
         MOD.fetch_verified.assert_called()
+
+    def test_failed_swap_never_creates_or_changes_settings(self) -> None:
+        MOD.prepare_replace = mock.MagicMock(return_value=1)
+        MOD.insert_disk = mock.MagicMock(side_effect=MOD.VmError("import failed"))
+        job = replace(_template_job(dry_run=False), releases=("12",), vmids=(910,))
+        with self.assertRaises(MOD.VmError):
+            MOD.run_one(job, "12", 910)
+        MOD.create_template.assert_not_called()
+        MOD.set_guest_options.assert_not_called()
+
+    def test_settings_failure_after_swap_is_reported_not_raised(self) -> None:
+        MOD.insert_disk = mock.MagicMock(
+            return_value=SimpleNamespace(volid="dir-templates:vm-910-disk-1", backup_dir="", cleanup_error="")
+        )
+        MOD.set_guest_options = mock.MagicMock(side_effect=MOD.VmError("VM 910 failed at qm set"))
+        job = replace(_template_job(destroy=frozenset({910})), backup_vmids=frozenset())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            MOD.run_one(job, "12", 910)
+        self.assertIn(
+            "Debian 12 VM template 910 replaced with the new disk. Previous disk deleted. "
+            "Name, memory, cores, and bridge were not updated: VM 910 failed at qm set.",
+            buf.getvalue(),
+        )
 
     def test_disk_copy_runs_before_the_download(self) -> None:
         order: list[tuple] = []
@@ -408,7 +455,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(len(recorded), 1)
         self.assertEqual(recorded[0]["vmid"], 920)
         self.assertTrue(recorded[0]["make_template"])
-        self.assertFalse(recorded[0]["destroy_ok"])
+        self.assertNotIn("destroy_ok", recorded[0])
         MOD.insert_disk.assert_not_called()
         MOD.publish.assert_not_called()
         text = buf.getvalue()
@@ -418,16 +465,28 @@ class OrchestratorTest(unittest.TestCase):
     def test_release_lines_name_the_outcome(self) -> None:
         from pve_prep.job import DEFAULT_BACKUPS
 
+        MOD.insert_disk = mock.MagicMock(
+            return_value=SimpleNamespace(
+                volid="dir-templates:vm-910-disk-1",
+                backup_dir=DEFAULT_BACKUPS,
+                cleanup_error="",
+            )
+        )
         buf = io.StringIO()
         with redirect_stdout(buf):
             MOD.run_one(_template_job(), "12", 910)
         text = buf.getvalue()
         self.assertIn("\nCreating Debian 12 VM template\n\n", text)
         self.assertIn(
-            f"\n\nDebian 12 VM template created. Previous VM deleted. "
+            f"\n\nDebian 12 VM template 910 replaced with the new disk. "
             f"Old disk saved in {DEFAULT_BACKUPS}.\n",
             text,
         )
+        self.assertNotIn("Previous VM deleted", text)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            MOD.run_one(_template_job(), "13", 911)
+        self.assertIn("\n\nDebian 13 VM template created\n", buf.getvalue())
         buf = io.StringIO()
         kept = replace(
             _image_job(releases=("12",), dry_run=True),
@@ -980,7 +1039,7 @@ class OrchestratorTest(unittest.TestCase):
         ask.assert_called_once()
         self.assertFalse(ask.call_args.kwargs["failed"])
 
-    def test_image_insert_is_not_a_created_template(self) -> None:
+    def test_image_insert_is_offered_like_a_created_template(self) -> None:
         job = replace(
             _image_job(releases=("12",), dry_run=False),
             mode="image",
@@ -990,7 +1049,85 @@ class OrchestratorTest(unittest.TestCase):
             template_vmids=frozenset(),
         )
         self.assertFalse(MOD.converts_to_template(job, 910))
-        self.assertEqual(MOD._created_templates(job, [("12", 910)]), [])
+        self.assertEqual(MOD._created_templates(job, [("12", 910)]), [("12", 910)])
+        self.assertEqual(MOD._created_templates(job, [("12", None)]), [])
+
+    def test_replaced_template_is_offered(self) -> None:
+        job = replace(_template_job(), make_template=False)
+        self.assertEqual(
+            MOD._created_templates(job, [("12", 910), ("13", 911)]),
+            [("12", 910)],
+        )
+
+    def test_run_lock_is_exclusive_and_refuses_a_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "run.lock"
+            first = ORIGINAL_LOCK(lock)
+            try:
+                self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+                # flock is per open file description, so a second open in this process conflicts.
+                with self.assertRaises(MOD.RunLocked):
+                    ORIGINAL_LOCK(lock)
+            finally:
+                os.close(first)
+            os.close(ORIGINAL_LOCK(lock))
+            link = Path(tmp) / "link.lock"
+            link.symlink_to(lock)
+            with self.assertRaises(OSError) as caught:
+                ORIGINAL_LOCK(link)
+            self.assertNotIsInstance(caught.exception, MOD.RunLocked)
+
+    def test_claim_host_stops_a_second_run_before_the_prune(self) -> None:
+        prune = mock.MagicMock()
+        buf = io.StringIO()
+        with (
+            mock.patch.object(MOD.os, "geteuid", return_value=0),
+            mock.patch.object(MOD, "_prune_enrollments", prune),
+            mock.patch.object(MOD, "acquire_run_lock", side_effect=MOD.RunLocked("lock")),
+            redirect_stdout(buf),
+        ):
+            self.assertEqual(ORIGINAL_CLAIM(), 1)
+        prune.assert_not_called()
+        self.assertIn("Another pve-template-prep run is in progress", buf.getvalue())
+        self.assertIn("Nothing was changed", buf.getvalue())
+        with (
+            mock.patch.object(MOD.os, "geteuid", return_value=0),
+            mock.patch.object(MOD, "_prune_enrollments", prune),
+            mock.patch.object(MOD, "acquire_run_lock", return_value=-1),
+        ):
+            self.assertEqual(ORIGINAL_CLAIM(), 0)
+        prune.assert_called_once_with(dry_run=False)
+        with (
+            mock.patch.object(MOD.os, "geteuid", return_value=1000),
+            self.assertRaises(SystemExit),
+        ):
+            ORIGINAL_CLAIM()
+
+    def test_main_takes_the_host_before_the_interview(self) -> None:
+        order: list[str] = []
+        MOD._claim_host = mock.MagicMock(side_effect=lambda: order.append("claim") or 1)
+        interview = mock.Mock(side_effect=lambda *a, **k: order.append("interview"))
+        with (
+            mock.patch.object(MOD, "interview", interview),
+            mock.patch.object(MOD, "_consider_update", return_value=0),
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(MOD.main([]), 1)
+        self.assertEqual(order, ["claim"])
+
+    def test_locked_unattended_run_changes_nothing(self) -> None:
+        MOD.acquire_run_lock = mock.MagicMock(side_effect=MOD.RunLocked("lock"))
+        buf = io.StringIO()
+        with (
+            mock.patch("pve_prep.unattended.run_unattended") as refresh,
+            mock.patch.object(MOD, "preflight"),
+            redirect_stdout(buf),
+        ):
+            code = MOD.main(["--unattended", "weekly"])
+        self.assertEqual(code, 0)
+        refresh.assert_not_called()
+        MOD.clear_cache.assert_not_called()
+        self.assertIn("Automated update skipped", buf.getvalue())
 
     def test_digest_for_finalizes_an_empty_filename(self) -> None:
         spec = SimpleNamespace(

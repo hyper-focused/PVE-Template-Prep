@@ -356,10 +356,17 @@ def convert(
         print(" ".join(argv))
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # qm importdisk rejects a symlink. A leftover link must not stay as the work file.
+    if dest.is_symlink():
+        dest.unlink()
+    elif dest.exists() and not dest.is_file():
+        raise DownloadError(f"{dest} is not a regular file")
     proc = subprocess.run(argv, check=False) if run is None else run(argv)
     code = getattr(proc, "returncode", 1)
     if code != 0:
         raise DownloadError(f"qemu-img convert failed ({code})")
+    if dest.is_symlink() or not dest.is_file() or dest.stat().st_size <= 0:
+        raise DownloadError(f"qemu-img convert exited 0 but {dest} is missing or empty")
 
 
 def _backup_path(dest: Path) -> Path:

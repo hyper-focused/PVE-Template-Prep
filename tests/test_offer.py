@@ -18,7 +18,7 @@ if str(_TESTS) not in sys.path:
 
 from privtmp import private_tempdir  # noqa: E402
 from pve_prep.cronscript import cron_script  # noqa: E402
-from pve_prep.enroll import Enrollment, load_enrollment  # noqa: E402
+from pve_prep.enroll import Enrollment, load_enrollment, save_enrollment  # noqa: E402
 from pve_prep.offer import offer_created  # noqa: E402
 from pve_prep.prompts import PromptAbort, ask_unattended_schedule  # noqa: E402
 
@@ -78,15 +78,15 @@ class AskUnattendedScheduleTests(unittest.TestCase):
             self.assertIsNone(ask_unattended_schedule(lines.read_line, lines.write))
             self.assertIn("Automated updates", lines.text)
             self.assertIn(
-                "These new templates can get a cron script that replaces the boot disk "
+                "These templates can get a cron script that replaces the boot disk "
                 "when the upstream image checksum changes.",
                 lines.text,
             )
+            self.assertIn("It does not apply to a standalone image.", lines.text)
             self.assertIn(
-                "It does not apply to an update of an existing template or to a standalone image.",
+                "Enter does not install anything, and turns off earlier automated updates for these VMIDs.",
                 lines.text,
             )
-            self.assertIn("Enter does not install anything.", lines.text)
             self.assertIn("  1) No automated updates\n", lines.text)
             self.assertIn("  2) Weekly automated updates\n", lines.text)
             self.assertIn("  3) Monthly automated updates\n", lines.text)
@@ -339,6 +339,63 @@ class OfferCreatedTests(unittest.TestCase):
                 _offer(lines, enroll_dir, cron_dir, [("24.04", 9001)], digest_for=digest_for)
             self.assertEqual(_names(enroll_dir), [])
             self.assertEqual(_names(cron_dir), [])
+
+    def _existing(self, enroll_dir: str, vmid: int, schedule: str = "monthly") -> None:
+        save_enrollment(
+            Enrollment(
+                vmid=vmid,
+                distro="ubuntu",
+                release="22.04",
+                digest="cd" * 32,
+                checksum_alg="256",
+                password_auth=True,
+                permit_root=False,
+                schedule=schedule,
+            ),
+            directory=enroll_dir,
+        )
+
+    def test_decline_removes_an_existing_record_for_that_vmid_only(self) -> None:
+        for answer in ("", "no", "1"):
+            with self.subTest(answer=answer):
+                lines = _Lines([answer])
+                with private_tempdir() as enroll_dir, private_tempdir() as cron_dir:
+                    self._existing(enroll_dir, 9001)
+                    self._existing(enroll_dir, 9002)
+                    result = _offer(lines, enroll_dir, cron_dir, [("24.04", 9001), ("24.04", 9003)])
+                    self.assertIsNone(result)
+                    self.assertIsNone(load_enrollment(9001, directory=enroll_dir))
+                    self.assertIsNotNone(load_enrollment(9002, directory=enroll_dir))
+                    self.assertEqual(_names(cron_dir), [])
+                self.assertIn("Automated updates for VMID 9001 were removed.", lines.text)
+                self.assertNotIn("VMID 9003", lines.text)
+
+    def test_weekly_replaces_an_existing_record_with_this_run(self) -> None:
+        lines = _Lines(["2"])
+        with private_tempdir() as enroll_dir, private_tempdir() as cron_dir:
+            self._existing(enroll_dir, 9001, schedule="monthly")
+            self.assertEqual(_offer(lines, enroll_dir, cron_dir, [("24.04", 9001)]), "weekly")
+            record = load_enrollment(9001, directory=enroll_dir)
+            self.assertEqual(record.schedule, "weekly")
+            self.assertEqual(record.release, "24.04")
+            self.assertEqual(record.digest, _DIGEST)
+            self.assertFalse(record.password_auth)
+
+    def test_dry_run_decline_removes_nothing(self) -> None:
+        lines = _Lines(["no"])
+        with private_tempdir() as enroll_dir, private_tempdir() as cron_dir:
+            self._existing(enroll_dir, 9001)
+            _offer(lines, enroll_dir, cron_dir, [("24.04", 9001)], dry_run=True)
+            self.assertIsNotNone(load_enrollment(9001, directory=enroll_dir))
+        self.assertIn("Dry run: any automated update record for VMID 9001 would be removed.", lines.text)
+
+    def test_prompt_abort_keeps_an_existing_record(self) -> None:
+        lines = _Lines([])
+        with private_tempdir() as enroll_dir, private_tempdir() as cron_dir:
+            self._existing(enroll_dir, 9001)
+            with self.assertRaises(PromptAbort):
+                _offer(lines, enroll_dir, cron_dir, [("24.04", 9001)])
+            self.assertIsNotNone(load_enrollment(9001, directory=enroll_dir))
 
 
 if __name__ == "__main__":

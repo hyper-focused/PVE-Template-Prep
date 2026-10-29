@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1025,6 +1026,23 @@ def prepare_replace(
     return _backup_os_disks(run, vmid=vmid, config_text=config_text, backup_dir=backup_dir)
 
 
+def require_image(image_path: str) -> None:
+    """Refuse unless image_path is a regular, non-empty file. A symlink is refused.
+
+    Runs before any qm call that could change a guest, so a missing image
+    stops the run while every existing template is still whole.
+    """
+    path = Path(image_path)
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise VmError(f"{image_path}: non-existent or non-regular file") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise VmError(f"{image_path}: non-existent or non-regular file")
+    if info.st_size <= 0:
+        raise VmError(f"{image_path}: image is empty")
+
+
 def create_template(
     *,
     vmid: int,
@@ -1035,20 +1053,14 @@ def create_template(
     storage: str,
     image_path: str,
     dry_run: bool,
-    destroy_ok: bool,
     run: Run,
-    backup_disks: bool = False,
-    backup_dir: str = "",
     make_template: bool = True,
-    nodes_root: Path | None = None,
     volume_format: str = "raw",
 ) -> str:
-    """Create a cloud VM via run, or print qm commands when dry_run is set.
+    """Create a cloud VM at an unused VMID, or print qm commands when dry_run is set.
 
-    An existing stopped template is destroyed first when destroy_ok is set.
-    A normal VM is not destroyed. A linked clone is not destroyed. A template
-    that still has linked clones, on this node or another, is not destroyed.
-    backup_disks copies OS disks into backup_dir before that destroy.
+    An existing guest is never destroyed here. Replacing a template is a
+    disk swap on that template (insert_disk), so a failure leaves it whole.
     make_template runs qm template after the disk is attached.
     """
     guessed = f"{storage}:vm-{vmid}-disk-0"
@@ -1065,52 +1077,16 @@ def create_template(
         volume_format=volume_format,
     )
     if dry_run:
-        if backup_disks:
-            dest = backup_dir or "."
-            shown = " ".join(
-                qemu_img_convert_argv(
-                    "<os-disk>",
-                    f"{dest}/vm-{vmid}-os.bak.qcow2",
-                    "qcow2",
-                )
-            )
-            print(f"# {shown}")
-        if destroy_ok:
-            print(
-                f"# qm destroy {vmid}  "
-                "# only if this VMID exists and is stopped"
-            )
-            print("# a template with linked clones on any cluster node is left unchanged")
         for cmd in planned:
             print(" ".join(cmd))
         return guessed
 
+    require_image(image_path)
     status = run(["qm", "status", str(vmid)])
-    destroyed = False
-    if status.returncode == 0:
-        state = parse_qm_status(getattr(status, "stdout", "") or "")
-        if state == "running":
-            raise VmError(f"VM {vmid} is running")
-        if not destroy_ok:
-            raise VmError(f"VM {vmid} already exists")
-        if state != "stopped":
-            raise VmError(f"VM {vmid} status {state or 'unknown'} cannot be replaced")
-        cfg = run(["qm", "config", str(vmid)])
-        if getattr(cfg, "returncode", 1) != 0:
-            raise VmError(f"VM {vmid} config failed: {_detail(cfg)}")
-        config_text = getattr(cfg, "stdout", "") or ""
-        refuse_replace_target(run, vmid, config_text, nodes_root)
-        if backup_disks:
-            _backup_os_disks(
-                run,
-                vmid=vmid,
-                config_text=config_text,
-                backup_dir=backup_dir,
-            )
-        _must(run, ["qm", "destroy", str(vmid)], vmid=vmid, destroyed=False)
-        destroyed = True
+    if getattr(status, "returncode", 1) == 0:
+        raise VmError(f"VM {vmid} already exists; it was not changed")
 
-    _must(run, planned[0], vmid=vmid, destroyed=destroyed)
+    _must(run, planned[0], vmid=vmid, destroyed=False)
     volid = _import_volume(
         run,
         vmid=vmid,
@@ -1118,7 +1094,7 @@ def create_template(
         storage=storage,
         volume_format=volume_format,
         created_now=True,
-        destroyed=destroyed,
+        destroyed=False,
         before_text="",
     )
     finished = template_commands(
@@ -1134,8 +1110,42 @@ def create_template(
         volume_format=volume_format,
     )
     for cmd in finished[2:]:
-        _must(run, cmd, vmid=vmid, destroyed=destroyed)
+        _must(run, cmd, vmid=vmid, destroyed=False)
     return volid
+
+
+def guest_options_argv(*, vmid: int, name: str, memory_mb: int, cores: int, bridge: str) -> list[str]:
+    """qm set for the settings a new-template run asked for. Disks are not named."""
+    return [
+        "qm",
+        "set",
+        str(vmid),
+        "--name",
+        name,
+        "--memory",
+        str(memory_mb),
+        "--cores",
+        str(cores),
+        "--net0",
+        f"virtio,bridge={bridge}",
+    ]
+
+
+def set_guest_options(
+    *,
+    vmid: int,
+    name: str,
+    memory_mb: int,
+    cores: int,
+    bridge: str,
+    dry_run: bool,
+    run: Run,
+) -> None:
+    argv = guest_options_argv(vmid=vmid, name=name, memory_mb=memory_mb, cores=cores, bridge=bridge)
+    if dry_run:
+        print(" ".join(argv))
+        return
+    _must(run, argv, vmid=vmid, destroyed=False)
 
 
 def _attach_boot_disk(run: Run, *, vmid: int, config_text: str, volid: str) -> str:
@@ -1322,6 +1332,7 @@ def insert_disk(
         )
         return InsertResult(guessed)
 
+    require_image(image_path)
     status = run(["qm", "status", str(vmid)])
     if getattr(status, "returncode", 1) != 0:
         raise VmError(f"VM {vmid} does not exist")

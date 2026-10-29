@@ -121,6 +121,9 @@ def converts_to_template(job: Job, vmid: int | None) -> bool:
         return False
     if vmid is not None and vmid in job.template_vmids:
         return True
+    # A replaced template keeps its template flag; only its disk changes.
+    if vmid is not None and vmid in job.destroy_vmids:
+        return True
     return job.make_template
 
 

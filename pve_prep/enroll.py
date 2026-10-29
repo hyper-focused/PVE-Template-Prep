@@ -276,6 +276,26 @@ def load_enrollment(vmid: int, *, directory: str | Path = ENROLL_DIR) -> Enrollm
     return _read_record(path, checked)
 
 
+def remove_enrollment(vmid: int, *, directory: str | Path = ENROLL_DIR) -> bool:
+    """Delete {vmid}.json. True when a file was removed, False when there was none.
+
+    The directory entry is unlinked, so a symlink there is removed and never
+    followed. The directory is not created.
+    """
+    checked = _check_vmid(vmid)
+    root = _existing_private_dir(directory)
+    if root is None:
+        return False
+    path = root / f"{checked}.json"
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise EnrollmentError(f"VMID {checked}: {exc}") from exc
+    return True
+
+
 def _record_paths(directory: Path) -> list[tuple[int, Path]]:
     try:
         entries = list(directory.iterdir())

@@ -776,7 +776,7 @@ def _template_intro(read_line, write, default: int | None, checked: bool) -> Non
 
 _TEMPLATE_VMID_NOTE = (
     "Provide a VMID for each VM template or press enter to use the default.\n"
-    "If the VMID is in use, the existing template will be deleted and replaced."
+    "If the VMID is an existing template, it keeps its VMID and gets the new disk image."
 )
 
 
@@ -1135,15 +1135,15 @@ _UPDATE_ROWS = (
     ("Monthly automated updates", "monthly"),
 )
 _UPDATE_NOTE = (
-    "These new templates can get a cron script that replaces the boot disk "
+    "These templates can get a cron script that replaces the boot disk "
     "when the upstream image checksum changes.\n"
-    "It does not apply to an update of an existing template or to a standalone image.\n"
-    "Enter does not install anything."
+    "It does not apply to a standalone image.\n"
+    "Enter does not install anything, and turns off earlier automated updates for these VMIDs."
 )
 
 
 def ask_unattended_schedule(read_line, write) -> str | None:
-    """Cron schedule for new templates. Enter installs nothing.
+    """Cron schedule for the templates this run built. Enter installs nothing.
 
     weekly or monthly is the schedule. None means no cron script.
     """
@@ -1212,6 +1212,10 @@ def _diskless(vm_has_disks, vmid: int) -> bool:
 
 def _confirm_message(*, mode: str, make_template: bool, whole_vm: bool, replacing: bool, backup: bool) -> str:
     noun = "templates" if whole_vm else "disk images"
+    if replacing and whole_vm and backup:
+        return "Your existing templates will be backed up, then given the new disk images."
+    if replacing and whole_vm:
+        return "The disks of your existing templates will now be DELETED and replaced with the new disk images."
     if replacing and backup:
         return f"Your existing {noun} will be backed up, then new {'templates' if whole_vm else 'images'} created."
     if replacing:
@@ -1364,8 +1368,8 @@ class SummaryRow:
 
 # What happens to a VMID that already exists. Without a backup it is drawn as danger.
 _EXISTING = {
-    (True, True): "back up, delete VM",
-    (True, False): "delete VM",
+    (True, True): "back up, replace disk",
+    (True, False): "replace disk",
     (False, True): "back up, replace",
     (False, False): "replace",
 }
@@ -1496,7 +1500,7 @@ def interview(
         dest_dir = ""
         notes, recommended = _replacement_storage(disk_storage, vmids, destroy_vmids)
         if recommended and _storage_refusal(recommended, kinds):
-            # The old template is destroyed. Its replacement goes on file storage.
+            # The new disk is imported onto the storage picked here, which must be file storage.
             notes = (*notes, f"{recommended} is not file storage. Pick where the new disk goes.")
             recommended = ""
         storage = _ask_storage(

@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import argparse
+import errno
+import fcntl
 import os
 import shutil
 import subprocess
@@ -42,6 +44,7 @@ from pve_prep.vm import (
     unfinished_swap,
     prepare_replace,
     refuse_replace_target,
+    set_guest_options,
     vmid_config_missing,
     parse_vmlist,
     storage_lacks_images,
@@ -326,6 +329,7 @@ def _tools() -> SimpleNamespace:
         publish=publish,
         insert_disk=insert_disk,
         create_template=create_template,
+        set_guest_options=set_guest_options,
         prepare_replace=prepare_replace,
         run=default_run,
         storage_rejects=_storage_rejects_images,
@@ -425,12 +429,70 @@ def _digest_for(distro: str, release: str) -> tuple[str, str]:
 def _created_templates(
     job: Job, succeeded: list[tuple[str, int | None]]
 ) -> list[tuple[str, int]]:
-    """Releases that finished and were converted to templates."""
+    """Releases that finished as templates: created, replaced, or given a new disk."""
     return [
         (release, vmid)
         for release, vmid in succeeded
-        if vmid is not None and converts_to_template(job, vmid)
+        if vmid is not None
+        and (converts_to_template(job, vmid) or action_for(job, vmid) == "insert")
     ]
+
+
+LOCK_PATH = Path("/run/pve-template-prep.lock")
+
+
+class RunLocked(Exception):
+    """Another run holds the lock."""
+
+
+def acquire_run_lock(path: Path | None = None) -> int:
+    """Hold one exclusive lock for this process. Returns the descriptor to keep open.
+
+    Every run that changes the host takes it, so two runs never share the
+    cache or touch the same guest. The kernel drops it when the process
+    exits, so a crash cannot leave it stuck. O_NOFOLLOW refuses a symlink.
+    """
+    path = LOCK_PATH if path is None else path
+    fd = os.open(os.fspath(path), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        if exc.errno in {errno.EWOULDBLOCK, errno.EAGAIN}:
+            raise RunLocked(str(path)) from exc
+        raise
+    return fd
+
+
+def _prune_enrollments(*, dry_run: bool) -> None:
+    from pve_prep.unattended import prune_enrollments
+
+    for line in prune_enrollments(directory=ENROLL_DIR, dry_run=dry_run):
+        print(line)
+
+
+def _claim_host() -> int:
+    """Root, then the run lock, then stale enrollments. 0 lets the interview start.
+
+    The lock is taken before anything is asked, so a second run stops while
+    the first one's downloads and templates are still in progress.
+    """
+    if os.geteuid() != 0:
+        raise SystemExit("run as root on the PVE host (sudo is fine)")
+    try:
+        # The descriptor stays open until exit. That open descriptor is the lock.
+        acquire_run_lock()
+    except RunLocked:
+        print(
+            "Another pve-template-prep run is in progress. "
+            "Wait for it to finish, then run this again. Nothing was changed."
+        )
+        return 1
+    except OSError as exc:
+        print(f"Could not take the run lock {LOCK_PATH}: {exc}. Nothing was changed.")
+        return 1
+    _prune_enrollments(dry_run=False)
+    return 0
 
 
 def _unattended_job() -> Job:
@@ -460,6 +522,18 @@ def _run_unattended(schedule: str, *, dry_run: bool) -> int:
 
     if not dry_run:
         preflight(_unattended_job())
+        try:
+            # The descriptor stays open until exit. That open descriptor is the lock.
+            acquire_run_lock()
+        except RunLocked:
+            print(
+                "Automated update skipped: another pve-template-prep run is in progress. "
+                "Nothing was changed. It runs again on the next schedule."
+            )
+            return 0
+        except OSError as exc:
+            print(f"Automated update skipped: could not take the run lock {LOCK_PATH}: {exc}. Nothing was changed.")
+            return 1
     code = run_unattended(
         schedule,
         directory=ENROLL_DIR,
@@ -516,6 +590,10 @@ def main(argv: list[str] | None = None) -> int:
     failed_update = _consider_update(Path(__file__).resolve())
     if failed_update:
         return failed_update
+    if not args.dry_run:
+        claimed = _claim_host()
+        if claimed:
+            return claimed
     reader = arm(_read_line)
     try:
         with quiet_echo(reader):
@@ -555,7 +633,7 @@ def main(argv: list[str] | None = None) -> int:
             run_one(job, release, vmid)
         except VmDestroyedError as exc:
             print(f"FAIL {release}: {exc}")
-            print("stopped: a template was destroyed and the replacement did not finish")
+            print("stopped: a template did not finish its update")
             failed = True
             break
         except Exception as exc:

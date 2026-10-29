@@ -254,13 +254,13 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(
             blob.count("Provide a VMID for each VM template or press enter to use the default."), 1
         )
-        self.assertIn("If the VMID is in use, the existing template will be deleted and replaced.", blob)
+        self.assertIn("If the VMID is an existing template, it keeps its VMID and gets the new disk image.", blob)
         self.assertLess(blob.index("  Template VMID(s)\n"), blob.index("bookworm VM Template ID [9001]: "))
         self.assertNotIn("In use:", blob)
         self.assertNotIn("including a clone on another node", blob)
         self.assertNotIn("Not in use:", blob)
         self.assertIn("No backup images will be created.", blob)
-        self.assertIn("Your existing templates will now be DELETED and new templates created.", blob)
+        self.assertIn("The disks of your existing templates will now be DELETED and replaced with the new disk images.", blob)
         self.assertIn(DELETE_GATE, blob)
         self.assertNotIn("Do not back up the existing template VM disk", blob)
         self.assertEqual(job.backup_vmids, frozenset())
@@ -268,7 +268,7 @@ class InterviewTest(unittest.TestCase):
             _summary(blob),
             [
                 ("Release", "VMID", "Name", "Storage", "Format", "Existing"),
-                ("bookworm", "910", "debian-12-cloud", "nfs-templates", "qcow2", "delete VM"),
+                ("bookworm", "910", "debian-12-cloud", "nfs-templates", "qcow2", "replace disk"),
                 ("trixie", "911", "debian-13-cloud", "nfs-templates", "qcow2", "new"),
             ],
         )
@@ -519,7 +519,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.bridge, "vmbr1")
         self.assertEqual(job.memory_mb, 4096)
         self.assertEqual(job.cores, 4)
-        self.assertEqual(_column("".join(script.written), "Existing"), ["back up, delete VM", "new"])
+        self.assertEqual(_column("".join(script.written), "Existing"), ["back up, replace disk", "new"])
 
     def test_backup_answer_empty_keeps_the_copy(self) -> None:
         script = _Script(
@@ -545,7 +545,7 @@ class InterviewTest(unittest.TestCase):
         blob = "".join(script.written)
         self.assertIn("answer y or n", blob)
         self.assertIn("Image backups will be created at /var/backups/pve-template-prep", blob)
-        self.assertIn("Your existing templates will be backed up, then new templates created.", blob)
+        self.assertIn("Your existing templates will be backed up, then given the new disk images.", blob)
         self.assertEqual(job.backup_vmids, frozenset({910}))
 
     def test_no_disk_still_asks_before_delete(self) -> None:
@@ -568,7 +568,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.collision, "overwrite")
         blob = "".join(script.written)
         self.assertIn("VMID 9001 has no OS disk.", blob)
-        self.assertIn("Your existing templates will now be DELETED and new templates created.", blob)
+        self.assertIn("The disks of your existing templates will now be DELETED and replaced with the new disk images.", blob)
         self.assertNotIn("Backup: ", blob)
 
     def test_unknown_storage_reasks(self) -> None:
@@ -830,7 +830,7 @@ class InterviewTest(unittest.TestCase):
         self.assertEqual(job.destroy_vmids, frozenset({910, 911}))
         self.assertEqual(job.backup_vmids, frozenset({910, 911}))
         blob = "".join(script.written)
-        self.assertEqual(_column(blob, "Existing"), ["back up, delete VM", "back up, delete VM"])
+        self.assertEqual(_column(blob, "Existing"), ["back up, replace disk", "back up, replace disk"])
         self.assertNotIn("DELETE", blob)
 
     def test_template_can_stay_a_vm(self) -> None:

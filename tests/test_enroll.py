@@ -22,6 +22,7 @@ from pve_prep.enroll import (  # noqa: E402
     EnrollmentError,
     enrollments_for,
     load_enrollment,
+    remove_enrollment,
     replace_digest,
     save_enrollment,
 )
@@ -246,6 +247,27 @@ class EnrollmentTests(unittest.TestCase):
                 load_enrollment(910, directory=followed)
             self.assertIn("symlink", str(caught.exception))
             self.assertTrue((real / "910.json").is_file())
+
+    def test_remove_enrollment_deletes_only_that_record(self) -> None:
+        with private_tempdir() as tmp:
+            save_enrollment(_record(vmid=910), directory=tmp)
+            save_enrollment(_record(vmid=920), directory=tmp)
+            self.assertTrue(remove_enrollment(910, directory=tmp))
+            self.assertIsNone(load_enrollment(910, directory=tmp))
+            self.assertIsNotNone(load_enrollment(920, directory=tmp))
+            self.assertFalse(remove_enrollment(910, directory=tmp))
+        self.assertFalse(remove_enrollment(910, directory="/no/such/enroll/dir"))
+        with self.assertRaises(EnrollmentError):
+            remove_enrollment(0, directory="/no/such/enroll/dir")
+
+    def test_remove_enrollment_unlinks_a_symlink_and_keeps_its_target(self) -> None:
+        with private_tempdir() as tmp, private_tempdir() as other:
+            target = Path(other) / "keep.json"
+            target.write_text("{}", encoding="utf-8")
+            (Path(tmp) / "910.json").symlink_to(target)
+            self.assertTrue(remove_enrollment(910, directory=tmp))
+            self.assertFalse((Path(tmp) / "910.json").is_symlink())
+            self.assertEqual(target.read_text(encoding="utf-8"), "{}")
 
     def test_symlink_record_is_refused(self) -> None:
         with private_tempdir() as tmp:

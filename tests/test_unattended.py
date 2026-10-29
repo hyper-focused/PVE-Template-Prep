@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from contextlib import redirect_stdout
@@ -19,7 +20,8 @@ if str(_TESTS) not in sys.path:
 from privtmp import private_tempdir  # noqa: E402
 from pve_prep.enroll import Enrollment, load_enrollment, save_enrollment  # noqa: E402
 from pve_prep.job import DEFAULT_BACKUPS, DEFAULT_CACHE, Job, action_for  # noqa: E402
-from pve_prep.unattended import run_unattended  # noqa: E402
+from pve_prep.download import DownloadError  # noqa: E402
+from pve_prep.unattended import run_unattended, stale_reason  # noqa: E402
 
 
 _OLD = "ab" * 32
@@ -122,12 +124,23 @@ def _run(
     digest_error: BaseException | None = None,
     dry_run: bool = False,
     log_directory: Path | str | None = None,
+    vmlist: object = None,
+    confs: dict[tuple[str, int], str] | None = None,
 ) -> _Outcome:
+    """vmlist None leaves the cluster list unreadable. A str is written as is."""
     outcome = _Outcome()
     with private_tempdir() as tmp:
         root = Path(tmp)
         nodes = root / "nodes"
         nodes.mkdir()
+        vmlist_path = root / ".vmlist"
+        if vmlist is not None:
+            text = vmlist if isinstance(vmlist, str) else json.dumps(vmlist)
+            vmlist_path.write_text(text, encoding="utf-8")
+        for (node, vmid), text in (confs or {}).items():
+            conf = nodes / node / "qemu-server" / f"{vmid}.conf"
+            conf.parent.mkdir(parents=True, exist_ok=True)
+            conf.write_text(text, encoding="utf-8")
         for record in records:
             save_enrollment(record, directory=root)
 
@@ -162,6 +175,7 @@ def _run(
                 storage_kind=kind_of,
                 nodes_root=nodes,
                 dry_run=dry_run,
+                vmlist_path=vmlist_path,
             )
         outcome.out = buffer.getvalue()
         if logs.is_dir():
@@ -443,3 +457,126 @@ class UnattendedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _cluster(*entries: tuple[int, str, str]) -> dict:
+    return {"version": 7, "ids": {str(vmid): {"node": node, "type": kind, "version": 1} for vmid, node, kind in entries}}
+
+
+class PruneTests(unittest.TestCase):
+    def test_vmid_gone_from_the_cluster_is_removed_without_any_qm_call(self) -> None:
+        done = _run([_record()], [], vmlist=_cluster((100, "pve", "qemu")))
+        self.assertEqual(done.code, 0)
+        self.assertIsNone(done.digests[910])
+        self.assertEqual(done.fake.calls, [])
+        self.assertEqual(done.asked, [])
+        self.assertIn(
+            "VMID 910 no longer exists on this cluster, so its automated updates were removed.",
+            done.out,
+        )
+
+    def test_container_is_removed(self) -> None:
+        done = _run([_record()], [], vmlist=_cluster((910, "pve", "lxc")))
+        self.assertIsNone(done.digests[910])
+        self.assertIn("VMID 910 is now an LXC container", done.out)
+
+    def test_normal_vm_on_another_node_is_removed(self) -> None:
+        done = _run(
+            [_record()],
+            [],
+            vmlist=_cluster((910, "pve2", "qemu")),
+            confs={("pve2", 910): _PLAIN},
+        )
+        self.assertIsNone(done.digests[910])
+        self.assertIn("VMID 910 is now a normal VM, not a template", done.out)
+        self.assertEqual(done.fake.calls, [])
+
+    def test_linked_clone_is_removed(self) -> None:
+        clone = f"scsi0: {_STORAGE}:9001/base-9001-disk-0.raw/910/vm-910-disk-0.qcow2\n"
+        done = _run(
+            [_record()],
+            [],
+            vmlist=_cluster((910, "pve", "qemu")),
+            confs={("pve", 910): clone},
+        )
+        self.assertIsNone(done.digests[910])
+        self.assertIn("linked clone", done.out)
+
+    def test_template_and_unfinished_swap_are_kept(self) -> None:
+        swap = f"tags: pve-prep-swap-910\nscsi0: {_STORAGE}:base-910-disk-0.raw\n"
+        for conf in (_CONFIG, swap):
+            done = _run(
+                [_record()],
+                _gate(),
+                digest=(_OLD, "256"),
+                vmlist=_cluster((910, "pve", "qemu")),
+                confs={("pve", 910): conf},
+            )
+            self.assertEqual(done.digests[910], _OLD)
+            self.assertNotIn("removed", done.out)
+
+    def test_unreadable_cluster_state_keeps_the_record(self) -> None:
+        for vmlist, confs in (
+            (None, None),
+            ("{not json", None),
+            ({"ids": []}, None),
+            (_cluster((910, "pve", "qemu")), None),
+            (_cluster((910, "../etc", "qemu")), None),
+            (_cluster((910, "pve", "openvz")), None),
+        ):
+            with self.subTest(vmlist=vmlist):
+                done = _run([_record()], _gate(), digest=(_OLD, "256"), vmlist=vmlist, confs=confs)
+                self.assertEqual(done.digests[910], _OLD)
+                self.assertNotIn("removed", done.out)
+
+    def test_dry_run_only_says_what_would_be_removed(self) -> None:
+        done = _run([_record()], [], vmlist=_cluster(), dry_run=True)
+        self.assertEqual(done.digests[910], _OLD)
+        self.assertIn("Dry run: VMID 910 no longer exists on this cluster", done.out)
+
+    def test_symlinked_guest_config_is_not_read(self) -> None:
+        with private_tempdir() as tmp:
+            root = Path(tmp)
+            real = root / "real.conf"
+            real.write_text(_PLAIN, encoding="utf-8")
+            conf = root / "nodes" / "pve" / "qemu-server" / "910.conf"
+            conf.parent.mkdir(parents=True)
+            conf.symlink_to(real)
+            vmlist = root / ".vmlist"
+            vmlist.write_text(json.dumps(_cluster((910, "pve", "qemu"))), encoding="utf-8")
+            self.assertIsNone(stale_reason(910, vmlist_path=vmlist, nodes_root=root / "nodes"))
+
+
+class ChecksumPolicyTests(unittest.TestCase):
+    def _failing(self, exc: BaseException, *, dry_run: bool = False) -> _Outcome:
+        def perform(job: Job, release: str, vmid: int) -> None:
+            raise exc
+
+        return _run([_record()], _gate(), digest=(_NEW, "256"), perform=perform, dry_run=dry_run)
+
+    def test_checksum_mismatch_removes_the_record(self) -> None:
+        done = self._failing(DownloadError(f"checksum mismatch for img.qcow2: got {_OTHER} expected {_NEW}"))
+        self.assertEqual(done.code, 1)
+        self.assertIsNone(done.digests[910])
+        self.assertIn("did not match its published checksum", done.out)
+        self.assertIn("No changes to your existing disk image were made.", done.out)
+        self.assertIn("It was removed from automated updates.", done.out)
+        self.assertIn("checksum mismatch", done.logs["910.log"])
+
+    def test_dry_run_mismatch_keeps_the_record(self) -> None:
+        done = self._failing(DownloadError("checksum mismatch for img.qcow2: got a expected b"), dry_run=True)
+        self.assertEqual(done.digests[910], _OLD)
+        self.assertNotIn("removed from automated updates", done.out)
+
+    def test_transient_download_failures_keep_the_record(self) -> None:
+        for exc in (
+            DownloadError("fetch failed for https://example.test/img.qcow2: HTTP Error 404: Not Found"),
+            DownloadError("could not fetch checksum file"),
+            RuntimeError("disk swap failed"),
+        ):
+            with self.subTest(exc=str(exc)):
+                done = self._failing(exc)
+                self.assertEqual(done.code, 1)
+                self.assertEqual(done.digests[910], _OLD)
+                self.assertNotIn("removed from automated updates", done.out)
+

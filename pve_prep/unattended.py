@@ -10,22 +10,109 @@ does not call qm importdisk.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .customize import CustomizeError
 from .download import DownloadError
-from .enroll import ENROLL_DIR, Enrollment, enrollments_for, replace_digest
+from .enroll import (
+    ENROLL_DIR,
+    SCHEDULES,
+    Enrollment,
+    EnrollmentError,
+    enrollments_for,
+    remove_enrollment,
+    replace_digest,
+)
 from .job import DEFAULT_BACKUPS, DEFAULT_CACHE, Job
 from .runlog import LOG_DIR, RunLogError, write_run_log
 from .vm import (
     is_file_storage,
+    is_linked_clone,
+    is_template,
     os_disk_format,
     os_disk_storage,
     parse_qm_status,
     refuse_replace_target,
+    unfinished_swap,
 )
+
+VMLIST = Path("/etc/pve/.vmlist")
+NODES_ROOT = Path("/etc/pve/nodes")
+
+
+def stale_reason(vmid: int, *, vmlist_path: Path, nodes_root: Path) -> str | None:
+    """Why an enrollment no longer names a template. None keeps the record.
+
+    Only a cluster-wide answer removes a record. An unreadable vmlist or
+    guest config keeps it, so a node outage never unenrolls anything. A
+    guest whose disk swap did not finish keeps its record too.
+    """
+    try:
+        payload = json.loads(Path(vmlist_path).read_text(encoding="utf-8"))
+        ids = payload["ids"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(ids, dict):
+        return None
+    entry = ids.get(str(vmid))
+    if entry is None:
+        return f"VMID {vmid} no longer exists on this cluster"
+    if not isinstance(entry, dict):
+        return None
+    kind = entry.get("type")
+    if kind == "lxc":
+        return f"VMID {vmid} is now an LXC container"
+    if kind != "qemu":
+        return None
+    node = entry.get("node")
+    if not isinstance(node, str) or not node or "/" in node or node in {".", ".."}:
+        return None
+    conf = Path(nodes_root) / node / "qemu-server" / f"{vmid}.conf"
+    try:
+        if conf.is_symlink():
+            return None
+        text = conf.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if is_template(text) or unfinished_swap(text, vmid):
+        return None
+    if is_linked_clone(text):
+        return f"VMID {vmid} is now a linked clone, not a template"
+    return f"VMID {vmid} is now a normal VM, not a template"
+
+
+def prune_enrollments(
+    *,
+    directory: str | Path = ENROLL_DIR,
+    vmlist_path: Path = VMLIST,
+    nodes_root: Path = NODES_ROOT,
+    dry_run: bool = False,
+) -> list[str]:
+    """Remove records whose VMID is gone, a VM, or a container. Returns one line each."""
+    lines: list[str] = []
+    for schedule in SCHEDULES:
+        try:
+            records = enrollments_for(schedule, directory=directory)
+        except EnrollmentError as exc:
+            lines.append(f"Automated update records could not be read: {exc}")
+            return lines
+        for record in records:
+            reason = stale_reason(record.vmid, vmlist_path=vmlist_path, nodes_root=nodes_root)
+            if reason is None:
+                continue
+            if dry_run:
+                lines.append(f"Dry run: {reason}; its automated updates would be removed.")
+                continue
+            try:
+                remove_enrollment(record.vmid, directory=directory)
+            except EnrollmentError as exc:
+                lines.append(f"{reason}, but its automated update record could not be removed: {exc}")
+                continue
+            lines.append(f"{reason}, so its automated updates were removed.")
+    return lines
 
 
 def _invoke(run: Callable[[list[str]], object], argv: list[str]) -> object:
@@ -123,6 +210,11 @@ def failure_line(
     return f"{head} {situation} The detail log could not be written: {log_error}"
 
 
+def _checksum_mismatch(exc: BaseException) -> bool:
+    """A verified mismatch, not a lookup or download that failed."""
+    return "checksum mismatch" in str(exc)
+
+
 def _failure_situation(record: Enrollment, exc: BaseException) -> str:
     """Say what this failure left in place. The detail log keeps the raw error."""
     text = str(exc).strip()
@@ -173,6 +265,11 @@ def _failure_situation(record: Enrollment, exc: BaseException) -> str:
     if "the template flag was restored" in text:
         return "The new disk was not attached. No changes to your existing disk image were made."
     folded = text.casefold()
+    if _checksum_mismatch(exc):
+        return (
+            "The downloaded image did not match its published checksum. "
+            "No changes to your existing disk image were made."
+        )
     if isinstance(exc, DownloadError) or "checksum" in folded or "fetch failed" in folded or "http " in folded:
         return (
             "The published image could not be checked or downloaded. "
@@ -303,16 +400,28 @@ def run_unattended(
     storage_kind: Callable[[str], str],
     nodes_root: Path,
     dry_run: bool = False,
+    vmlist_path: Path = VMLIST,
 ) -> int:
     """Swap every enrolled guest on schedule whose published digest changed.
 
-    One guest's failure is printed and the rest still run. Returns 1 when
-    any guest failed, otherwise 0. dry_run still calls perform, with the
-    job marked dry_run, and leaves the stored digest unchanged. A failure
-    writes /var/log/pve-template-prep/<vmid>.log and keeps that path in the
+    Records whose VMID is gone from the cluster, or is now a normal VM, a
+    linked clone, or a container, are removed first. One guest's failure is
+    printed and the rest still run. A downloaded image that does not match
+    its published checksum removes that record. A failed lookup or download
+    keeps it for the next run. Returns 1 when any guest failed, otherwise 0.
+    dry_run still calls perform, with the job marked dry_run, and leaves
+    every record unchanged. A failure writes
+    /var/log/pve-template-prep/<vmid>.log and keeps that path in the
     sentence. The virt-customize log stays in the file.
     """
     failed = False
+    for line in prune_enrollments(
+        directory=directory,
+        vmlist_path=vmlist_path,
+        nodes_root=nodes_root,
+        dry_run=dry_run,
+    ):
+        print(line)
     for record in enrollments_for(schedule, directory=directory):
         try:
             _swap_one(
@@ -332,10 +441,21 @@ def run_unattended(
                 _log_text(record, exc),
                 directory=log_directory,
             )
+            situation = _failure_situation(record, exc)
+            if _checksum_mismatch(exc) and not dry_run:
+                try:
+                    remove_enrollment(record.vmid, directory=directory)
+                except EnrollmentError as removal:
+                    situation += f" Its automated update record could not be removed: {removal}"
+                else:
+                    situation += (
+                        " It was removed from automated updates. "
+                        "Run pve-template-prep to replace the template and enroll it again."
+                    )
             print(
                 failure_line(
                     record,
-                    situation=_failure_situation(record, exc),
+                    situation=situation,
                     log_path=path,
                     log_error=error,
                 )
