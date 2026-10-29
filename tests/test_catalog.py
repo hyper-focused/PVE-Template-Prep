@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 import unittest
+from datetime import date
 from pathlib import Path
+from unittest import mock
 
 from pve_prep.catalog import (
     DISTROS,
@@ -14,6 +16,7 @@ from pve_prep.catalog import (
     compile_distro,
     finalize_cloudlinux,
     finalize_fedora,
+    is_available,
     normalize_release,
     releases_for,
 )
@@ -148,12 +151,65 @@ class CatalogTests(unittest.TestCase):
         seen = []
         for path in sorted(directory.glob("*.json")):
             payload = json.loads(path.read_text(encoding="utf-8"))
-            specs = releases_for(payload["id"])
+            specs = releases_for(payload["id"], today=date.max)
             versions = [row["version"] for row in payload["releases"]]
             self.assertEqual([spec.release for spec in specs], versions)
             self.assertEqual(specs[0].source, payload["source"]["type"])
             seen.append(payload["id"])
         self.assertEqual(set(seen), set(DISTROS))
+
+    def test_fedora_45_appears_on_its_release_day(self) -> None:
+        before = [spec.release for spec in releases_for("fedora", today=date(2026, 11, 2))]
+        on_day = [spec.release for spec in releases_for("fedora", today=date(2026, 11, 3))]
+        self.assertEqual(before, ["43", "44"])
+        self.assertEqual(on_day, ["43", "44", "45"])
+        fedora45 = [spec for spec in releases_for("fedora", today=date.max) if spec.release == "45"][0]
+        self.assertTrue(fedora45.url.startswith("https://download.fedoraproject.org/"))
+        self.assertIn("/releases/45/Cloud/x86_64/images/", fedora45.url)
+
+    def test_unpublished_release_is_refused_by_name(self) -> None:
+        class _Before(date):
+            @classmethod
+            def today(cls):
+                return date(2026, 11, 2)
+
+        class _After(date):
+            @classmethod
+            def today(cls):
+                return date(2026, 11, 3)
+
+        with mock.patch("pve_prep.catalog.date", _Before):
+            with self.assertRaises(CatalogError) as caught:
+                normalize_release("fedora", "45")
+        self.assertIn("not published until 2026-11-03", str(caught.exception))
+        with mock.patch("pve_prep.catalog.date", _After):
+            self.assertEqual(normalize_release("fedora", "45"), "45")
+
+    def test_available_must_be_a_real_iso_date(self) -> None:
+        def payload(available):
+            return {
+                "id": "example",
+                "name": "Example",
+                "family": "deb",
+                "order": 1,
+                "checksum_alg": "256",
+                "source": {
+                    "type": "pattern",
+                    "base": "https://example.com/{release}/",
+                    "filename": "img-{release}.qcow2",
+                    "checksum": "SHA256SUMS",
+                },
+                "releases": [{"version": "1", "eol": False, "available": available}],
+            }
+
+        specs, _aliases = compile_distro(payload("2030-01-02"), filename="example.json")
+        self.assertEqual(specs[0].available, "2030-01-02")
+        self.assertFalse(is_available(specs[0], date(2030, 1, 1)))
+        self.assertTrue(is_available(specs[0], date(2030, 1, 2)))
+        for bad in ("2030-1-2", "2030-02-30", "soon", 20300102, ""):
+            with self.assertRaises(CatalogError) as caught:
+                compile_distro(payload(bad), filename="example.json")
+            self.assertIn("example.json", str(caught.exception))
 
     def test_bad_distro_file_names_the_file(self) -> None:
         payload = {
