@@ -118,6 +118,9 @@ fi
 for name in "${MODULES[@]}" "${DATA_FILES[@]}"; do
   if [[ ! -f "$src/pve_prep/$name" ]]; then
     echo "archive is missing pve_prep/$name" >&2
+    echo "This install.sh is newer than the ${REF} archive it downloaded (${ARCHIVE_URL})." >&2
+    echo "Download install.sh from ${REF}, or run it with REF set to the branch it came from:" >&2
+    echo "  REF=<branch> bash install.sh" >&2
     exit 1
   fi
 done
