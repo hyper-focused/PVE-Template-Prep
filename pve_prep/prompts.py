@@ -69,13 +69,27 @@ def _split_hint(prompt: str) -> tuple[str, str | None]:
 
 
 def _ask_text(
-    read_line, write, prompt: str, *, default: str = "", danger_word: str | None = None
+    read_line,
+    write,
+    prompt: str,
+    *,
+    default: str = "",
+    danger_word: str | None = None,
+    success_word: str | None = None,
+    yes_green: bool = False,
 ) -> str:
     """Free text. The widget shows prompt; the plain path writes it."""
     if ui.enabled(read_line):
         _begin_widget(write)
         question, hint = _split_hint(prompt.strip())
-        value = ui.text(question, default=default, hint=hint, danger_word=danger_word)
+        value = ui.text(
+            question,
+            default=default,
+            hint=hint,
+            danger_word=danger_word,
+            success_word=success_word,
+            yes_green=yes_green,
+        )
         if value is None:
             raise PromptAbort("exit")
         _answered(write)
@@ -762,7 +776,7 @@ def _template_intro(read_line, write, default: int | None, checked: bool) -> Non
 
 _TEMPLATE_VMID_NOTE = (
     "Provide a VMID for each VM template or press enter to use the default.\n"
-    "If the VMID is in use, the existing template will be deleted and replaced."
+    "If the VMID is an existing template, it keeps its VMID and gets the new disk image."
 )
 
 
@@ -986,7 +1000,7 @@ def _ask_bool(read_line, write, prompt: str, default: bool) -> bool:
     """Yes or no. Enter accepts the bracket. y and n answer it."""
     field = _yn_prompt(prompt, default)
     while True:
-        raw = _ask_text(read_line, write, field).lower()
+        raw = _ask_text(read_line, write, field, yes_green=True).lower()
         if raw == "":
             return default
         if raw in {"y", "yes"}:
@@ -1115,20 +1129,206 @@ def _ask_guest_settings(read_line, write, *, hardware: bool, convert: bool, coun
     return GuestSettings(password_auth, permit_root, bridge, memory_mb, cores, make_template)
 
 
-def ask_cache_cleanup(read_line, write, *, cache: str, failed: bool) -> bool:
-    """After the builds. Enter keeps working files. y deletes them.
+_UPDATE_ROWS = (
+    ("No automated updates", "no"),
+    ("Weekly automated updates", "weekly"),
+    ("Monthly automated updates", "monthly"),
+)
+_UPDATE_NOTE = (
+    "These templates can get a cron script that replaces the boot disk "
+    "when the upstream image checksum changes.\n"
+    "Automated updates work only with file-based storage (directory, NFS, CIFS, "
+    "and similar). They will not run on block storage such as ZFS, LVM, or RBD.\n"
+    "Leave the template's disk image and storage alone after enrollment. "
+    "If either changes, the next update refuses and leaves the guest as it is.\n"
+    "One schedule applies to every enrolled template on this host. "
+    "Picking weekly or monthly moves earlier enrollments onto that schedule "
+    "and removes the other cron script.\n"
+    "It does not apply to a standalone image.\n"
+    "Enter does not install anything, and turns off earlier automated updates for these VMIDs."
+)
 
-    Disk backups are not in the cache and are never deleted. A failed
-    release says the download is still in the cache, and Enter keeps it.
+
+_PRIOR_ROWS = (
+    ("Keep current schedule", "keep"),
+    ("Change schedule", "change"),
+    ("Turn off automated updates", "off"),
+)
+_CHANGE_ROWS = (
+    ("Weekly automated updates", "weekly"),
+    ("Monthly automated updates", "monthly"),
+)
+
+
+def _prior_enrollment_note(records) -> str:
+    """List already-enrolled VMIDs and their schedules for the pre-download ask."""
+    schedules = sorted({record.schedule for record in records})
+    cadence = " and ".join(schedules) if schedules else "weekly/monthly"
+    lines = [
+        f"VMID {record.vmid} ({record.distro} {record.release}): {record.schedule}"
+        for record in records
+    ]
+    return (
+        f"Already enrolled for {cadence} auto-updates:\n"
+        + "\n".join(lines)
+        + "\n"
+        "Keep the current schedule, change it, or turn automated updates off "
+        "for these VMIDs. The choice is applied after this run finishes the "
+        "builds that succeed."
+    )
+
+
+def ask_prior_enrollment(read_line, write, records) -> str:
+    """Pre-download choice for VMIDs that already have enrollment files.
+
+    Returns keep, weekly, monthly, or off. weekly/monthly mean change to that
+    schedule. records must be non-empty. Default is keep.
     """
-    if failed:
-        prompt = (
-            f"A release failed. Working files are still in {cache}, including the download.\n"
-            f"Delete working files in {cache}?\n"
+    if not records:
+        raise ValueError("records must be non-empty")
+    _section(read_line, write, "Automated updates")
+    _say(read_line, write, _prior_enrollment_note(records), "note")
+    if ui.enabled(read_line):
+        picked = _pick(
+            read_line,
+            write,
+            "Already enrolled. Keep, change schedule, or turn off?",
+            list(_PRIOR_ROWS),
+            default="keep",
         )
     else:
-        prompt = f"Delete working files in {cache}?\n"
-    return _ask_bool(read_line, write, prompt, False)
+        for index, (title, _value) in enumerate(_PRIOR_ROWS, start=1):
+            write(f"  {index}) {title}\n")
+        picked = _ask_choice(
+            read_line,
+            write,
+            "Select [1]: ",
+            {
+                "1": "keep",
+                "k": "keep",
+                "keep": "keep",
+                "2": "change",
+                "c": "change",
+                "change": "change",
+                "3": "off",
+                "o": "off",
+                "off": "off",
+                "n": "off",
+                "no": "off",
+            },
+            "1",
+            "pick 1, 2, or 3",
+        )
+    if picked == "change":
+        _selected(read_line, write, "Change schedule.")
+        if ui.enabled(read_line):
+            schedule = _pick(
+                read_line,
+                write,
+                "Choose a schedule. Highlight a selection and press enter",
+                list(_CHANGE_ROWS),
+                default="weekly",
+            )
+        else:
+            for index, (title, _value) in enumerate(_CHANGE_ROWS, start=1):
+                write(f"  {index}) {title}\n")
+            schedule = _ask_choice(
+                read_line,
+                write,
+                "Select [1]: ",
+                {
+                    "1": "weekly",
+                    "weekly": "weekly",
+                    "2": "monthly",
+                    "monthly": "monthly",
+                },
+                "1",
+                "pick 1 or 2",
+            )
+        done = {value: f"{title}." for title, value in _CHANGE_ROWS}
+        _selected(read_line, write, done[schedule])
+        return schedule
+    done = {value: f"{title}." for title, value in _PRIOR_ROWS}
+    _selected(read_line, write, done[picked])
+    return picked
+
+
+def ask_unattended_schedule(read_line, write) -> str | None:
+    """Cron schedule for templates this run built that had no prior record.
+
+    weekly or monthly is the one schedule for the host. None means no cron
+    script for those VMIDs. Enter installs nothing.
+    """
+    _section(read_line, write, "Automated updates")
+    _say(read_line, write, _UPDATE_NOTE, "note")
+    if ui.enabled(read_line):
+        picked = _pick(
+            read_line,
+            write,
+            "Choose a schedule. Highlight a selection and press enter",
+            list(_UPDATE_ROWS),
+            default="no",
+        )
+    else:
+        for index, (title, _value) in enumerate(_UPDATE_ROWS, start=1):
+            write(f"  {index}) {title}\n")
+        picked = _ask_choice(
+            read_line,
+            write,
+            "Select [1]: ",
+            {
+                "1": "no",
+                "n": "no",
+                "no": "no",
+                "2": "weekly",
+                "weekly": "weekly",
+                "3": "monthly",
+                "monthly": "monthly",
+            },
+            "1",
+            "pick 1, 2, or 3",
+        )
+    done = {value: f"{title}." for title, value in _UPDATE_ROWS}
+    _selected(read_line, write, done[picked])
+    if picked == "no":
+        return None
+    return picked
+
+
+def ask_turn_off_updates(read_line, write, *, count: int) -> bool:
+    """True when the operator turns off every existing enrollment.
+
+    Used when this run finished no new template to enroll but enrollments are
+    already on disk, so a manual return can still clear automated updates.
+    """
+    noun = "template" if count == 1 else "templates"
+    _section(read_line, write, "Automated updates")
+    _say(
+        read_line,
+        write,
+        f"{count} {noun} already enrolled for automated updates. "
+        "This run did not finish a template that needed a new enrollment.\n"
+        "Turn off automated updates for all of them? That removes their "
+        "enrollment files and our cron script when nothing remains.",
+        "note",
+    )
+    return _ask_bool(read_line, write, "Turn off automated updates?\n", False)
+
+
+def ask_cache_cleanup(read_line, write, *, cache: str, failed: bool) -> bool:
+    """After the builds. Enter and y retain the working files. n deletes them.
+
+    Returns True when the files should be deleted. Disk backups are not in
+    the cache and are never deleted. A failed release says the download is
+    still in the cache, and Enter still retains it.
+    """
+    note = ""
+    if failed:
+        note = (
+            f"A release failed. Working files are still in {cache}, including the download.\n"
+        )
+    retain = _ask_bool(read_line, write, f"{note}Retain the working files in {cache}?\n", True)
+    return not retain
 
 
 def _diskless(vm_has_disks, vmid: int) -> bool:
@@ -1144,6 +1344,10 @@ def _diskless(vm_has_disks, vmid: int) -> bool:
 
 def _confirm_message(*, mode: str, make_template: bool, whole_vm: bool, replacing: bool, backup: bool) -> str:
     noun = "templates" if whole_vm else "disk images"
+    if replacing and whole_vm and backup:
+        return "Your existing templates will be backed up, then given the new disk images."
+    if replacing and whole_vm:
+        return "The disks of your existing templates will now be DELETED and replaced with the new disk images."
     if replacing and backup:
         return f"Your existing {noun} will be backed up, then new {'templates' if whole_vm else 'images'} created."
     if replacing:
@@ -1165,7 +1369,13 @@ def _confirm_run(read_line, write, *, message: str, word: str, danger: bool) -> 
         accepted = {"YES", "yes"}
         refused = {"X", "x", "n", "no", "NO"}
     while True:
-        answer = _ask_text(read_line, write, prompt, danger_word=word if danger else None)
+        answer = _ask_text(
+            read_line,
+            write,
+            prompt,
+            danger_word=word if danger else None,
+            success_word=None if danger else word,
+        )
         if answer in accepted:
             return
         if answer in refused:
@@ -1290,8 +1500,8 @@ class SummaryRow:
 
 # What happens to a VMID that already exists. Without a backup it is drawn as danger.
 _EXISTING = {
-    (True, True): "back up, delete VM",
-    (True, False): "delete VM",
+    (True, True): "back up, replace disk",
+    (True, False): "replace disk",
     (False, True): "back up, replace",
     (False, False): "replace",
 }
@@ -1422,7 +1632,7 @@ def interview(
         dest_dir = ""
         notes, recommended = _replacement_storage(disk_storage, vmids, destroy_vmids)
         if recommended and _storage_refusal(recommended, kinds):
-            # The old template is destroyed. Its replacement goes on file storage.
+            # The new disk is imported onto the storage picked here, which must be file storage.
             notes = (*notes, f"{recommended} is not file storage. Pick where the new disk goes.")
             recommended = ""
         storage = _ask_storage(

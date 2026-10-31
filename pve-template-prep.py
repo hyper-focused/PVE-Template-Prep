@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import argparse
+import errno
+import fcntl
 import os
 import shutil
 import subprocess
@@ -22,14 +24,17 @@ from pve_prep.build import opening, run_fetched
 from pve_prep.catalog import normalize_release, releases_for
 from pve_prep.customize import apply as customize_apply
 from pve_prep.customize import argv as customize_argv
-from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, publish
-from pve_prep.job import Job, action_for
+from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, file_digest, publish
+from pve_prep.enroll import ENROLL_DIR
+from pve_prep.job import DEFAULT_CACHE, Job, action_for, converts_to_template
+from pve_prep.offer import apply_prior_enrollment, offer_created, plan_prior_enrollments
 from pve_prep.prompts import PromptAbort, ask_cache_cleanup, interview
 from pve_prep.ui import arm, quiet_echo, tone
 from pve_prep.vm import (
     VmDestroyedError,
     backups_since,
     VmError,
+    boot_disk_location,
     config_has_os_disk,
     create_template,
     insert_disk,
@@ -40,6 +45,7 @@ from pve_prep.vm import (
     unfinished_swap,
     prepare_replace,
     refuse_replace_target,
+    set_guest_options,
     vmid_config_missing,
     parse_vmlist,
     storage_lacks_images,
@@ -324,6 +330,7 @@ def _tools() -> SimpleNamespace:
         publish=publish,
         insert_disk=insert_disk,
         create_template=create_template,
+        set_guest_options=set_guest_options,
         prepare_replace=prepare_replace,
         run=default_run,
         storage_rejects=_storage_rejects_images,
@@ -338,17 +345,20 @@ def _announce(text: str, role: str) -> None:
         print(text)
 
 
-def run_one(job: Job, release: str, vmid: int | None) -> None:
+def run_one(job: Job, release: str, vmid: int | None) -> str:
     spec = _spec_for(job.distro, release)
     label = _product(spec, job.distro, release)
     action = action_for(job, vmid)
-    print()
-    _announce(opening(action, label, job, vmid), "accent")
-    print()
+    if not job.quiet:
+        print()
+        _announce(opening(action, label, job, vmid), "accent")
+        print()
     tools = _tools()
     done = run_fetched(job, spec, vmid, label, tools)
-    print()
-    _announce(done, "body")
+    if not job.quiet:
+        print()
+        _announce(done, "body")
+    return done
 
 
 def _pairs(job: Job) -> list[tuple[str, int | None]]:
@@ -362,7 +372,7 @@ def _pairs(job: Job) -> list[tuple[str, int | None]]:
 def _settle_cache(job: Job, failed: bool, read_line) -> bool:
     """Ask about working files once the run is over.
 
-    Enter keeps them. y deletes them. Disk backups are elsewhere and stay.
+    Enter and y retain them. n deletes them. Disk backups are elsewhere and stay.
     A failed release still asks, and Enter keeps the download. Dry-run asks
     and does not delete. EOF keeps the files. Returns True when a delete was
     asked for and did not happen.
@@ -401,6 +411,179 @@ def _report_backups(job: Job, started: float) -> None:
         print(f"VM Disk image backups located at {job.backup_dir}")
 
 
+def _digest_for(distro: str, release: str) -> tuple[str, str]:
+    """Published checksum for one release, and the algorithm name.
+
+    A catalog row with no filename is resolved first. The checksum file is
+    read inside _expected_digest; only the digest is returned.
+    """
+    from pve_prep.catalog import finalize_index
+    from pve_prep.download import _expected_digest, _read_text
+
+    spec = _spec_for(distro, release)
+    if not spec.filename:
+        spec = finalize_index(spec, _read_text(spec.url))
+    _text, digest = _expected_digest(spec)
+    return digest, spec.checksum_alg
+
+
+def _pin_for(vmid: int) -> tuple[str, str]:
+    """Storage id and SHA-256 of the boot disk this run left on the guest.
+
+    An unattended refresh refuses the guest when either value no longer
+    matches, so a moved disk or a disk someone else replaced is not overwritten.
+    """
+    cfg = default_run(["qm", "config", str(vmid)])
+    if getattr(cfg, "returncode", 1) != 0:
+        raise RuntimeError(f"VM {vmid} config failed while recording enrollment")
+    storage, _volid, path = boot_disk_location(default_run, getattr(cfg, "stdout", "") or "")
+    try:
+        digest = file_digest(Path(path), "256")
+    except (OSError, DownloadError) as exc:
+        raise RuntimeError(f"VM {vmid} boot disk could not be fingerprinted: {exc}") from exc
+    return storage, digest
+
+
+def _created_templates(
+    job: Job, succeeded: list[tuple[str, int | None]]
+) -> list[tuple[str, int]]:
+    """Releases that finished as templates: created, replaced, or given a new disk."""
+    return [
+        (release, vmid)
+        for release, vmid in succeeded
+        if vmid is not None
+        and (converts_to_template(job, vmid) or action_for(job, vmid) == "insert")
+    ]
+
+
+LOCK_PATH = Path("/run/pve-template-prep.lock")
+
+
+class RunLocked(Exception):
+    """Another run holds the lock."""
+
+
+def acquire_run_lock(path: Path | None = None) -> int:
+    """Hold one exclusive lock for this process. Returns the descriptor to keep open.
+
+    Every run that changes the host takes it, so two runs never share the
+    cache or touch the same guest. The kernel drops it when the process
+    exits, so a crash cannot leave it stuck. O_NOFOLLOW refuses a symlink.
+    """
+    path = LOCK_PATH if path is None else path
+    fd = os.open(os.fspath(path), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        if exc.errno in {errno.EWOULDBLOCK, errno.EAGAIN}:
+            raise RunLocked(str(path)) from exc
+        raise
+    return fd
+
+
+def _prune_enrollments(*, dry_run: bool) -> None:
+    from pve_prep.offer import reconcile_cron_scripts
+    from pve_prep.unattended import prune_enrollments
+
+    for line in prune_enrollments(directory=ENROLL_DIR, dry_run=dry_run):
+        print(line)
+    reconcile_cron_scripts(
+        print,
+        program=str(Path(__file__).resolve()),
+        directory=ENROLL_DIR,
+        cron_directory=None,
+        dry_run=dry_run,
+    )
+
+
+def _claim_host() -> int:
+    """Root, then the run lock, then stale enrollments. 0 lets the interview start.
+
+    The lock is taken before anything is asked, so a second run stops while
+    the first one's downloads and templates are still in progress.
+    """
+    if os.geteuid() != 0:
+        raise SystemExit("run as root on the PVE host (sudo is fine)")
+    try:
+        # The descriptor stays open until exit. That open descriptor is the lock.
+        acquire_run_lock()
+    except RunLocked:
+        print(
+            "Another pve-template-prep run is in progress. "
+            "Wait for it to finish, then run this again. Nothing was changed."
+        )
+        return 1
+    except OSError as exc:
+        print(f"Could not take the run lock {LOCK_PATH}: {exc}. Nothing was changed.")
+        return 1
+    _prune_enrollments(dry_run=False)
+    return 0
+
+
+def _unattended_job() -> Job:
+    """Stand-in whose preflight requires every tool a refresh calls."""
+    return Job(
+        distro="debian",
+        releases=("12",),
+        mode="image",
+        disk_format="qcow2",
+        dest_dir="",
+        storage="local",
+        cache_dir=DEFAULT_CACHE,
+        collision="overwrite",
+        vmids=(100,),
+        prep=True,
+        bridge="vmbr0",
+        memory_mb=2048,
+        cores=2,
+        dry_run=False,
+        destroy_vmids=frozenset(),
+    )
+
+
+def _run_unattended(schedule: str, *, dry_run: bool) -> int:
+    """Refresh one schedule. No interview, no update prompt, no cache question."""
+    from pve_prep.unattended import run_unattended
+
+    if not dry_run:
+        preflight(_unattended_job())
+        try:
+            # The descriptor stays open until exit. That open descriptor is the lock.
+            acquire_run_lock()
+        except RunLocked:
+            print(
+                "Automated update skipped: another pve-template-prep run is in progress. "
+                "Nothing was changed. It runs again on the next schedule."
+            )
+            return 0
+        except OSError as exc:
+            print(f"Automated update skipped: could not take the run lock {LOCK_PATH}: {exc}. Nothing was changed.")
+            return 1
+    code = run_unattended(
+        schedule,
+        directory=ENROLL_DIR,
+        digest_for=_digest_for,
+        run=default_run,
+        perform=run_one,
+        storage_kind=storage_kind,
+        nodes_root=Path("/etc/pve/nodes"),
+        dry_run=dry_run,
+        program=str(Path(__file__).resolve()),
+        cron_directory=None,
+    )
+    if code != 0:
+        return 1
+    if dry_run:
+        return 0
+    try:
+        clear_cache(DEFAULT_CACHE)
+    except DownloadError as exc:
+        print(f"Working files in {DEFAULT_CACHE} were kept: {exc}")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pve-template-prep",
@@ -423,11 +606,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="show each virt-customize command instead of the progress bar",
     )
+    parser.add_argument(
+        "--unattended",
+        choices=("weekly", "monthly"),
+        help="refresh enrolled templates for this schedule without prompting",
+    )
     args = parser.parse_args(argv)
     print(f"{parser.prog} {__version__}")
+    if args.unattended:
+        return _run_unattended(args.unattended, dry_run=args.dry_run)
     failed_update = _consider_update(Path(__file__).resolve())
     if failed_update:
         return failed_update
+    if not args.dry_run:
+        claimed = _claim_host()
+        if claimed:
+            return claimed
     reader = arm(_read_line)
     try:
         with quiet_echo(reader):
@@ -461,18 +655,77 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL: {exc}")
         failed = True
         pairs = []
+    # Standalone image jobs never enroll. Create/update ask about already-enrolled
+    # VMIDs before any download, then apply that choice only to successful builds.
+    standalone = job.mode == "image" and not job.vmids
+    prior_plan = None
+    if not standalone and job.vmids and pairs:
+        try:
+            prior_plan = plan_prior_enrollments(
+                reader,
+                _write,
+                job.vmids,
+                directory=ENROLL_DIR,
+            )
+        except PromptAbort:
+            print("aborted")
+            return 1
+    succeeded: list[tuple[str, int | None]] = []
     for release, vmid in pairs:
         try:
             run_one(job, release, vmid)
         except VmDestroyedError as exc:
             print(f"FAIL {release}: {exc}")
-            print("stopped: a template was destroyed and the replacement did not finish")
+            print("stopped: a template did not finish its update")
             failed = True
             break
         except Exception as exc:
             print(f"FAIL {release}: {exc}")
             failed = True
+        else:
+            succeeded.append((release, vmid))
     print("done")
+    if not standalone:
+        created = _created_templates(job, succeeded)
+        prior_vmids = prior_plan.vmids if prior_plan is not None else frozenset()
+        prior_created = [(release, vmid) for release, vmid in created if vmid in prior_vmids]
+        new_created = [(release, vmid) for release, vmid in created if vmid not in prior_vmids]
+        program = str(Path(__file__).resolve())
+        try:
+            if prior_plan is not None and prior_created:
+                apply_prior_enrollment(
+                    _write,
+                    plan=prior_plan,
+                    created=prior_created,
+                    distro=job.distro,
+                    password_auth=job.password_auth,
+                    permit_root=job.permit_root,
+                    digest_for=_digest_for,
+                    pin_for=_pin_for,
+                    program=program,
+                    directory=ENROLL_DIR,
+                    cron_directory=None,
+                    dry_run=job.dry_run,
+                )
+            # New enrollments only. Skip the empty turn-off ask when this run
+            # already handled prior enrollments (keep/change/off).
+            if new_created or prior_plan is None:
+                offer_created(
+                    reader,
+                    _write,
+                    created=new_created,
+                    distro=job.distro,
+                    password_auth=job.password_auth,
+                    permit_root=job.permit_root,
+                    digest_for=_digest_for,
+                    pin_for=_pin_for,
+                    program=program,
+                    directory=ENROLL_DIR,
+                    cron_directory=None,
+                    dry_run=job.dry_run,
+                )
+        except PromptAbort:
+            pass
     if _settle_cache(job, failed, reader):
         failed = True
     _report_backups(job, started)

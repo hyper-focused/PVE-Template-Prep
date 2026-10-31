@@ -8,13 +8,14 @@ pve-template-prep - build Proxmox VE 9 cloud-image templates, template boot disk
 
 ```
 pve-template-prep [--dry-run] [-v | --verbose]
+pve-template-prep --unattended weekly|monthly
 pve-template-prep -V | --version
 pve-template-prep -h | --help
 ```
 
 ## DESCRIPTION
 
-`pve-template-prep` downloads official cloud images, verifies them, prepares them for Proxmox VE, and delivers them in one of three forms. One run handles one distribution and one to three of its releases. There are no distribution, release, or VMID options: the program is driven by an interactive session ([INTERACTIVE SESSION](#interactive-session)). Nothing on the host changes until the final confirmation.
+`pve-template-prep` downloads official cloud images, verifies them, prepares them for Proxmox VE, and delivers them in one of three forms. One run handles one distribution and one to three of its releases. There are no distribution, release, or VMID options: the program is driven by an interactive session ([INTERACTIVE SESSION](#interactive-session)). Nothing on the host changes until the final confirmation. A template this run created and converted can be enrolled after the builds finish and before the cache question, so a later run refreshes its boot disk ([ENROLLED TEMPLATES](#enrolled-templates)).
 
 For each selected release the program:
 
@@ -37,7 +38,8 @@ Every disk written is a `.qcow2` or `.raw` file on file storage ([STORAGE](#stor
 
 | Option | Description |
 | --- | --- |
-| `--dry-run` | Run the whole session and print the commands. Nothing is downloaded or changed, and root is not required. Block storage that can be read is still left out of menus. The build-time storage check is skipped, because `pvesm` may be unreadable without root. The cache question is asked and nothing is deleted. |
+| `--dry-run` | Run the whole session and print the commands. Nothing is downloaded or changed, and root is not required. Block storage that can be read is still left out of menus. The build-time storage check is skipped, because `pvesm` may be unreadable without root. The cache question is asked and nothing is deleted. An enrollment answer prints the cron script and the record and writes neither. |
+| `--unattended weekly` or `--unattended monthly` | Refresh templates enrolled on that schedule. Skips the self-update prompt and the interview. The command is non-interactive. See [ENROLLED TEMPLATES](#enrolled-templates). |
 | `-v`, `--verbose` | Show each `virt-customize` command and its log instead of the progress line. |
 | `-V`, `--version` | Print `pve-template-prep <x.y.z>` and exit 0. Does not check for updates. |
 | `-h`, `--help` | Print usage and exit 0. |
@@ -65,7 +67,7 @@ Python 3, `qm`, `pvesm`, and `qemu-img` are present on a stock PVE 9 node. `gues
 
 On a terminal, choices are menus. On a pipe they are numbered lines. Empty input takes the default. An invalid answer is asked again with a reason. Space marks a release and Enter accepts the list; in every other menu Space or Enter selects the highlighted row. A number highlights that row. Each completed menu is replaced by one line naming the choice.
 
-Yes/no fields show `(y/n) [Yes]:` or `(y/n) [No]:`. Enter accepts the bracketed value. `y`, `yes`, `n`, and `no` answer it. `YES`, `DELETE`, and VMIDs are typed in full. `X` exits at the final gate; end of input exits at any prompt with status 1.
+Yes/no fields show `(y/n) [Yes]:` or `(y/n) [No]:`. Enter accepts the bracketed value. `y`, `yes`, `n`, and `no` answer it. On a terminal, a typed `y` or `yes` is the success color, and so is a value typed into any other field. `n` stays plain. `YES`, `DELETE`, and VMIDs are typed in full. `X` exits at the final gate; end of input exits at any prompt with status 1.
 
 ### 1. What to build
 
@@ -111,7 +113,7 @@ A table of `Setting` and `Default` is shown, followed by `Accept these defaults?
 | Cores | 2 | create |
 | `qm template` | yes | create |
 
-Answering `n` asks each setting in turn. SSH is described in [SSH ACCESS](#ssh-access). On the create path the VM is also configured with machine type `q35`, CPU type `x86-64-v2-AES`, a virtio-scsi controller, a serial console, a cloud-init drive, and the guest agent flag; these can be changed afterwards with `qm set`. Declining `qm template` leaves a normal VM with the same disk, cloud-init drive, and boot order.
+Answering `n` asks each setting in turn. SSH is described in [SSH ACCESS](#ssh-access). On the create path the VM is also configured with machine type `q35`, CPU type `x86-64-v2-AES`, a virtio-scsi controller, a serial console, a cloud-init drive, and the guest agent flag; these can be changed afterwards with `qm set`. Declining `qm template` leaves a normal VM with the same disk, cloud-init drive, and boot order. That VM is not enrolled.
 
 ### 8. Backup
 
@@ -127,7 +129,7 @@ Section **Summary**: a table with one row per release.
 | Update | Release, VMID, Storage, Format, Existing disk |
 | Standalone | Release, Format, File |
 
-The Existing column reads `new`, `replace`, `back up, replace`, `delete VM`, or `back up, delete VM`. A cell that deletes without a backup is red. Below the table: `Guest prep: yes   Password SSH: yes   Root SSH: yes`, plus `qm template` and hardware settings on the create path.
+The Existing column reads `new`, `replace`, `back up, replace`, `replace disk`, or `back up, replace disk`. `replace disk` is an existing template on the create path: it keeps its VMID and gets the new disk. A cell that deletes the old disk without a backup is red. Below the table: `Guest prep: yes   Password SSH: yes   Root SSH: yes`, plus `qm template` and hardware settings on the create path.
 
 Section **Confirm Selections** states the consequence in one line and asks for one word:
 
@@ -135,14 +137,16 @@ Section **Confirm Selections** states the consequence in one line and asks for o
 | --- | --- |
 | Nothing is replaced | `YES` |
 | Existing disks are backed up, then replaced | `YES` |
-| Existing templates are deleted, no backup | `DELETE` |
+| Existing templates' disks are replaced, no backup | `DELETE` |
 | Existing boot disks are deleted, no backup | `DELETE` |
 
-`X` exits with no change. Under `--dry-run` the screen says nothing has been built.
+`X` exits with no change. On a terminal, `YES` is the success color and `DELETE` is red. The quotes stay with the question. Under `--dry-run` the screen says nothing has been built.
 
 ### After the builds
 
-`Delete working files in /var/tmp/pve-template-prep/cache? (y/n) [No]:`. See [CACHE AND BACKUPS](#cache-and-backups). When the run wrote a disk backup, the last line is `VM Disk image backups located at /var/backups/pve-template-prep`.
+When this run finished a template, whether it created one, replaced an existing template's disk on the create path, or updated a template's disk, the enrollment question comes after the builds finish and before the cache question. See [ENROLLED TEMPLATES](#enrolled-templates).
+
+`Retain the working files in /var/tmp/pve-template-prep/cache? (y/n) [Yes]:`. Enter and `y` keep them. `n` deletes them. See [CACHE AND BACKUPS](#cache-and-backups). When the run wrote a disk backup, it prints `VM Disk image backups located at /var/backups/pve-template-prep`.
 
 ## STORAGE
 
@@ -167,11 +171,57 @@ Standalone images are the route to block storage. Proxmox converts the file when
 
 **Linked clones.** A linked clone is a disk that still depends on the template's base volume; a full clone does not. The check reads every guest configuration under `/etc/pve/nodes` and the storage volume list, so clones on other nodes count. If either cannot be read, the guest is left alone. The check guards both a template replacement and a boot disk replacement.
 
-**Create path.** The old VM is destroyed and a new one created, so firewall rules and options are not preserved. The VM must be stopped; a running guest is left alone. The check and any requested backup happen before the new image is downloaded. The backup is `qemu-img convert` into the backup directory; it counts only if the command exits 0 and the file is not empty, and `VM disk copy completed, building new template images now...` is printed. A failed copy leaves the template untouched and the build does not start. If the old VM is destroyed and the replacement then fails, the run stops, the download is kept regardless of the cache answer, and the backup is kept.
+**Create path.** An existing template is never destroyed. Its VMID, firewall rules, and options stay; it gets the new disk by the same swap as the update path, then `qm set` applies the name, memory, cores, and bridge from this run. If that last `qm set` fails, the template is already on the new disk and the result says those settings were not updated. The VM must be stopped; a running guest is left alone. The check and any requested backup happen before the new image is downloaded. The backup is `qemu-img convert` into the backup directory; it counts only if the command exits 0 and the file is not empty, and `VM disk copy completed, building new template images now...` is printed. A failed copy leaves the template untouched and the build does not start. A new VMID is created with `qm create`; if that VMID exists by the time the build finishes, it is left alone and the release fails.
 
-**Update path.** The boot disk is replaced on its current storage. Backup copies the old disk first; the old disk is not left attached. The template configuration and the template status are unchanged. The new disk is the unused volume that `qm importdisk` added; an unused disk the template already had is left alone. During the swap the template flag is cleared and the guest carries the tag `pve-prep-swap-<vmid>`; its own tags are restored when it is a template again. If the import or the attach fails, the imported volume is deleted when it is still unused and the flag is restored. If the flag cannot be restored, the tag stays to say why. The guest is then a normal VM, and both paths refuse it with `its disk update did not finish`: run `qm template <vmid>`, then run the update again. The tag alone never makes a guest count as a template, so a normal VM someone tagged is refused too. The next successful update removes a leftover tag. Once the new disk is attached, the template is updated even when deleting the old unused volume fails. That volume stays unused, and the message says the template was updated and old disk cleanup failed. Delete it in the GUI, or with `qm set <vmid> --delete <unusedN>` (the message names the key).
+**The image is checked before any guest changes.** `qemu-img convert` must leave a regular, non-empty file; an exit code of 0 alone is not enough. Before `qm create` or a disk swap, the working image is checked again: a missing, empty, symlinked, or non-regular file stops that release while every existing template is still whole.
+
+**One run at a time.** A live run takes an exclusive lock on `/run/pve-template-prep.lock` before the interview, and an unattended run takes it before it reads any record. A second run stops at once with `Another pve-template-prep run is in progress` and changes nothing; an unattended run that finds the lock prints `Automated update skipped` and exits 0. The runs share the download cache, and the end-of-run cleanup of one run used to delete the working image another run was about to import. The kernel drops the lock when the process exits, so a crash does not leave it held. A dry run does not take it.
+
+**Update path.** The boot disk is replaced on its current storage. Backup copies the old disk first; the old disk is not left attached. The template configuration and the template status are unchanged. The new disk is the unused volume that `qm importdisk` added; an unused disk the template already had is left alone. During the swap the template flag is cleared and the guest carries the tag `pve-prep-swap-<vmid>`; its own tags are restored when it is a template again. If the import or the attach fails, the imported volume is deleted when it is still unused and the flag is restored. If the flag cannot be restored, the tag stays to say why. The guest is then a normal VM, and both paths refuse it with `its disk update did not finish`: run `qm template <vmid>`, then run the update again. The tag alone never makes a guest count as a template, so a normal VM someone tagged is refused too. The next successful update removes a leftover tag. Once the new disk is attached, the template is updated even when deleting the old unused volume fails. That volume stays unused, and the message says the template was updated and old disk cleanup failed. Delete it in the GUI, or with `qm set <vmid> --delete <unusedN>` (the message names the key). The enrollment question follows, as for a new template.
 
 A release that fails does not stop the others, except as stated above.
+
+## ENROLLED TEMPLATES
+
+**Already enrolled VMIDs (before download).** On create or update, after VMIDs are known and before any download or import, each selected VMID that already has `/var/lib/pve-template-prep/<vmid>.json` is listed. Section **Automated updates**, question `Already enrolled. Keep, change schedule, or turn off?` The rows are `Keep current schedule` (default), `Change schedule` (then weekly or monthly), and `Turn off automated updates`. That choice is stored for the run and applied only to builds that succeed: keep or change rewrites the record with this run's release, SSH answers, upstream digest, storage, and disk fingerprint; turn off removes the JSON. When no enrollment remains for a schedule, the matching `/etc/cron.{weekly,monthly}/pve-template-prep` wrapper is removed if this tool wrote it. Standalone image jobs never ask.
+
+**New enrollments (after builds).** Templates this run finished that had no prior record get the normal schedule question after the builds and before the cache question. Question `Choose a schedule. Highlight a selection and press enter`. The rows are `No automated updates` (default), `Weekly automated updates`, and `Monthly automated updates`. On a pipe the prompt is `Select [1]:` and `1` is no. That one answer applies to every such new template. No record is written until the operator picks weekly or monthly. One schedule applies to every enrolled template on this host: picking weekly or monthly moves earlier enrollments onto that schedule and removes the other cron script. Automated updates work only with file-based storage; they will not run on block storage. Leave the template's disk image and storage alone after enrollment, or the next update refuses. Standalone images are not asked and are not enrolled. A create left as a normal VM is not enrolled. End of input at this question installs nothing. Templates already built stay.
+
+The proof of creation is a root-only JSON file, one per VMID, at `/var/lib/pve-template-prep/<vmid>.json` (mode `0600`). It is not a Proxmox tag. A template with no file is never selected. The directory is held to the same checks as the backup directory.
+
+| Field | Contents |
+| --- | --- |
+| `vmid` | The guest. |
+| `distro` | Catalog distribution used for fetch. Not checked against guest name or tags. |
+| `release` | Catalog release used for fetch. Not checked against guest name or tags. |
+| `digest` | Published checksum of the upstream image applied to this template. |
+| `checksum_alg` | `256` or `512` for `digest`. |
+| `disk_digest` | SHA-256 of the boot-disk file this tool left on storage. |
+| `storage` | File-storage id that held that disk when the guest was enrolled. |
+| `password_auth` | The SSH password-authentication answer from the creating run. |
+| `permit_root` | The root SSH answer from the creating run. |
+| `schedule` | `weekly` or `monthly`. |
+
+Newer means the catalog's current published checksum for that distro and release differs from the stored digest. The upstream digest and the disk fingerprint are rewritten only after the disk swap succeeds.
+
+Before any download, an unattended run checks that the live boot disk is still on the enrolled `storage` and that its file still matches `disk_digest`. If either has changed — the disk moved, converted to block storage, or replaced by another image — the update refuses and leaves the guest alone. Automated updates work only with file-based storage.
+
+**When a record is removed.** Records are checked against `/etc/pve/.vmlist` and the guest's config under `/etc/pve/nodes/<node>/qemu-server/` at the start of every live interactive run and every unattended run. A record is removed when its VMID is no longer on the cluster, is now an LXC container, is now a normal VM, or is now a linked clone. Each removal prints one line naming the reason. A guest whose disk swap did not finish keeps its record. When the cluster list or the guest config cannot be read, nothing is removed, so a node outage never turns off updates. An unattended run also removes the record when the downloaded image does not match its published checksum; the existing disk is not changed, and the mail says to run the program to replace the template and enroll it again. A failed checksum lookup, an HTTP error such as 404 from a mirror that has not synced yet, or any other failure keeps the record and tries again on the next schedule.
+
+The first enrollment for a schedule installs `/etc/cron.weekly/pve-template-prep` or `/etc/cron.monthly/pve-template-prep`, mode `0755`. The whole body is:
+
+```sh
+#!/bin/sh
+exec /usr/local/sbin/pve-template-prep --unattended weekly
+```
+
+The monthly file uses `monthly` in place of `weekly`. The script does not download images and does not call `qm`. If that path already exists with different text, it is left unchanged. Only one of these wrappers should be active: the host keeps a single automated-update schedule. When the last record for a schedule is removed, that wrapper is deleted if it is still ours. A dry run prints the script and the record and writes neither.
+
+`--unattended weekly` or `--unattended monthly` skips the self-update prompt and the interview. The command is non-interactive. It takes the run lock, removes stale records as above, then for each matching record, a matching digest prints that the VMID is current and that the disk was left unchanged. A different digest backs up the current boot disk to `/var/backups/pve-template-prep`, downloads and preps a new image with the stored SSH answers, attaches it to the boot bus, then deletes the old volume and runs `qm template`. It does not detach first. Storage and format come from the live boot disk, so a template moved to another file storage is still updated. Block storage is refused. Memory, cores, bridge, name, and firewall are not rewritten.
+
+Cron mail is one sentence per guest. A finished swap says `SUCCESSFUL` and names `/var/backups/pve-template-prep/`. A failure says `FAILED` and names what was left in place: the existing disk was not changed, the guest is running or missing or not a template, the boot disk is on block storage, guest preparation failed, or the new disk is attached and `qm template <vmid>` still has to be run. A guest whose last swap did not finish says to run `qm template <vmid>` and that this run left the disk as it found it. When the new disk is in place but the old volume could not be deleted, the sentence stays `SUCCESSFUL` and says the previous disk was left unused. The build narration and the `virt-customize` log are not mailed. A failure, and a swap that left the old disk unused, replaces `/var/log/pve-template-prep/<vmid>.log` and the sentence names that file. A dry run says the template would be updated and that nothing was changed.
+
+The VMID must already exist, must be stopped, and must be a template (`template: 1`). A container, a linked clone, and a template that has linked clones on any cluster node are refused. One VMID failing does not stop the others. A disk customized after creation is replaced. The tool does not detect those edits. The backup is what remains of the previous disk.
 
 ## GUEST PREP
 
@@ -225,9 +275,9 @@ Images are the 64-bit (`x86_64` / `amd64`) cloud images published by each distri
 | Ubuntu | 22.04 (jammy), 24.04 (noble), 26.04 (resolute) | `cloud-images.ubuntu.com/releases/<codename>/release/ubuntu-<rel>-server-cloudimg-amd64.img` | `SHA256SUMS` |
 | AlmaLinux | 8, 9, 10 | `repo.almalinux.org/almalinux/<rel>/cloud/x86_64/images/AlmaLinux-<rel>-GenericCloud-latest.x86_64.qcow2` | `CHECKSUM` |
 | CloudLinux | 8, 9, 10 | Minimal OpenStack qcow2, chosen from `images.cloudlinux.com/catalog.json` | SHA256 from the same catalog row |
-| Fedora | 43, 44 | `Fedora-Cloud-Base-Generic-<rel>-*.x86_64.qcow2`, the newest compose in the `download.fedoraproject.org` release index (compared as numbers: `1.10` is newer than `1.9`) | The `CHECKSUM` file for that compose |
+| Fedora | 43, 44, 45 (from 2026-11-03) | `Fedora-Cloud-Base-Generic-<rel>-*.x86_64.qcow2`, the newest compose in the `download.fedoraproject.org` release index (compared as numbers: `1.10` is newer than `1.9`) | The `CHECKSUM` file for that compose |
 
-Notes: CloudLinux logs in as `cloudlinux` and its packages do not update until the guest is registered with a license. Not offered: CentOS, Rocky, openSUSE, Arch, RHEL, Fedora 42 and earlier, CloudLinux 6 and 7, and UEFI images.
+Notes: a release with an `available` date in its catalog file is not listed, and is refused by name, until that day on the host's clock. Fedora 45 is listed from 2026-11-03, the Fedora Project's scheduled release date. If the release slips, the download fails with an HTTP error before any template is touched. CloudLinux logs in as `cloudlinux` and its packages do not update until the guest is registered with a license. Not offered: CentOS, Rocky, openSUSE, Arch, RHEL, Fedora 42 and earlier, CloudLinux 6 and 7, and UEFI images.
 
 Each distribution is one file, `pve_prep/distros/<distro>.json`: menu name, package family, checksum algorithm, source pattern, and a row per release (version, codename, aliases, EOL flag). Adding or dropping a release is an edit to that file.
 
@@ -241,7 +291,7 @@ Commits that keep the same version string are not offered. They are picked up by
 
 | Directory | Contents | Cleanup |
 | --- | --- | --- |
-| `/var/tmp/pve-template-prep/cache/` | Downloads and `.work` files. Mode `0700`, root. | Removed by answering yes to the cache question. A cache hit prints `reuse` and the path. |
+| `/var/tmp/pve-template-prep/cache/` | Downloads and `.work` files. Mode `0700`, root. | Removed by answering no to the cache question. A cache hit prints `reuse` and the path. |
 | `/var/backups/pve-template-prep/` | Disk backups named `vm-<vmid>-<bus>.bak.<UTC>.qcow2`. Mode `0700`, root. Created on first use. | Never opened by cleanup. A backup left in the cache by an older release is skipped as well. |
 
 Every directory on the way to either directory must belong to root and must not be writable by other users unless it is sticky, as `/var/tmp` is. Symlinks are followed and the target is checked the same way. Otherwise the run stops with `unsafe cache dir` or `unsafe backup dir` and the owner's uid. If another user created `/var/tmp/pve-template-prep`, remove it and run again.
@@ -250,7 +300,7 @@ A failed release asks the same cache question and reports that the download is s
 
 ## PROGRESS OUTPUT
 
-On a terminal each release prints an accent-colored line naming what is being built, then `Converting <name> image...` with `qemu-img -p` progress, then `Preparing <name> image for Proxmox PVE...` with one estimated progress line (`(percent/100%)  <phase>`). The bracketed numbers in `virt-customize` output are elapsed seconds, so its log is hidden unless `-v` is given. When output is not a terminal, plain lines are printed and the `virt-customize` log is shown. On failure the captured log is printed followed by the error. Terminal echo is disabled during the session so type-ahead is drawn once.
+On a terminal each release prints an accent-colored line naming what is being built, then `Converting <name> image...` with `qemu-img -p` progress, then `Preparing <name> image for Proxmox PVE...` with one estimated progress line (`(percent/100%)  <phase>`). The bracketed numbers in `virt-customize` output are elapsed seconds, so its log is hidden unless `-v` is given. When output is not a terminal, plain lines are printed and the `virt-customize` log is shown. On failure the captured log is printed followed by the error. An unattended run is the exception: it prints neither the progress line nor the `virt-customize` log, and a failure writes that log under `/var/log/pve-template-prep/` instead. Terminal echo is disabled during the session so type-ahead is drawn once.
 
 Colors come from `pve_prep/palette.json`. The theme is `PVE_PREP_THEME`, otherwise the terminal's reported background (OSC 11, with a DA1 reply as end marker and a one-second limit), otherwise `COLORFGBG`, otherwise dark. A background with Rec. 709 luma of 0.5 or more is light.
 
@@ -287,6 +337,10 @@ Colors come from `pve_prep/palette.json`. The theme is `PVE_PREP_THEME`, otherwi
 | `vendor/` | prompt_toolkit, questionary, and wcwidth, versions pinned in `vendor/VERSIONS`. |
 | `/var/tmp/pve-template-prep/cache/` | Download cache. |
 | `/var/backups/pve-template-prep/` | Disk backups. |
+| `/var/lib/pve-template-prep/<vmid>.json` | Enrollment record for one template. Root-only, mode `0600`. No file means the template is never selected. |
+| `/var/log/pve-template-prep/<vmid>.log` | Detail for an unattended refresh that failed, or that left the previous disk unused. Root-only, mode `0600`. Replaced on the next such run. Cron mail names this path. |
+| `/etc/cron.weekly/pve-template-prep` | Weekly wrapper, mode `0755`. Exec `pve-template-prep --unattended weekly`. Different text is left unchanged. |
+| `/etc/cron.monthly/pve-template-prep` | Monthly wrapper, mode `0755`. Exec `pve-template-prep --unattended monthly`. Different text is left unchanged. |
 | `<storage path>/import/` | Destination of standalone images. |
 | `/etc/ssh/sshd_config.d/00-enableroot.conf` | Written inside the guest image when an SSH question is answered yes. |
 

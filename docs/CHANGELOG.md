@@ -4,6 +4,35 @@ All notable changes to pve-template-prep. Newest first. The format follows [Keep
 
 An installed copy offers a new release when the version string on `main` changes. Changes merged without a version bump are listed under **Unreleased** and arrive only through a freshly downloaded `install.sh`, which upgrades in place.
 
+## 1.4.0 - 2026-10-29
+
+### Changed
+- The cache question asks `Retain the working files in /var/tmp/pve-template-prep/cache? (y/n) [Yes]:`. Enter and `y` keep the files. `n` deletes them. A failed release still says the download is there, and Enter still keeps it.
+- On a yes/no field, a typed `y` or `yes` is the success color. `n` stays the plain text color. A value typed into any other field, such as a VMID, uses that same color. A pipe stays plain.
+- On the confirm gate, `YES` is the success color. The quotes around it stay with the question. A pipe stays plain.
+- An unattended refresh mails one sentence per guest. A matching image says the VMID is current. A finished swap says `SUCCESSFUL` and names `/var/backups/pve-template-prep/`. A failure says `FAILED` and what was left in place: the existing disk was not changed, the guest is running or missing or not a template, the boot disk is on block storage, guest preparation failed, or the new disk is attached and `qm template` still has to be run. A swap that left the previous disk unused stays `SUCCESSFUL` and says so. The build narration and the `virt-customize` log are not mailed. A failure, and that leftover-disk case, replaces `/var/log/pve-template-prep/<vmid>.log` (mode `0600`) and the sentence names the file.
+- `install.sh` breaks the closing notes into the download line, the install line, and a short footer. The success line is a medium light green, the two labels are cyan, and the commands are bold. A pipe, `NO_COLOR`, or `TERM=dumb` stays plain.
+- `install.sh` prints the version it is installing. The string is `__version__` in that archive's `pve_prep/__init__.py`, the same one `-V` reports. An archive without an `x.y.z` version stops before it writes the install directory.
+- `install.sh` ships `cronscript.py`, `enroll.py`, `offer.py`, `runlog.py`, and `unattended.py`. It copies only the modules it names, so a branch install that omitted them would place the new entry script and then fail on import. The install check imports those modules.
+
+### Added
+- **A template this tool just created can be enrolled for a weekly or monthly disk refresh.** The question comes after the builds finish and before the cache question, on a run that finished a template. The default is no (Enter installs nothing), and that answer applies to every template finished in the run. Standalone images and a create left as a normal VM are not asked and are not enrolled. The record is a root-only JSON file per VMID under `/var/lib/pve-template-prep/`, not a Proxmox tag. A template with no file is never selected. The cron file is `/etc/cron.weekly/pve-template-prep` or `/etc/cron.monthly/pve-template-prep`, mode `0755`, and its body only execs `pve-template-prep --unattended` for that schedule. It does not download or call `qm`. Different text already at that path is left unchanged; later enrollments only add record files. `--unattended` skips the self-update prompt and the interview. A matching published checksum prints that the VMID is current. A different one backs up the live boot disk, attaches a newly prepped image, then deletes the old volume and runs `qm template`. The stored digest is rewritten only after that swap succeeds.
+
+- **Fedora 45** is in the catalog and appears in the menu from 2026-11-03, the Fedora Project's scheduled release date. A catalog row can carry an `available` date (`YYYY-MM-DD`); before that day the release is not listed and is refused by name.
+- **Stale automated-update records are removed.** At the start of every live run, a record whose VMID is gone from the cluster, or is now a normal VM, an LXC container, or a linked clone, is removed with one line saying why. The check reads `/etc/pve/.vmlist` and the guest's config on its node. If either cannot be read, nothing is removed. A guest whose disk swap did not finish keeps its record.
+- **One run at a time.** A live run, interactive or unattended, takes an exclusive lock on `/run/pve-template-prep.lock` before it asks anything or reads any record. A second run stops with `Another pve-template-prep run is in progress` and changes nothing. A locked-out unattended run prints `Automated update skipped` and exits 0. A dry run does not take the lock.
+
+### Fixed
+- **Replacing a template from the create path no longer destroys it.** The old VM was destroyed before the new image was imported, so any later failure left no template. A replace is now the update path's disk swap on the existing template: the new disk is attached first, the old one is deleted last, and `qm set` then applies the name, memory, cores, and bridge from this run. The VMID, firewall rules, and other options stay. If that last `qm set` fails, the template is already on the new disk and the result says those settings were not updated.
+- **A missing working image stops the release before any guest changes.** Two runs at once shared the cache, and one run's cleanup deleted the image the other was about to import, which `qm importdisk` reported as `non-existent or non-regular file`. Besides the run lock, `qemu-img convert` must now leave a regular, non-empty file, and the image is checked again right before `qm create` or a disk swap.
+- **No automated-update record is written until the operator picks weekly or monthly.** The answer now covers every template the run finished, including an existing template whose disk was replaced, and it replaces any earlier record for that VMID. No, `1`, or Enter removes an earlier record for those VMIDs. End of input changes no record. A dry run removes nothing.
+- **Enrollment pins storage and a disk fingerprint.** Each record stores the file-storage id and a SHA-256 of the boot-disk file left at enrollment, alongside the existing distro, release, and upstream digest. An unattended run refuses the guest when the live storage or disk fingerprint no longer matches, so a moved disk or a disk someone else replaced is not overwritten. Older records missing those fields are removed with a note to enroll again. Distro and release drive the catalog fetch and are not checked against the guest's name or tags.
+- **Returning create/update asks about already-enrolled VMIDs before download.** Keep, change schedule, or turn off is recorded for the run and applied only to successful builds. Templates that had no prior record still get the post-build weekly/monthly/no prompt. Standalone image jobs ask neither. One schedule applies to the host; the other cron wrapper is removed. When the last enrollment for a schedule is gone, our cron script for that schedule is removed too.
+- **An unattended update stops retrying a broken source.** A downloaded image that does not match its published checksum removes that record, leaves the existing disk unchanged, and the mail says how to enroll again. A failed lookup, an HTTP error, or a 404 from a mirror that has not synced keeps the record for the next run.
+
+### Documentation
+- `docs/DESIGN.md` and this changelog carry the same Apache License 2.0 notice as the README and the man page.
+
 ## 1.3.6 - 2026-10-27
 
 ### Changed
@@ -139,3 +168,7 @@ First numbered release.
 ## Before 1.0.0
 
 Initial development as `pve-cloud-prep`, 2026-10-08: Proxmox VE 9 cloud-image prep with an installer that fetches the runtime into `/opt`, prompts that explain themselves, menus on a terminal, a 16-color palette, new VMs set to `q35` and `x86-64-v2-AES`, and confirmation before converting a VM or deleting the prep cache. The entry script was renamed `pve-template-prep.py`.
+
+## License
+
+Apache License 2.0. Copyright 2026 Robert Tyree and hyper-focused. `LICENSE` holds the license text and `NOTICE` the attribution; redistribution carries `NOTICE` (section 4(d)). Running the program owes nothing. `vendor/` keeps its own licenses in `vendor/LICENSES`: prompt_toolkit is BSD-3-Clause; questionary and wcwidth are MIT.

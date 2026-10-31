@@ -10,6 +10,7 @@
   },
   "releases": [
     {"version": "43", "eol": false},
-    {"version": "44", "eol": false}
+    {"version": "44", "eol": false},
+    {"version": "45", "eol": false, "available": "2026-11-03"}
   ]
 }

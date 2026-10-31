@@ -266,7 +266,13 @@ def _expected_digest(spec: ImageSpec) -> tuple[str | None, str]:
     return text, digest
 
 
-def fetch_verified(spec: ImageSpec, cache_dir: Path, *, dry_run: bool = False) -> Path:
+def fetch_verified(
+    spec: ImageSpec,
+    cache_dir: Path,
+    *,
+    dry_run: bool = False,
+    quiet: bool = False,
+) -> Path:
     """Download spec into cache_dir and verify it. Reuse a matching cache hit."""
     cache_dir = Path(cache_dir)
     if dry_run:
@@ -284,7 +290,8 @@ def fetch_verified(spec: ImageSpec, cache_dir: Path, *, dry_run: bool = False) -
     _prepare_cache(cache_dir)
     if not spec.filename:
         spec = finalize_index(spec, _read_text(spec.url))
-        print(f"resolved {spec.distro} {spec.release} -> {spec.url}")
+        if not quiet:
+            print(f"resolved {spec.distro} {spec.release} -> {spec.url}")
     filename = spec.filename
     source = spec.url
     checksum_text, published = _expected_digest(spec)
@@ -349,10 +356,17 @@ def convert(
         print(" ".join(argv))
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # qm importdisk rejects a symlink. A leftover link must not stay as the work file.
+    if dest.is_symlink():
+        dest.unlink()
+    elif dest.exists() and not dest.is_file():
+        raise DownloadError(f"{dest} is not a regular file")
     proc = subprocess.run(argv, check=False) if run is None else run(argv)
     code = getattr(proc, "returncode", 1)
     if code != 0:
         raise DownloadError(f"qemu-img convert failed ({code})")
+    if dest.is_symlink() or not dest.is_file() or dest.stat().st_size <= 0:
+        raise DownloadError(f"qemu-img convert exited 0 but {dest} is missing or empty")
 
 
 def _backup_path(dest: Path) -> Path:

@@ -68,12 +68,22 @@ def _finish_insert(label: str, vmid: int, policy: str, result) -> str:
 
 def _finish_template(label: str, job, vmid: int) -> str:
     kind = "VM template" if converts_to_template(job, vmid) else "VM"
-    sentence = f"{label} {kind} created"
-    if vmid in job.destroy_vmids:
-        sentence += ". Previous VM deleted."
-        if vmid in job.backup_vmids:
-            sentence += f" Old disk saved in {job.backup_dir}."
-    return sentence
+    return f"{label} {kind} created"
+
+
+def _finish_replace(label: str, vmid: int, result, settings_error: str) -> str:
+    sentence = f"{label} VM template {vmid} replaced with the new disk"
+    saved = str(getattr(result, "backup_dir", "") or "")
+    cleanup = str(getattr(result, "cleanup_error", "") or "")
+    if saved:
+        sentence += f". Old disk saved in {saved}"
+    if cleanup:
+        sentence += f". Old disk cleanup failed: {cleanup}"
+    elif not saved:
+        sentence += ". Previous disk deleted"
+    if settings_error:
+        sentence += f". Name, memory, cores, and bridge were not updated: {settings_error}"
+    return sentence + "."
 
 
 def _stage_replace(job, vmid: int, tools, *, backup: bool) -> None:
@@ -95,7 +105,7 @@ def _stage_replace(job, vmid: int, tools, *, backup: bool) -> None:
         backup_dir=job.backup_dir,
         run=tools.run,
     )
-    if backup:
+    if backup and not job.quiet:
         if copied:
             print("VM disk copy completed, building new template images now...")
         else:
@@ -103,7 +113,7 @@ def _stage_replace(job, vmid: int, tools, *, backup: bool) -> None:
 
 
 def _prepare(job, spec, tools, *, cache_format: str, label: str) -> Path:
-    src = tools.fetch_verified(spec, Path(job.cache_dir), dry_run=job.dry_run)
+    src = tools.fetch_verified(spec, Path(job.cache_dir), dry_run=job.dry_run, quiet=job.quiet)
     work = Path(job.cache_dir) / (published_name(job.distro, spec.release, cache_format) + ".work")
     # qemu-img -p draws the bar. The label is the only name that bar gets.
     if not job.dry_run and stdout_is_tty():
@@ -120,6 +130,7 @@ def _prepare(job, spec, tools, *, cache_format: str, label: str) -> Path:
             dry_run=job.dry_run,
             verbose=job.verbose,
             label=label,
+            quiet=job.quiet,
         )
     return work
 
@@ -178,6 +189,39 @@ def insert_image(job, spec, vmid: int, label: str, tools) -> str:
     return _finish_insert(label, vmid, policy, inserted)
 
 
+def _replace_template(job, spec, vmid: int, label: str, tools, work: Path, *, backup: bool) -> str:
+    """Swap the existing template's boot disk, then apply the asked settings.
+
+    The template is never destroyed. Its old disk is removed only after the
+    new one is attached, so any earlier failure leaves it as it was.
+    """
+    inserted = tools.insert_disk(
+        vmid=vmid,
+        storage=job.storage,
+        image_path=str(work),
+        disk_policy="backup" if backup else "overwrite",
+        dry_run=job.dry_run,
+        backup_dir=job.backup_dir,
+        volume_format=job.disk_format,
+        copies_done=backup and not job.dry_run,
+        run=tools.run,
+    )
+    settings_error = ""
+    try:
+        tools.set_guest_options(
+            vmid=vmid,
+            name=vm_name(job.distro, spec.release),
+            memory_mb=job.memory_mb,
+            cores=job.cores,
+            bridge=job.bridge,
+            dry_run=job.dry_run,
+            run=tools.run,
+        )
+    except Exception as exc:
+        settings_error = str(exc)
+    return _finish_replace(label, vmid, inserted, settings_error)
+
+
 def create_guest(job, spec, vmid: int, label: str, tools) -> str:
     # The cache copy stays qcow2. importdisk writes the asked format on file storage.
     replacing = vmid in job.destroy_vmids
@@ -185,6 +229,8 @@ def create_guest(job, spec, vmid: int, label: str, tools) -> str:
     if replacing:
         _stage_replace(job, vmid, tools, backup=backup)
     work = _prepare(job, spec, tools, cache_format="qcow2", label=label)
+    if replacing:
+        return _replace_template(job, spec, vmid, label, tools, work, backup=backup)
     tools.create_template(
         vmid=vmid,
         name=vm_name(job.distro, spec.release),
@@ -194,9 +240,6 @@ def create_guest(job, spec, vmid: int, label: str, tools) -> str:
         storage=job.storage,
         image_path=str(work),
         dry_run=job.dry_run,
-        destroy_ok=vmid in job.destroy_vmids,
-        backup_disks=False,
-        backup_dir=job.backup_dir,
         make_template=converts_to_template(job, vmid),
         volume_format=job.disk_format,
         run=tools.run,

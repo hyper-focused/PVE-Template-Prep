@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import unittest
 from io import StringIO
 from contextlib import redirect_stdout
@@ -25,6 +27,10 @@ from pve_prep.vm import (
     unfinished_swap,
     parse_linked_clone_owners,
     parse_os_disk,
+    prepare_replace,
+    require_image,
+    guest_options_argv,
+    set_guest_options,
     parse_qm_status,
     vmid_config_missing,
     parse_storage_content,
@@ -35,13 +41,20 @@ from pve_prep.vm import (
     is_file_storage,
     os_disk_format,
     os_disk_storage,
+    boot_disk_location,
     select_boot_disk,
     template_commands,
 )
 
 
 STORAGE = "NFS-SATA-SSD1"
-IMAGE = "/var/lib/vz/template/cache/alma-910.qcow2"
+_IMAGE_DIR = tempfile.TemporaryDirectory(prefix="pve-prep-vm-test-")
+IMAGE = os.path.join(_IMAGE_DIR.name, "alma-910.qcow2")
+Path(IMAGE).write_bytes(b"QFI\xfb")
+
+
+def tearDownModule() -> None:
+    _IMAGE_DIR.cleanup()
 
 
 class _Proc:
@@ -84,7 +97,6 @@ def _create(**overrides: object) -> dict:
         "storage": STORAGE,
         "image_path": IMAGE,
         "dry_run": False,
-        "destroy_ok": False,
         "run": overrides.get("run"),
     }
     params.update(overrides)
@@ -303,6 +315,19 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
         self.assertEqual(os_disk_storage(cfg), "other")
         self.assertEqual(os_disk_storage("ide2: local:cloudinit,media=cdrom\n"), "")
 
+
+    def test_boot_disk_location_returns_storage_volid_and_path(self) -> None:
+        run = FakeRun([(0, "/mnt/pve/NFS/vm-910-disk-0.raw\n")])
+        storage, volid, path = boot_disk_location(
+            run, "template: 1\nscsi0: NFS-SATA-SSD1:vm-910-disk-0.raw\n"
+        )
+        self.assertEqual(storage, "NFS-SATA-SSD1")
+        self.assertEqual(volid, "NFS-SATA-SSD1:vm-910-disk-0.raw")
+        self.assertEqual(path, "/mnt/pve/NFS/vm-910-disk-0.raw")
+        self.assertEqual(run.calls, [["pvesm", "path", volid]])
+        with self.assertRaises(VmError):
+            boot_disk_location(FakeRun([]), "name: empty\n")
+
     def test_os_disk_format_follows_the_boot_disk(self) -> None:
         qcow = "boot: order=scsi0\nscsi0: nfs:910/vm-910-disk-0.qcow2,size=3G\n"
         raw = "boot: order=scsi0\nscsi0: nfs:910/vm-910-disk-0.raw,size=3G\n"
@@ -374,9 +399,8 @@ class CreateTemplateTests(unittest.TestCase):
 
         buf = StringIO()
         with redirect_stdout(buf):
-            volid = create_template(**_create(dry_run=True, destroy_ok=True, run=boom))
+            volid = create_template(**_create(dry_run=True, image_path="/missing.qcow2", run=boom))
         self.assertEqual(volid, f"{STORAGE}:vm-910-disk-0")
-        printed = buf.getvalue().splitlines()
         expected = template_commands(
             vmid=910,
             name="tpl-910",
@@ -384,67 +408,67 @@ class CreateTemplateTests(unittest.TestCase):
             cores=2,
             bridge="vmbr0",
             storage=STORAGE,
-            image_path=IMAGE,
+            image_path="/missing.qcow2",
             imported_volid=volid,
         )
-        self.assertEqual(
-            printed[0],
-            "# qm destroy 910  # only if this VMID exists and is stopped",
-        )
-        self.assertEqual(
-            printed[1],
-            "# a template with linked clones on any cluster node is left unchanged",
-        )
-        self.assertEqual(printed[2:], [" ".join(cmd) for cmd in expected])
+        self.assertEqual(buf.getvalue().splitlines(), [" ".join(cmd) for cmd in expected])
+        self.assertNotIn("destroy", buf.getvalue())
 
-    def test_refuses_running_even_if_destroy_ok(self) -> None:
-        run = FakeRun([(0, "status: running\n")])
-        with self.assertRaises(VmError) as caught:
-            create_template(**_create(destroy_ok=True, run=run))
-        self.assertIn("running", str(caught.exception))
-        self.assertEqual(run.calls, [["qm", "status", "910"]])
+    def test_existing_vmid_is_refused_and_left_alone(self) -> None:
+        for state in ("status: stopped\n", "status: running\n"):
+            run = FakeRun([(0, state)])
+            with self.assertRaises(VmError) as caught:
+                create_template(**_create(run=run))
+            self.assertIn("already exists", str(caught.exception))
+            self.assertEqual(run.calls, [["qm", "status", "910"]])
 
-    def test_refuses_stopped_when_destroy_ok_false(self) -> None:
-        run = FakeRun([(0, "status: stopped\n")])
-        with self.assertRaises(VmError) as caught:
-            create_template(**_create(destroy_ok=False, run=run))
-        self.assertIn("910", str(caught.exception))
-        self.assertEqual(run.calls, [["qm", "status", "910"]])
+    def test_missing_image_is_refused_before_any_qm_call(self) -> None:
+        def boom(argv: list[str]) -> None:
+            raise AssertionError(f"run called: {argv}")
 
-    def test_destroy_ok_template_destroys_before_create(self) -> None:
-        volid = "NFS-SATA-SSD1:910/vm-910-disk-0.raw"
         with private_tempdir() as tmp:
-            nodes = Path(tmp) / "nodes"
-            nodes.mkdir()
-            run = FakeRun(
-                [
-                    (0, "status: stopped\n"),
-                    (0, "template: 1\nscsi0: NFS-SATA-SSD1:vm-910-disk-0\n"),
-                    (0, "[]"),
-                    (0, ""),
-                    (0, ""),
-                    (0, ""),
-                    (0, f"unused0: {volid}\n"),
-                    (0, ""),
-                    (0, ""),
-                    (0, ""),
-                    (0, ""),
-                ]
-            )
-            result = create_template(**_create(destroy_ok=True, nodes_root=nodes, run=run))
+            missing = Path(tmp) / "gone.qcow2.work"
+            empty = Path(tmp) / "empty.qcow2"
+            empty.write_bytes(b"")
+            folder = Path(tmp) / "dir.qcow2"
+            folder.mkdir()
+            link = Path(tmp) / "link.qcow2"
+            link.symlink_to(IMAGE)
+            for path, words in (
+                (missing, "non-existent or non-regular file"),
+                (empty, "image is empty"),
+                (folder, "non-existent or non-regular file"),
+                (link, "non-existent or non-regular file"),
+            ):
+                with self.assertRaises(VmError) as caught:
+                    create_template(**_create(image_path=str(path), run=boom))
+                self.assertIn(words, str(caught.exception))
+
+    def test_new_vmid_creates_imports_and_converts(self) -> None:
+        volid = "NFS-SATA-SSD1:910/vm-910-disk-0.raw"
+        run = FakeRun(
+            [
+                (2, "Configuration file 'nodes/pve/qemu-server/910.conf' does not exist\n"),
+                (0, ""),
+                (0, ""),
+                (0, f"unused0: {volid}\n"),
+                (0, ""),
+                (0, ""),
+                (0, ""),
+                (0, ""),
+            ]
+        )
+        result = create_template(**_create(run=run))
         self.assertEqual(result, volid)
         self.assertEqual(run.calls[0], ["qm", "status", "910"])
-        self.assertEqual(run.calls[1], ["qm", "config", "910"])
-        self.assertEqual(run.calls[2][:2], ["pvesm", "list"])
-        self.assertEqual(run.calls[3], ["qm", "destroy", "910"])
-        self.assertEqual(run.calls[4][:3], ["qm", "create", "910"])
+        self.assertEqual(run.calls[1][:3], ["qm", "create", "910"])
         self.assertEqual(
-            run.calls[5],
+            run.calls[2],
             ["qm", "importdisk", "910", IMAGE, STORAGE, "--format", "raw"],
         )
-        self.assertEqual(run.calls[6], ["qm", "config", "910"])
+        self.assertEqual(run.calls[3], ["qm", "config", "910"])
         self.assertEqual(
-            run.calls[7:],
+            run.calls[4:],
             [
                 ["qm", "set", "910", "--scsi0", f"{volid},discard=on,ssd=1"],
                 ["qm", "set", "910", "--ide2", f"{STORAGE}:cloudinit"],
@@ -452,73 +476,27 @@ class CreateTemplateTests(unittest.TestCase):
                 ["qm", "template", "910"],
             ],
         )
-
-    def test_stopped_vm_is_not_destroyed(self) -> None:
-        run = FakeRun(
-            [
-                (0, "status: stopped\n"),
-                (0, "scsi0: NFS-SATA-SSD1:vm-910-disk-0\n"),
-            ]
-        )
-        with self.assertRaises(VmError) as caught:
-            create_template(**_create(destroy_ok=True, run=run))
-        self.assertIn("not a template", str(caught.exception))
-        self.assertNotIn(["qm", "destroy", "910"], run.calls)
-
-    def test_unfinished_swap_is_not_destroyed(self) -> None:
-        run = FakeRun(
-            [
-                (0, "status: stopped\n"),
-                (0, "tags: prod;pve-prep-swap-910\nscsi0: NFS-SATA-SSD1:base-910-disk-0\n"),
-            ]
-        )
-        with self.assertRaises(VmError) as caught:
-            create_template(**_create(destroy_ok=True, run=run))
-        message = str(caught.exception)
-        self.assertIn("did not finish", message)
-        self.assertIn("qm template 910", message)
-        self.assertEqual(len(run.calls), 2)
-        self.assertNotIn(["qm", "destroy", "910"], run.calls)
-
-    def test_linked_clone_is_not_destroyed(self) -> None:
-        clone = "scsi0: NFS-SATA-SSD1:9001/base-9001-disk-0.raw/122/vm-122-disk-0.qcow2\n"
-        run = FakeRun(
-            [
-                (0, "status: stopped\n"),
-                (0, clone),
-            ]
-        )
-        with self.assertRaises(VmError) as caught:
-            create_template(**_create(destroy_ok=True, run=run))
-        self.assertIn("linked clone", str(caught.exception))
-        self.assertNotIn(["qm", "destroy", "910"], run.calls)
+        self.assertNotIn("destroy", " ".join(" ".join(call) for call in run.calls))
 
     def test_make_template_false_skips_qm_template(self) -> None:
         volid = "NFS-SATA-SSD1:910/vm-910-disk-0.raw"
-        with private_tempdir() as tmp:
-            nodes = Path(tmp) / "nodes"
-            nodes.mkdir()
-            run = FakeRun(
-                [
-                    (0, "status: stopped\n"),
-                    (0, "template: 1\nname: old\n"),
-                    (0, ""),
-                    (0, ""),
-                    (0, ""),
-                    (0, f"unused0: {volid}\n"),
-                    (0, ""),
-                    (0, ""),
-                    (0, ""),
-                ]
-            )
-            result = create_template(
-                **_create(destroy_ok=True, make_template=False, nodes_root=nodes, run=run)
-            )
+        run = FakeRun(
+            [
+                (2, "missing\n"),
+                (0, ""),
+                (0, ""),
+                (0, f"unused0: {volid}\n"),
+                (0, ""),
+                (0, ""),
+                (0, ""),
+            ]
+        )
+        result = create_template(**_create(make_template=False, run=run))
         self.assertEqual(result, volid)
         self.assertEqual(run.calls[-1], ["qm", "set", "910", "--boot", "order=scsi0"])
         self.assertNotIn(["qm", "template", "910"], run.calls)
 
-    def test_importdisk_failure_without_volume_destroys(self) -> None:
+    def test_importdisk_failure_without_volume_removes_the_empty_vm(self) -> None:
         run = FakeRun(
             [
                 (2, "Configuration file does not exist\n"),
@@ -578,53 +556,6 @@ class CreateTemplateTests(unittest.TestCase):
         self.assertIn("910", str(caught.exception))
         self.assertNotIn(["qm", "destroy", "910"], run.calls)
 
-    def test_backup_copies_the_disk_before_destroy(self) -> None:
-        old = "NFS-SATA-SSD1:vm-910-disk-0.raw"
-        volid = "NFS-SATA-SSD1:910/vm-910-disk-0.raw"
-        with private_tempdir() as tmp:
-            nodes = Path(tmp) / "nodes"
-            nodes.mkdir()
-            cache = Path(tmp) / "cache"
-            run = FakeRun(
-                [
-                    (0, "status: stopped\n"),
-                    (0, f"template: 1\nscsi0: {old}\n"),
-                    (0, "[]"),
-                    (0, "/mnt/pve/NFS/vm-910-disk-0.raw\n"),
-                    (0, ""),
-                    (0, ""),
-                    (0, ""),
-                    (0, ""),
-                    (0, f"unused0: {volid}\n"),
-                    (0, ""),
-                    (0, ""),
-                    (0, ""),
-                    (0, ""),
-                ],
-                touch_convert=True,
-            )
-            result = create_template(
-                **_create(
-                    destroy_ok=True,
-                    backup_disks=True,
-                    backup_dir=str(cache),
-                    nodes_root=nodes,
-                    run=run,
-                )
-            )
-        self.assertEqual(result, volid)
-        self.assertEqual(run.calls[1], ["qm", "config", "910"])
-        self.assertEqual(
-            run.calls[2],
-            ["pvesm", "list", STORAGE, "--output-format", "json"],
-        )
-        self.assertEqual(run.calls[3], ["pvesm", "path", old])
-        self.assertEqual(run.calls[4][:4], ["qemu-img", "convert", "-O", "qcow2"])
-        self.assertTrue(run.calls[4][4].endswith("vm-910-disk-0.raw"))
-        self.assertIn("vm-910-scsi0.bak.", run.calls[4][5])
-        self.assertTrue(is_disk_backup(Path(run.calls[4][5]).name))
-        self.assertEqual(run.calls[5], ["qm", "destroy", "910"])
-
     def test_backup_dir_is_created_root_only_and_never_a_symlink(self) -> None:
         from types import SimpleNamespace
 
@@ -661,40 +592,58 @@ class CreateTemplateTests(unittest.TestCase):
             self.assertIn("symlink", str(caught.exception))
             self.assertFalse(list(elsewhere.iterdir()))
 
-    def test_empty_backup_does_not_destroy(self) -> None:
-        old = "NFS-SATA-SSD1:vm-910-disk-0.raw"
-        with private_tempdir() as tmp:
-            nodes = Path(tmp) / "nodes"
-            nodes.mkdir()
-            run = FakeRun(
-                [
-                    (0, "status: stopped\n"),
-                    (0, f"template: 1\nscsi0: {old}\n"),
-                    (0, "[]"),
-                    (0, "/mnt/pve/NFS/vm-910-disk-0.raw\n"),
-                    (0, ""),
-                ]
-            )
-            with self.assertRaises(VmError) as caught:
-                create_template(
-                    **_create(
-                        destroy_ok=True,
-                        backup_disks=True,
-                        backup_dir=str(Path(tmp) / "cache"),
-                        nodes_root=nodes,
-                        run=run,
-                    )
-                )
-        self.assertIn("missing or empty", str(caught.exception))
-        self.assertNotIn(["qm", "destroy", "910"], run.calls)
-
     def test_cloudinit_alone_is_not_an_os_disk(self) -> None:
         text = "ide2: NFS-SATA-SSD1:9001/vm-9001-cloudinit.qcow2,media=cdrom\n"
         self.assertFalse(config_has_os_disk(text))
         self.assertTrue(config_has_os_disk("scsi0: NFS-SATA-SSD1:vm-910-disk-0\n"))
 
 
+class GuestOptionsTests(unittest.TestCase):
+    def test_options_name_no_disk(self) -> None:
+        argv = guest_options_argv(vmid=910, name="tpl-910", memory_mb=4096, cores=4, bridge="vmbr1")
+        self.assertEqual(
+            argv,
+            [
+                "qm", "set", "910", "--name", "tpl-910", "--memory", "4096",
+                "--cores", "4", "--net0", "virtio,bridge=vmbr1",
+            ],
+        )
+        self.assertFalse(any(arg.startswith(("--scsi", "--ide", "--boot")) for arg in argv))
+
+    def test_dry_run_prints_and_a_failure_raises(self) -> None:
+        options = dict(vmid=910, name="tpl-910", memory_mb=2048, cores=2, bridge="vmbr0")
+
+        def boom(argv: list[str]) -> None:
+            raise AssertionError(f"run called: {argv}")
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            set_guest_options(**options, dry_run=True, run=boom)
+        self.assertEqual(buf.getvalue().strip(), " ".join(guest_options_argv(**options)))
+        run = FakeRun([(1, "busy\n")])
+        with self.assertRaises(VmError):
+            set_guest_options(**options, dry_run=False, run=run)
+        self.assertEqual(run.calls, [guest_options_argv(**options)])
+
+
 class InsertDiskTests(unittest.TestCase):
+    def test_missing_image_leaves_the_template_untouched(self) -> None:
+        def boom(argv: list[str]) -> None:
+            raise AssertionError(f"run called: {argv}")
+
+        with self.assertRaises(VmError) as caught:
+            insert_disk(
+                vmid=910,
+                storage=STORAGE,
+                image_path=IMAGE + ".work",
+                disk_policy="backup",
+                dry_run=False,
+                run=boom,
+            )
+        self.assertIn("non-existent or non-regular file", str(caught.exception))
+        with self.assertRaises(VmError):
+            require_image(_IMAGE_DIR.name)
+
     def test_normal_vm_overwrite_is_refused(self) -> None:
         old = "NFS-SATA-SSD1:vm-910-disk-0"
         run = FakeRun(
@@ -1356,7 +1305,7 @@ class LinkedCloneTests(unittest.TestCase):
             cluster_config_links(Path("/no/such/pve/nodes"), 910)
         self.assertIn("not changed", str(caught.exception))
 
-    def test_create_refuses_a_template_with_a_remote_clone(self) -> None:
+    def test_replace_refuses_a_template_with_a_remote_clone(self) -> None:
         with private_tempdir() as tmp:
             nodes = Path(tmp) / "nodes"
             conf = nodes / "pve2" / "qemu-server" / "201.conf"
@@ -1369,7 +1318,7 @@ class LinkedCloneTests(unittest.TestCase):
                 ]
             )
             with self.assertRaises(VmError) as caught:
-                create_template(**_create(destroy_ok=True, nodes_root=nodes, run=run))
+                prepare_replace(vmid=910, run=run, backup=False, nodes_root=nodes)
         self.assertIn("VM 201 on pve2", str(caught.exception))
         self.assertNotIn(["qm", "destroy", "910"], run.calls)
 

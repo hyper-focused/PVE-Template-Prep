@@ -46,6 +46,7 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     download.convert = mock.MagicMock(name="convert")
     download.publish = mock.MagicMock(name="publish", return_value="written")
     download.clear_cache = mock.MagicMock(name="clear_cache")
+    download.file_digest = real_download.file_digest
     download.DownloadError = real_download.DownloadError
 
     customize = _stub("pve_prep.customize")
@@ -74,8 +75,10 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     vm.config_has_os_disk = real_vm.config_has_os_disk
     vm.os_disk_storage = real_vm.os_disk_storage
     vm.os_disk_format = real_vm.os_disk_format
+    vm.boot_disk_location = real_vm.boot_disk_location
     vm.import_directories = real_vm.import_directories
     vm.insert_disk = mock.MagicMock(name="insert_disk")
+    vm.set_guest_options = mock.MagicMock(name="set_guest_options")
     vm.backups_since = real_vm.backups_since
 
 
@@ -115,6 +118,8 @@ def _load_orchestrator():
 
 MOD = _load_orchestrator()
 ORIGINAL_RUN = MOD.default_run
+ORIGINAL_CLAIM = MOD._claim_host
+ORIGINAL_LOCK = MOD.acquire_run_lock
 
 
 def _specs(_distro: str):
@@ -177,16 +182,25 @@ class OrchestratorTest(unittest.TestCase):
         MOD.publish = mock.MagicMock(return_value=PublishResult("written"))
         MOD.customize_apply = mock.MagicMock()
         MOD.create_template = mock.MagicMock()
+        MOD.insert_disk = mock.MagicMock(name="insert_disk")
+        MOD.set_guest_options = mock.MagicMock(name="set_guest_options")
+        MOD.prepare_replace = mock.MagicMock(name="prepare_replace", return_value=1)
         MOD.releases_for = mock.MagicMock(side_effect=_specs)
         MOD.parse_storage_ids = mock.MagicMock(return_value=[])
         MOD.default_run = ORIGINAL_RUN
         MOD.clear_cache = mock.MagicMock(name="clear_cache")
         MOD.storage_kind = lambda storage: "dir"
+        MOD._claim_host = mock.MagicMock(name="_claim_host", return_value=0)
+        MOD.acquire_run_lock = mock.MagicMock(name="acquire_run_lock", return_value=-1)
+
+    def tearDown(self) -> None:
+        MOD._claim_host = ORIGINAL_CLAIM
+        MOD.acquire_run_lock = ORIGINAL_LOCK
 
     def test_image_order_fetch_convert_apply_publish(self) -> None:
         order: list[str] = []
 
-        def fetch(spec, cache, dry_run=False):
+        def fetch(spec, cache, dry_run=False, quiet=False):
             order.append("fetch")
             self.assertEqual(spec.release, "12")
             self.assertEqual(spec.family, "deb")
@@ -210,6 +224,7 @@ class OrchestratorTest(unittest.TestCase):
             dry_run=False,
             verbose=False,
             label="",
+            quiet=False,
         ):
             order.append("apply")
             self.assertEqual(disk_format, "raw")
@@ -244,7 +259,7 @@ class OrchestratorTest(unittest.TestCase):
         MOD.publish.assert_called_once()
         MOD.create_template.assert_not_called()
 
-    def test_template_destroy_ok_only_for_retyped_vmid(self) -> None:
+    def test_retyped_vmid_swaps_the_disk_and_a_new_vmid_is_created(self) -> None:
         recorded: list[dict] = []
 
         def create_template(**kwargs):
@@ -261,24 +276,59 @@ class OrchestratorTest(unittest.TestCase):
             MOD.run_one(job, "13", 911)
         self.assertIn("qemu-img convert -O qcow2 <os-disk>", first.getvalue())
         self.assertNotIn("qemu-img", second.getvalue())
-        self.assertEqual([item["destroy_ok"] for item in recorded], [True, False])
-        self.assertEqual([item["backup_disks"] for item in recorded], [False, False])
-        self.assertEqual([item["vmid"] for item in recorded], [910, 911])
+
+        MOD.insert_disk.assert_called_once()
+        swap = MOD.insert_disk.call_args.kwargs
+        self.assertEqual(swap["vmid"], 910)
+        self.assertEqual(swap["storage"], "dir-templates")
+        self.assertEqual(swap["disk_policy"], "backup")
+        self.assertTrue(swap["dry_run"])
+        self.assertTrue(swap["image_path"].endswith("debian-12-pve.qcow2.work"))
+        options = MOD.set_guest_options.call_args.kwargs
         self.assertEqual(
-            [item["name"] for item in recorded],
-            ["debian-12-cloud", "debian-13-cloud"],
+            {key: options[key] for key in ("vmid", "name", "memory_mb", "cores", "bridge")},
+            {"vmid": 910, "name": "debian-12-cloud", "memory_mb": 2048, "cores": 2, "bridge": "vmbr0"},
         )
-        self.assertEqual(recorded[0]["storage"], "dir-templates")
-        self.assertEqual(recorded[0]["memory_mb"], 2048)
-        self.assertEqual(recorded[0]["cores"], 2)
-        self.assertEqual(recorded[0]["bridge"], "vmbr0")
-        self.assertTrue(recorded[0]["dry_run"])
-        self.assertTrue(recorded[0]["make_template"])
-        self.assertTrue(recorded[0]["image_path"].endswith("debian-12-pve.qcow2.work"))
-        MOD.run_one(replace(job, make_template=False), "12", 910)
+
+        self.assertEqual([item["vmid"] for item in recorded], [911])
+        created = recorded[0]
+        self.assertNotIn("destroy_ok", created)
+        self.assertEqual(created["name"], "debian-13-cloud")
+        self.assertEqual(created["storage"], "dir-templates")
+        self.assertEqual(created["memory_mb"], 2048)
+        self.assertEqual(created["cores"], 2)
+        self.assertEqual(created["bridge"], "vmbr0")
+        self.assertTrue(created["dry_run"])
+        self.assertTrue(created["make_template"])
+        self.assertTrue(created["image_path"].endswith("debian-13-pve.qcow2.work"))
+        MOD.run_one(replace(job, make_template=False), "13", 911)
         self.assertFalse(recorded[-1]["make_template"])
         MOD.publish.assert_not_called()
         MOD.fetch_verified.assert_called()
+
+    def test_failed_swap_never_creates_or_changes_settings(self) -> None:
+        MOD.prepare_replace = mock.MagicMock(return_value=1)
+        MOD.insert_disk = mock.MagicMock(side_effect=MOD.VmError("import failed"))
+        job = replace(_template_job(dry_run=False), releases=("12",), vmids=(910,))
+        with self.assertRaises(MOD.VmError):
+            MOD.run_one(job, "12", 910)
+        MOD.create_template.assert_not_called()
+        MOD.set_guest_options.assert_not_called()
+
+    def test_settings_failure_after_swap_is_reported_not_raised(self) -> None:
+        MOD.insert_disk = mock.MagicMock(
+            return_value=SimpleNamespace(volid="dir-templates:vm-910-disk-1", backup_dir="", cleanup_error="")
+        )
+        MOD.set_guest_options = mock.MagicMock(side_effect=MOD.VmError("VM 910 failed at qm set"))
+        job = replace(_template_job(destroy=frozenset({910})), backup_vmids=frozenset())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            MOD.run_one(job, "12", 910)
+        self.assertIn(
+            "Debian 12 VM template 910 replaced with the new disk. Previous disk deleted. "
+            "Name, memory, cores, and bridge were not updated: VM 910 failed at qm set.",
+            buf.getvalue(),
+        )
 
     def test_disk_copy_runs_before_the_download(self) -> None:
         order: list[tuple] = []
@@ -407,7 +457,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(len(recorded), 1)
         self.assertEqual(recorded[0]["vmid"], 920)
         self.assertTrue(recorded[0]["make_template"])
-        self.assertFalse(recorded[0]["destroy_ok"])
+        self.assertNotIn("destroy_ok", recorded[0])
         MOD.insert_disk.assert_not_called()
         MOD.publish.assert_not_called()
         text = buf.getvalue()
@@ -417,16 +467,28 @@ class OrchestratorTest(unittest.TestCase):
     def test_release_lines_name_the_outcome(self) -> None:
         from pve_prep.job import DEFAULT_BACKUPS
 
+        MOD.insert_disk = mock.MagicMock(
+            return_value=SimpleNamespace(
+                volid="dir-templates:vm-910-disk-1",
+                backup_dir=DEFAULT_BACKUPS,
+                cleanup_error="",
+            )
+        )
         buf = io.StringIO()
         with redirect_stdout(buf):
             MOD.run_one(_template_job(), "12", 910)
         text = buf.getvalue()
         self.assertIn("\nCreating Debian 12 VM template\n\n", text)
         self.assertIn(
-            f"\n\nDebian 12 VM template created. Previous VM deleted. "
+            f"\n\nDebian 12 VM template 910 replaced with the new disk. "
             f"Old disk saved in {DEFAULT_BACKUPS}.\n",
             text,
         )
+        self.assertNotIn("Previous VM deleted", text)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            MOD.run_one(_template_job(), "13", 911)
+        self.assertIn("\n\nDebian 13 VM template created\n", buf.getvalue())
         buf = io.StringIO()
         kept = replace(
             _image_job(releases=("12",), dry_run=True),
@@ -486,7 +548,7 @@ class OrchestratorTest(unittest.TestCase):
         job = _image_job(dry_run=True, prep=True)
         calls = {"n": 0}
 
-        def fetch(spec, cache, dry_run=False):
+        def fetch(spec, cache, dry_run=False, quiet=False):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise RuntimeError("boom")
@@ -522,7 +584,7 @@ class OrchestratorTest(unittest.TestCase):
                     MOD.main([flag])
             self.assertEqual(caught.exception.code, 0)
             self.assertEqual(buf.getvalue(), f"pve-template-prep {pve_prep.__version__}\n")
-        self.assertEqual(pve_prep.__version__, "1.3.6")
+        self.assertEqual(pve_prep.__version__, "1.4.0")
         import pve_prep.download as download
 
         self.assertEqual(download._HEADERS["User-Agent"], f"pve-prep/{pve_prep.__version__}")
@@ -855,6 +917,304 @@ class OrchestratorTest(unittest.TestCase):
             self.assertRaises(SystemExit),
         ):
             MOD.main([])
+
+    def test_unattended_skips_the_interview(self) -> None:
+        buf = io.StringIO()
+        interview = mock.Mock(side_effect=AssertionError("asked"))
+        with (
+            mock.patch.object(MOD, "interview", interview),
+            mock.patch.object(MOD, "_consider_update", side_effect=AssertionError("update")),
+            mock.patch("pve_prep.unattended.run_unattended", return_value=0) as refresh,
+            mock.patch.object(MOD, "clear_cache") as clear_cache,
+            mock.patch.object(MOD, "preflight") as preflight,
+            redirect_stdout(buf),
+        ):
+            code = MOD.main(["--unattended", "weekly"])
+        self.assertEqual(code, 0)
+        interview.assert_not_called()
+        refresh.assert_called_once()
+        self.assertEqual(refresh.call_args.args[0], "weekly")
+        kwargs = refresh.call_args.kwargs
+        self.assertIs(kwargs["digest_for"], MOD._digest_for)
+        self.assertIs(kwargs["perform"], MOD.run_one)
+        self.assertIs(kwargs["storage_kind"], MOD.storage_kind)
+        self.assertIs(kwargs["run"], MOD.default_run)
+        self.assertEqual(kwargs["nodes_root"], Path("/etc/pve/nodes"))
+        self.assertEqual(kwargs["directory"], MOD.ENROLL_DIR)
+        job = preflight.call_args.args[0]
+        self.assertEqual(job.mode, "image")
+        self.assertTrue(job.prep)
+        self.assertEqual(job.vmids, (100,))
+        self.assertEqual(job.disk_format, "qcow2")
+        self.assertEqual(job.distro, "debian")
+        self.assertEqual(job.releases, ("12",))
+        self.assertEqual(job.storage, "local")
+        self.assertEqual(job.cache_dir, MOD.DEFAULT_CACHE)
+        self.assertEqual(job.collision, "overwrite")
+        self.assertEqual(job.bridge, "vmbr0")
+        self.assertEqual(job.memory_mb, 2048)
+        self.assertEqual(job.cores, 2)
+        self.assertFalse(job.dry_run)
+        self.assertEqual(job.destroy_vmids, frozenset())
+        clear_cache.assert_called_once_with(MOD.DEFAULT_CACHE)
+        text = buf.getvalue()
+        self.assertTrue(text.startswith(f"pve-template-prep {pve_prep.__version__}\n"))
+        self.assertNotIn("deleted the working files", text)
+
+    def test_unattended_failure_keeps_the_cache(self) -> None:
+        buf = io.StringIO()
+        with (
+            mock.patch.object(MOD, "interview", side_effect=AssertionError("asked")),
+            mock.patch("pve_prep.unattended.run_unattended", return_value=1),
+            mock.patch.object(MOD, "clear_cache") as clear_cache,
+            mock.patch.object(MOD, "preflight"),
+            redirect_stdout(buf),
+        ):
+            code = MOD.main(["--unattended", "monthly"])
+        self.assertEqual(code, 1)
+        clear_cache.assert_not_called()
+        self.assertNotIn("cache kept:", buf.getvalue())
+
+    def test_unattended_cache_delete_failure(self) -> None:
+        buf = io.StringIO()
+        with (
+            mock.patch.object(MOD, "interview", side_effect=AssertionError("asked")),
+            mock.patch("pve_prep.unattended.run_unattended", return_value=0),
+            mock.patch.object(MOD, "clear_cache", side_effect=MOD.DownloadError("nope")),
+            mock.patch.object(MOD, "preflight"),
+            redirect_stdout(buf),
+        ):
+            code = MOD.main(["--unattended", "weekly"])
+        self.assertEqual(code, 1)
+        self.assertIn(f"Working files in {MOD.DEFAULT_CACHE} were kept: nope", buf.getvalue())
+
+    def test_unattended_dry_run_skips_preflight_and_cache(self) -> None:
+        with (
+            mock.patch.object(MOD, "interview", side_effect=AssertionError("asked")),
+            mock.patch("pve_prep.unattended.run_unattended", return_value=0) as refresh,
+            mock.patch.object(MOD, "clear_cache") as clear_cache,
+            mock.patch.object(MOD, "preflight") as preflight,
+            redirect_stdout(io.StringIO()),
+        ):
+            code = MOD.main(["--dry-run", "--unattended", "weekly"])
+        self.assertEqual(code, 0)
+        preflight.assert_not_called()
+        clear_cache.assert_not_called()
+        self.assertIs(refresh.call_args.kwargs["dry_run"], True)
+
+    def test_successful_template_offers_created_vmids(self) -> None:
+        job = _template_job(dry_run=True)
+        with (
+            mock.patch.object(MOD, "interview", return_value=job),
+            mock.patch.object(MOD, "run_one"),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=False),
+            mock.patch.object(MOD, "plan_prior_enrollments", return_value=None) as prior,
+            mock.patch.object(MOD, "offer_created") as offer,
+            redirect_stdout(io.StringIO()),
+        ):
+            code = MOD.main([])
+        self.assertEqual(code, 0)
+        prior.assert_called_once()
+        self.assertEqual(prior.call_args.args[2], job.vmids)
+        offer.assert_called_once()
+        kwargs = offer.call_args.kwargs
+        self.assertEqual(kwargs["created"], [("12", 910), ("13", 911)])
+        self.assertEqual(kwargs["distro"], job.distro)
+        self.assertEqual(kwargs["password_auth"], job.password_auth)
+        self.assertEqual(kwargs["permit_root"], job.permit_root)
+        self.assertIs(kwargs["digest_for"], MOD._digest_for)
+        self.assertIs(kwargs["pin_for"], MOD._pin_for)
+        self.assertEqual(kwargs["program"], str(Path(MOD.__file__).resolve()))
+        self.assertEqual(kwargs["directory"], MOD.ENROLL_DIR)
+        self.assertIsNone(kwargs["cron_directory"])
+        self.assertEqual(kwargs["dry_run"], job.dry_run)
+        self.assertIs(offer.call_args.args[0], MOD._read_line)
+        self.assertIs(offer.call_args.args[1], MOD._write)
+
+    def test_prior_enrollments_are_applied_and_omitted_from_new_offer(self) -> None:
+        from pve_prep.offer import PriorEnrollmentPlan
+
+        job = _template_job(dry_run=True)
+        plan = PriorEnrollmentPlan(
+            vmids=frozenset({910}),
+            action="keep",
+            records=(),
+        )
+        with (
+            mock.patch.object(MOD, "interview", return_value=job),
+            mock.patch.object(MOD, "run_one"),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=False),
+            mock.patch.object(MOD, "plan_prior_enrollments", return_value=plan),
+            mock.patch.object(MOD, "apply_prior_enrollment") as apply,
+            mock.patch.object(MOD, "offer_created") as offer,
+            redirect_stdout(io.StringIO()),
+        ):
+            code = MOD.main([])
+        self.assertEqual(code, 0)
+        apply.assert_called_once()
+        self.assertEqual(apply.call_args.kwargs["created"], [("12", 910)])
+        self.assertIs(apply.call_args.kwargs["plan"], plan)
+        offer.assert_called_once()
+        self.assertEqual(offer.call_args.kwargs["created"], [("13", 911)])
+
+    def test_standalone_skips_prior_and_new_enrollment_asks(self) -> None:
+        job = replace(_image_job(dry_run=True), vmids=(), template_vmids=frozenset())
+        with (
+            mock.patch.object(MOD, "interview", return_value=job),
+            mock.patch.object(MOD, "run_one"),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=False),
+            mock.patch.object(MOD, "plan_prior_enrollments") as prior,
+            mock.patch.object(MOD, "offer_created") as offer,
+            redirect_stdout(io.StringIO()),
+        ):
+            code = MOD.main([])
+        self.assertEqual(code, 0)
+        prior.assert_not_called()
+        offer.assert_not_called()
+
+    def test_offer_abort_still_asks_about_the_cache(self) -> None:
+        job = _template_job(dry_run=True)
+        with (
+            mock.patch.object(MOD, "interview", return_value=job),
+            mock.patch.object(MOD, "run_one"),
+            mock.patch.object(MOD, "offer_created", side_effect=MOD.PromptAbort("eof")),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=False) as ask,
+            redirect_stdout(io.StringIO()),
+        ):
+            code = MOD.main([])
+        self.assertEqual(code, 0)
+        ask.assert_called_once()
+        self.assertFalse(ask.call_args.kwargs["failed"])
+
+    def test_image_insert_is_offered_like_a_created_template(self) -> None:
+        job = replace(
+            _image_job(releases=("12",), dry_run=False),
+            mode="image",
+            vmids=(910,),
+            storage="dir-templates",
+            make_template=False,
+            template_vmids=frozenset(),
+        )
+        self.assertFalse(MOD.converts_to_template(job, 910))
+        self.assertEqual(MOD._created_templates(job, [("12", 910)]), [("12", 910)])
+        self.assertEqual(MOD._created_templates(job, [("12", None)]), [])
+
+    def test_replaced_template_is_offered(self) -> None:
+        job = replace(_template_job(), make_template=False)
+        self.assertEqual(
+            MOD._created_templates(job, [("12", 910), ("13", 911)]),
+            [("12", 910)],
+        )
+
+    def test_run_lock_is_exclusive_and_refuses_a_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "run.lock"
+            first = ORIGINAL_LOCK(lock)
+            try:
+                self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+                # flock is per open file description, so a second open in this process conflicts.
+                with self.assertRaises(MOD.RunLocked):
+                    ORIGINAL_LOCK(lock)
+            finally:
+                os.close(first)
+            os.close(ORIGINAL_LOCK(lock))
+            link = Path(tmp) / "link.lock"
+            link.symlink_to(lock)
+            with self.assertRaises(OSError) as caught:
+                ORIGINAL_LOCK(link)
+            self.assertNotIsInstance(caught.exception, MOD.RunLocked)
+
+    def test_claim_host_stops_a_second_run_before_the_prune(self) -> None:
+        prune = mock.MagicMock()
+        buf = io.StringIO()
+        with (
+            mock.patch.object(MOD.os, "geteuid", return_value=0),
+            mock.patch.object(MOD, "_prune_enrollments", prune),
+            mock.patch.object(MOD, "acquire_run_lock", side_effect=MOD.RunLocked("lock")),
+            redirect_stdout(buf),
+        ):
+            self.assertEqual(ORIGINAL_CLAIM(), 1)
+        prune.assert_not_called()
+        self.assertIn("Another pve-template-prep run is in progress", buf.getvalue())
+        self.assertIn("Nothing was changed", buf.getvalue())
+        with (
+            mock.patch.object(MOD.os, "geteuid", return_value=0),
+            mock.patch.object(MOD, "_prune_enrollments", prune),
+            mock.patch.object(MOD, "acquire_run_lock", return_value=-1),
+        ):
+            self.assertEqual(ORIGINAL_CLAIM(), 0)
+        prune.assert_called_once_with(dry_run=False)
+        with (
+            mock.patch.object(MOD.os, "geteuid", return_value=1000),
+            self.assertRaises(SystemExit),
+        ):
+            ORIGINAL_CLAIM()
+
+    def test_main_takes_the_host_before_the_interview(self) -> None:
+        order: list[str] = []
+        MOD._claim_host = mock.MagicMock(side_effect=lambda: order.append("claim") or 1)
+        interview = mock.Mock(side_effect=lambda *a, **k: order.append("interview"))
+        with (
+            mock.patch.object(MOD, "interview", interview),
+            mock.patch.object(MOD, "_consider_update", return_value=0),
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(MOD.main([]), 1)
+        self.assertEqual(order, ["claim"])
+
+    def test_locked_unattended_run_changes_nothing(self) -> None:
+        MOD.acquire_run_lock = mock.MagicMock(side_effect=MOD.RunLocked("lock"))
+        buf = io.StringIO()
+        with (
+            mock.patch("pve_prep.unattended.run_unattended") as refresh,
+            mock.patch.object(MOD, "preflight"),
+            redirect_stdout(buf),
+        ):
+            code = MOD.main(["--unattended", "weekly"])
+        self.assertEqual(code, 0)
+        refresh.assert_not_called()
+        MOD.clear_cache.assert_not_called()
+        self.assertIn("Automated update skipped", buf.getvalue())
+
+    def test_digest_for_finalizes_an_empty_filename(self) -> None:
+        spec = SimpleNamespace(
+            filename="",
+            url="https://example.test/index",
+            checksum_alg="256",
+        )
+        finalized = SimpleNamespace(
+            filename="Fedora.qcow2",
+            url="https://example.test/Fedora.qcow2",
+            checksum_alg="256",
+        )
+        with (
+            mock.patch.object(MOD, "_spec_for", return_value=spec),
+            mock.patch("pve_prep.catalog.finalize_index", return_value=finalized) as finalize,
+            mock.patch("pve_prep.download._read_text", return_value="<html>") as read_text,
+            mock.patch("pve_prep.download._expected_digest", return_value=("sum", "ab" * 32)) as expected,
+        ):
+            digest, alg = MOD._digest_for("fedora", "42")
+        finalize.assert_called_once_with(spec, "<html>")
+        read_text.assert_called_once_with("https://example.test/index")
+        expected.assert_called_once_with(finalized)
+        self.assertEqual(digest, "ab" * 32)
+        self.assertEqual(alg, "256")
+
+    def test_digest_for_uses_a_named_file(self) -> None:
+        spec = SimpleNamespace(
+            filename="debian-12.qcow2",
+            url="https://example.test/debian-12.qcow2",
+            checksum_alg="512",
+        )
+        with (
+            mock.patch.object(MOD, "_spec_for", return_value=spec),
+            mock.patch("pve_prep.catalog.finalize_index") as finalize,
+            mock.patch("pve_prep.download._expected_digest", return_value=(None, "cd" * 64)),
+        ):
+            digest, alg = MOD._digest_for("debian", "12")
+        finalize.assert_not_called()
+        self.assertEqual((digest, alg), ("cd" * 64, "512"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -162,6 +162,14 @@ def _phase_of(line: str) -> str | None:
     return None
 
 
+class CustomizeError(RuntimeError):
+    """Guest prep failed. log is the virt-customize output, kept off stdout."""
+
+    def __init__(self, message: str, log: str = "") -> None:
+        super().__init__(message)
+        self.log = log
+
+
 class _PrepMeter:
     """One prep bar. Percent moves on a real phase, then creeps until the next."""
 
@@ -218,8 +226,18 @@ def _show_bar(*, verbose: bool, progress: bool | None) -> bool:
     return progress
 
 
-def _run_with_bar(command: list[str], env: dict[str, str], commands: int) -> tuple[int, str]:
-    """Run virt-customize. One updating line. Captured log is returned, not printed."""
+def _run_with_bar(
+    command: list[str],
+    env: dict[str, str],
+    commands: int,
+    *,
+    show: bool = True,
+) -> tuple[int, str]:
+    """Run virt-customize. Captured log is returned, not printed.
+
+    show draws one updating line. A quiet caller leaves show false and
+    keeps the log for a failure file.
+    """
     proc = subprocess.Popen(
         command,
         env=env,
@@ -255,7 +273,7 @@ def _run_with_bar(command: list[str], env: dict[str, str], commands: int) -> tup
             with lock:
                 percent, phase = meter.snapshot(time.monotonic())
             rendered = _format_bar(percent, phase)
-            if rendered != last:
+            if show and rendered != last:
                 sys.stdout.write("\r\033[K" + rendered)
                 sys.stdout.flush()
                 last = rendered
@@ -269,11 +287,12 @@ def _run_with_bar(command: list[str], env: dict[str, str], commands: int) -> tup
     code = proc.returncode
     if code is None:
         code = proc.wait()
-    if code == 0:
-        sys.stdout.write("\r\033[K" + _format_bar(100.0, "Finishing") + "\n")
-    else:
-        sys.stdout.write("\n")
-    sys.stdout.flush()
+    if show:
+        if code == 0:
+            sys.stdout.write("\r\033[K" + _format_bar(100.0, "Finishing") + "\n")
+        else:
+            sys.stdout.write("\n")
+        sys.stdout.flush()
     return code, "".join(captured)
 
 
@@ -319,12 +338,15 @@ def apply(
     verbose: bool = False,
     label: str = "",
     progress: bool | None = None,
+    quiet: bool = False,
 ) -> None:
     """Build argv, set env LIBGUESTFS_BACKEND from the current environment or 'direct' if unset.
 
     dry_run: print the argv as one line (shlex.join) and return without run.
     On a terminal, and unless verbose, one progress line replaces the command log.
     verbose or a pipe lets virt-customize print its own lines.
+    quiet captures the log and prints nothing. A failure raises CustomizeError
+    with that log attached, for a file rather than the cron mail.
     run(argv, env) -> object with returncode. Default: subprocess.run(..., check=False).
     The progress bar does not use run. Nonzero raises RuntimeError including the
     return code, and the captured log is printed first. Do not use shell=True.
@@ -333,19 +355,25 @@ def apply(
         image, family, password_auth=password_auth, permit_root=permit_root, disk_format=disk_format
     )
     # Blank lines keep the prep block off the status lines.
-    print()
+    if not quiet:
+        print()
     try:
         if dry_run:
             print(shlex.join(command))
             return
         env = os.environ.copy()
         env.setdefault("LIBGUESTFS_BACKEND", "direct")
-        if _show_bar(verbose=verbose, progress=progress):
-            if label:
+        if quiet or _show_bar(verbose=verbose, progress=progress):
+            if not quiet and label:
                 print(f"Preparing {label} image for Proxmox PVE...")
             commands = sum(1 for part in command if part == "--run-command")
-            code, log = _run_with_bar(command, env, commands)
+            code, log = _run_with_bar(command, env, commands, show=not quiet)
             if code != 0:
+                if quiet:
+                    raise CustomizeError(
+                        f"virt-customize failed with return code {code}",
+                        log,
+                    )
                 if log.strip():
                     sys.stdout.write(log if log.endswith("\n") else log + "\n")
                     sys.stdout.flush()
@@ -356,7 +384,8 @@ def apply(
         if result.returncode != 0:
             raise RuntimeError(f"virt-customize failed with return code {result.returncode}")
     finally:
-        print()
+        if not quiet:
+            print()
 
 
 def _plan(family: str) -> tuple[str, tuple[str, ...]]:

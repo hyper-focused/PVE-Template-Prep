@@ -243,6 +243,45 @@ class ConvertTests(unittest.TestCase):
         with self.assertRaises(DownloadError):
             convert(Path("in.img"), Path("out.raw"), "vmdk", dry_run=True, run=run)
 
+    def test_exit_zero_needs_a_non_empty_regular_file(self) -> None:
+        def writes(content: bytes | None):
+            def run(argv: list[str]):
+                if content is not None:
+                    Path(argv[-1]).write_bytes(content)
+                return subprocess_result(argv, 0)
+
+            return run
+
+        with private_tempdir() as tmp:
+            dest = Path(tmp) / "disk.qcow2.work"
+            for content in (None, b""):
+                dest.unlink(missing_ok=True)
+                with self.assertRaises(DownloadError) as caught:
+                    convert(Path("in.img"), dest, "qcow2", run=writes(content))
+                self.assertIn("missing or empty", str(caught.exception))
+            convert(Path("in.img"), dest, "qcow2", run=writes(b"QFI"))
+            self.assertEqual(dest.read_bytes(), b"QFI")
+
+    def test_leftover_symlink_is_replaced_and_its_target_kept(self) -> None:
+        with private_tempdir() as tmp:
+            target = Path(tmp) / "elsewhere.qcow2"
+            target.write_bytes(b"keep")
+            dest = Path(tmp) / "disk.qcow2.work"
+            dest.symlink_to(target)
+
+            def run(argv: list[str]):
+                self.assertFalse(Path(argv[-1]).is_symlink())
+                Path(argv[-1]).write_bytes(b"QFI")
+                return subprocess_result(argv, 0)
+
+            convert(Path("in.img"), dest, "qcow2", run=run)
+            self.assertFalse(dest.is_symlink())
+            self.assertEqual(target.read_bytes(), b"keep")
+            folder = Path(tmp) / "dir.work"
+            folder.mkdir()
+            with self.assertRaises(DownloadError):
+                convert(Path("in.img"), folder, "qcow2", run=run)
+
 
 class FetchDryRunTests(unittest.TestCase):
     def test_fetch_verified_dry_run_skips_network(self) -> None:
