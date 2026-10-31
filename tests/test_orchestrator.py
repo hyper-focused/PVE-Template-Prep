@@ -1008,11 +1008,14 @@ class OrchestratorTest(unittest.TestCase):
             mock.patch.object(MOD, "interview", return_value=job),
             mock.patch.object(MOD, "run_one"),
             mock.patch.object(MOD, "ask_cache_cleanup", return_value=False),
+            mock.patch.object(MOD, "plan_prior_enrollments", return_value=None) as prior,
             mock.patch.object(MOD, "offer_created") as offer,
             redirect_stdout(io.StringIO()),
         ):
             code = MOD.main([])
         self.assertEqual(code, 0)
+        prior.assert_called_once()
+        self.assertEqual(prior.call_args.args[2], job.vmids)
         offer.assert_called_once()
         kwargs = offer.call_args.kwargs
         self.assertEqual(kwargs["created"], [("12", 910), ("13", 911)])
@@ -1027,6 +1030,47 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(kwargs["dry_run"], job.dry_run)
         self.assertIs(offer.call_args.args[0], MOD._read_line)
         self.assertIs(offer.call_args.args[1], MOD._write)
+
+    def test_prior_enrollments_are_applied_and_omitted_from_new_offer(self) -> None:
+        from pve_prep.offer import PriorEnrollmentPlan
+
+        job = _template_job(dry_run=True)
+        plan = PriorEnrollmentPlan(
+            vmids=frozenset({910}),
+            action="keep",
+            records=(),
+        )
+        with (
+            mock.patch.object(MOD, "interview", return_value=job),
+            mock.patch.object(MOD, "run_one"),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=False),
+            mock.patch.object(MOD, "plan_prior_enrollments", return_value=plan),
+            mock.patch.object(MOD, "apply_prior_enrollment") as apply,
+            mock.patch.object(MOD, "offer_created") as offer,
+            redirect_stdout(io.StringIO()),
+        ):
+            code = MOD.main([])
+        self.assertEqual(code, 0)
+        apply.assert_called_once()
+        self.assertEqual(apply.call_args.kwargs["created"], [("12", 910)])
+        self.assertIs(apply.call_args.kwargs["plan"], plan)
+        offer.assert_called_once()
+        self.assertEqual(offer.call_args.kwargs["created"], [("13", 911)])
+
+    def test_standalone_skips_prior_and_new_enrollment_asks(self) -> None:
+        job = replace(_image_job(dry_run=True), vmids=(), template_vmids=frozenset())
+        with (
+            mock.patch.object(MOD, "interview", return_value=job),
+            mock.patch.object(MOD, "run_one"),
+            mock.patch.object(MOD, "ask_cache_cleanup", return_value=False),
+            mock.patch.object(MOD, "plan_prior_enrollments") as prior,
+            mock.patch.object(MOD, "offer_created") as offer,
+            redirect_stdout(io.StringIO()),
+        ):
+            code = MOD.main([])
+        self.assertEqual(code, 0)
+        prior.assert_not_called()
+        offer.assert_not_called()
 
     def test_offer_abort_still_asks_about_the_cache(self) -> None:
         job = _template_job(dry_run=True)

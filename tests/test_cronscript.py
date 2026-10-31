@@ -17,11 +17,21 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from privtmp import private_tempdir
 
-from pve_prep.cronscript import CronScriptError, cron_script, install_cron_script
+from pve_prep.cronscript import (
+    CronScriptError,
+    cron_script,
+    install_cron_script,
+    remove_cron_script,
+)
 
 _PROGRAM = "/usr/local/sbin/pve-template-prep"
 _WEEKLY = "#!/bin/sh\nexec /usr/local/sbin/pve-template-prep --unattended weekly\n"
 _MONTHLY = "#!/bin/sh\nexec /usr/local/sbin/pve-template-prep --unattended monthly\n"
+_NAME = "pve-template-prep"
+
+
+def _path(root: str, schedule: str) -> Path:
+    return Path(root) / f"cron.{schedule}" / _NAME
 
 
 class CronScriptTextTests(unittest.TestCase):
@@ -69,10 +79,18 @@ class InstallTests(unittest.TestCase):
                     path = install_cron_script(_PROGRAM, "weekly", directory=tmp)
             finally:
                 os.umask(previous)
-            self.assertEqual(path, Path(tmp) / "pve-template-prep")
+            self.assertEqual(path, _path(tmp, "weekly"))
             self.assertEqual(path.stat().st_mode & 0o777, 0o755)
             self.assertEqual(path.read_bytes(), _WEEKLY.encode("utf-8"))
             chown.assert_not_called()
+
+    def test_weekly_and_monthly_do_not_share_a_file(self) -> None:
+        with private_tempdir() as tmp:
+            weekly = install_cron_script(_PROGRAM, "weekly", directory=tmp)
+            monthly = install_cron_script(_PROGRAM, "monthly", directory=tmp)
+            self.assertEqual(weekly.read_bytes(), _WEEKLY.encode("utf-8"))
+            self.assertEqual(monthly.read_bytes(), _MONTHLY.encode("utf-8"))
+            self.assertNotEqual(weekly, monthly)
 
     def test_second_install_keeps_mtime_and_text(self) -> None:
         with private_tempdir() as tmp:
@@ -89,7 +107,8 @@ class InstallTests(unittest.TestCase):
 
     def test_different_file_is_left_unchanged(self) -> None:
         with private_tempdir() as tmp:
-            path = Path(tmp) / "pve-template-prep"
+            path = _path(tmp, "weekly")
+            path.parent.mkdir()
             original = b"not the cron script\n"
             path.write_bytes(original)
             before = path.stat()
@@ -106,7 +125,9 @@ class InstallTests(unittest.TestCase):
             target = Path(tmp) / "elsewhere"
             original = b"keep me\n"
             target.write_bytes(original)
-            link = Path(tmp) / "pve-template-prep"
+            cron_dir = Path(tmp) / "cron.monthly"
+            cron_dir.mkdir()
+            link = cron_dir / _NAME
             link.symlink_to(target)
             with self.assertRaises(CronScriptError):
                 install_cron_script(_PROGRAM, "monthly", directory=tmp)
@@ -127,7 +148,7 @@ class InstallTests(unittest.TestCase):
             link = Path(tmp) / "cron.weekly"
             link.symlink_to(real)
             with self.assertRaises(CronScriptError):
-                install_cron_script(_PROGRAM, "weekly", directory=link)
+                install_cron_script(_PROGRAM, "weekly", directory=tmp)
             self.assertEqual(list(real.iterdir()), [])
             self.assertTrue(link.is_symlink())
 
@@ -163,6 +184,38 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), _MONTHLY.encode("utf-8"))
             chown.assert_called_once()
             self.assertEqual(chown.call_args.args[1:], (0, 0))
+
+
+class RemoveTests(unittest.TestCase):
+    def test_remove_ours_and_leave_absent(self) -> None:
+        with private_tempdir() as tmp:
+            path = install_cron_script(_PROGRAM, "weekly", directory=tmp)
+            self.assertTrue(remove_cron_script(_PROGRAM, "weekly", directory=tmp))
+            self.assertFalse(path.exists())
+            self.assertFalse(remove_cron_script(_PROGRAM, "weekly", directory=tmp))
+
+    def test_remove_leaves_a_different_file(self) -> None:
+        with private_tempdir() as tmp:
+            path = _path(tmp, "weekly")
+            path.parent.mkdir()
+            path.write_text("other\n", encoding="utf-8")
+            with self.assertRaises(CronScriptError) as caught:
+                remove_cron_script(_PROGRAM, "weekly", directory=tmp)
+            self.assertIn("left unchanged", str(caught.exception))
+            self.assertEqual(path.read_text(encoding="utf-8"), "other\n")
+
+    def test_remove_refuses_a_symlink(self) -> None:
+        with private_tempdir() as tmp:
+            target = Path(tmp) / "elsewhere"
+            target.write_text(_WEEKLY, encoding="utf-8")
+            cron_dir = Path(tmp) / "cron.weekly"
+            cron_dir.mkdir()
+            link = cron_dir / _NAME
+            link.symlink_to(target)
+            with self.assertRaises(CronScriptError):
+                remove_cron_script(_PROGRAM, "weekly", directory=tmp)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(target.read_text(encoding="utf-8"), _WEEKLY)
 
 
 if __name__ == "__main__":

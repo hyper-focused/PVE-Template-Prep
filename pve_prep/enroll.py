@@ -378,6 +378,15 @@ def enrollment_files(*, directory: str | Path = ENROLL_DIR) -> list[tuple[int, P
     return sorted(_record_paths(root), key=lambda item: item[0])
 
 
+def load_enrollments(*, directory: str | Path = ENROLL_DIR) -> list[Enrollment]:
+    """Every valid enrollment under directory, sorted by VMID. A bad file raises."""
+    records = [
+        load_enrollment_path(path, vmid) for vmid, path in enrollment_files(directory=directory)
+    ]
+    records.sort(key=lambda item: item.vmid)
+    return records
+
+
 def load_enrollment_path(path: Path, vmid: int) -> Enrollment:
     """Read one enrollment file. path must be the {vmid}.json for that VMID."""
     return _read_record(Path(path), _check_vmid(vmid))

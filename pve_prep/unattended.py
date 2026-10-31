@@ -484,6 +484,8 @@ def run_unattended(
     nodes_root: Path,
     dry_run: bool = False,
     vmlist_path: Path = VMLIST,
+    program: str | None = None,
+    cron_directory: str | Path | None = None,
 ) -> int:
     """Swap every enrolled guest on schedule whose published digest changed.
 
@@ -493,12 +495,15 @@ def run_unattended(
     printed and the rest still run. A guest whose live storage or boot-disk
     fingerprint no longer matches the record is refused and left alone. A
     downloaded image that does not match its published checksum removes that
-    record. A failed lookup or download keeps it for the next run. Returns 1
-    when any guest failed, otherwise 0. dry_run still calls perform, with the
-    job marked dry_run, and leaves every record unchanged. A failure writes
-    /var/log/pve-template-prep/<vmid>.log and keeps that path in the
-    sentence. The virt-customize log stays in the file.
+    record. A failed lookup or download keeps it for the next run. When
+    program is set, cron wrappers with no enrollments left are removed.
+    Returns 1 when any guest failed, otherwise 0. dry_run still calls
+    perform, with the job marked dry_run, and leaves every record unchanged.
+    A failure writes /var/log/pve-template-prep/<vmid>.log and keeps that
+    path in the sentence. The virt-customize log stays in the file.
     """
+    from pve_prep.offer import reconcile_cron_scripts
+
     failed = False
     for line in prune_enrollments(
         directory=directory,
@@ -546,4 +551,12 @@ def run_unattended(
                 )
             )
             failed = True
+    if program is not None:
+        reconcile_cron_scripts(
+            print,
+            program=program,
+            directory=directory,
+            cron_directory=cron_directory,
+            dry_run=dry_run,
+        )
     return 1 if failed else 0

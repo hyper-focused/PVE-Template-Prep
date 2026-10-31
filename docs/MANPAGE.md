@@ -183,17 +183,17 @@ A release that fails does not stop the others, except as stated above.
 
 ## ENROLLED TEMPLATES
 
-Enrollment is asked only after this run finished at least one template: a new one, an existing template whose disk the create path replaced, or a template whose disk the update path replaced. The question comes after the builds finish and before the cache question. Section **Automated updates**, question `Choose a schedule. Highlight a selection and press enter`. The rows are `No automated updates` (default), `Weekly automated updates`, and `Monthly automated updates`. On a pipe the prompt is `Select [1]:` and `1` is no. That one answer applies to every template finished in the run. No record is written until the operator picks weekly or monthly. Automated updates work only with file-based storage; they will not run on block storage. Leave the template's disk image and storage alone after enrollment, or the next update refuses. Standalone images are not asked and are not enrolled. A create left as a normal VM is not enrolled. End of input at this question installs nothing and changes no record. Templates already built stay.
+**Already enrolled VMIDs (before download).** On create or update, after VMIDs are known and before any download or import, each selected VMID that already has `/var/lib/pve-template-prep/<vmid>.json` is listed. Section **Automated updates**, question `Already enrolled. Keep, change schedule, or turn off?` The rows are `Keep current schedule` (default), `Change schedule` (then weekly or monthly), and `Turn off automated updates`. That choice is stored for the run and applied only to builds that succeed: keep or change rewrites the record with this run's release, SSH answers, upstream digest, storage, and disk fingerprint; turn off removes the JSON. When no enrollment remains for a schedule, the matching `/etc/cron.{weekly,monthly}/pve-template-prep` wrapper is removed if this tool wrote it. Standalone image jobs never ask.
 
-The person running the program decides. Weekly or monthly writes a new record for each template from this run, replacing any earlier record for that VMID with this run's release, SSH answers, and schedule. No, `1`, or Enter removes any earlier record for each of those VMIDs and prints `Automated updates for VMID <vmid> were removed.` A dry run says which records would be removed and removes none.
+**New enrollments (after builds).** Templates this run finished that had no prior record get the normal schedule question after the builds and before the cache question. Question `Choose a schedule. Highlight a selection and press enter`. The rows are `No automated updates` (default), `Weekly automated updates`, and `Monthly automated updates`. On a pipe the prompt is `Select [1]:` and `1` is no. That one answer applies to every such new template. No record is written until the operator picks weekly or monthly. One schedule applies to every enrolled template on this host: picking weekly or monthly moves earlier enrollments onto that schedule and removes the other cron script. Automated updates work only with file-based storage; they will not run on block storage. Leave the template's disk image and storage alone after enrollment, or the next update refuses. Standalone images are not asked and are not enrolled. A create left as a normal VM is not enrolled. End of input at this question installs nothing. Templates already built stay.
 
 The proof of creation is a root-only JSON file, one per VMID, at `/var/lib/pve-template-prep/<vmid>.json` (mode `0600`). It is not a Proxmox tag. A template with no file is never selected. The directory is held to the same checks as the backup directory.
 
 | Field | Contents |
 | --- | --- |
 | `vmid` | The guest. |
-| `distro` | Catalog distribution. |
-| `release` | Catalog release. |
+| `distro` | Catalog distribution used for fetch. Not checked against guest name or tags. |
+| `release` | Catalog release used for fetch. Not checked against guest name or tags. |
 | `digest` | Published checksum of the upstream image applied to this template. |
 | `checksum_alg` | `256` or `512` for `digest`. |
 | `disk_digest` | SHA-256 of the boot-disk file this tool left on storage. |
@@ -215,7 +215,7 @@ The first enrollment for a schedule installs `/etc/cron.weekly/pve-template-prep
 exec /usr/local/sbin/pve-template-prep --unattended weekly
 ```
 
-The monthly file uses `monthly` in place of `weekly`. The script does not download images and does not call `qm`. If that path already exists with different text, it is left unchanged. Later enrollments only add record files. A dry run prints the script and the record and writes neither.
+The monthly file uses `monthly` in place of `weekly`. The script does not download images and does not call `qm`. If that path already exists with different text, it is left unchanged. Only one of these wrappers should be active: the host keeps a single automated-update schedule. When the last record for a schedule is removed, that wrapper is deleted if it is still ours. A dry run prints the script and the record and writes neither.
 
 `--unattended weekly` or `--unattended monthly` skips the self-update prompt and the interview. The command is non-interactive. It takes the run lock, removes stale records as above, then for each matching record, a matching digest prints that the VMID is current and that the disk was left unchanged. A different digest backs up the current boot disk to `/var/backups/pve-template-prep`, downloads and preps a new image with the stored SSH answers, attaches it to the boot bus, then deletes the old volume and runs `qm template`. It does not detach first. Storage and format come from the live boot disk, so a template moved to another file storage is still updated. Block storage is refused. Memory, cores, bridge, name, and firewall are not rewritten.
 

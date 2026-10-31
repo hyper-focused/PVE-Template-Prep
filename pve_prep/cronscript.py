@@ -32,6 +32,26 @@ def cron_script(program: str, schedule: str) -> str:
     return f"#!/bin/sh\nexec {shlex.quote(program)} --unattended {schedule}\n"
 
 
+def _cron_dir(schedule: str, directory: str | Path | None) -> Path:
+    """/etc/cron.<schedule>, or <directory>/cron.<schedule> for a test root.
+
+    A custom root mirrors the /etc layout so weekly and monthly never share
+    one file. The override root must already exist; only cron.<schedule>
+    under it is created. /etc/cron.* is never created.
+    """
+    if directory is None:
+        return Path(f"/etc/cron.{schedule}")
+    root = Path(directory)
+    if root.is_symlink() or not root.is_dir():
+        raise CronScriptError(f"{root}: not a directory")
+    path = root / f"cron.{schedule}"
+    try:
+        path.mkdir(mode=0o755, exist_ok=True)
+    except OSError as exc:
+        raise CronScriptError(f"{path}: {exc}") from exc
+    return path
+
+
 def install_cron_script(
     program: str,
     schedule: str,
@@ -45,7 +65,7 @@ def install_cron_script(
     The cron directory is not created.
     """
     text = cron_script(program, schedule)
-    cron_dir = Path(f"/etc/cron.{schedule}") if directory is None else Path(directory)
+    cron_dir = _cron_dir(schedule, directory)
     # lstat, then open the directory itself. A symlink must not receive the script.
     if cron_dir.is_symlink():
         raise CronScriptError(f"{cron_dir} is a symlink")
@@ -59,6 +79,56 @@ def install_cron_script(
     finally:
         os.close(dir_fd)
     return dest
+
+
+def remove_cron_script(
+    program: str,
+    schedule: str,
+    *,
+    directory: str | Path | None = None,
+) -> bool:
+    """Remove our cron script when it is still ours. True when a file was removed.
+
+    Absent is False. A symlink, a non-file, or different text is left unchanged
+    and raises CronScriptError: this tool only deletes a wrapper it wrote.
+    """
+    text = cron_script(program, schedule)
+    cron_dir = _cron_dir(schedule, directory)
+    if cron_dir.is_symlink():
+        raise CronScriptError(f"{cron_dir} is a symlink")
+    dest = cron_dir / _NAME
+    try:
+        dir_fd = os.open(cron_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise CronScriptError(f"{cron_dir}: {exc}") from exc
+    try:
+        try:
+            info = os.lstat(_NAME, dir_fd=dir_fd)
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise CronScriptError(f"{dest}: {exc}") from exc
+        if stat.S_ISLNK(info.st_mode):
+            raise CronScriptError(f"{dest} is a symlink")
+        if not stat.S_ISREG(info.st_mode):
+            raise CronScriptError(f"{dest} is not a regular file and was left unchanged")
+        try:
+            current = _read_nofollow(dir_fd, len(text.encode("utf-8")) + 1)
+        except OSError as exc:
+            raise CronScriptError(f"{dest}: {exc}") from exc
+        if current != text.encode("utf-8"):
+            raise CronScriptError(f"{dest} differs and was left unchanged")
+        try:
+            os.unlink(_NAME, dir_fd=dir_fd)
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise CronScriptError(f"{dest}: {exc}") from exc
+        return True
+    finally:
+        os.close(dir_fd)
 
 
 def _install_at(dir_fd: int, dest: Path, text: str) -> None:

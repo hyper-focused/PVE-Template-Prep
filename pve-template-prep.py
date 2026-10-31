@@ -27,7 +27,7 @@ from pve_prep.customize import argv as customize_argv
 from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, file_digest, publish
 from pve_prep.enroll import ENROLL_DIR
 from pve_prep.job import DEFAULT_CACHE, Job, action_for, converts_to_template
-from pve_prep.offer import offer_created
+from pve_prep.offer import apply_prior_enrollment, offer_created, plan_prior_enrollments
 from pve_prep.prompts import PromptAbort, ask_cache_cleanup, interview
 from pve_prep.ui import arm, quiet_echo, tone
 from pve_prep.vm import (
@@ -483,10 +483,18 @@ def acquire_run_lock(path: Path | None = None) -> int:
 
 
 def _prune_enrollments(*, dry_run: bool) -> None:
+    from pve_prep.offer import reconcile_cron_scripts
     from pve_prep.unattended import prune_enrollments
 
     for line in prune_enrollments(directory=ENROLL_DIR, dry_run=dry_run):
         print(line)
+    reconcile_cron_scripts(
+        print,
+        program=str(Path(__file__).resolve()),
+        directory=ENROLL_DIR,
+        cron_directory=None,
+        dry_run=dry_run,
+    )
 
 
 def _claim_host() -> int:
@@ -561,6 +569,8 @@ def _run_unattended(schedule: str, *, dry_run: bool) -> int:
         storage_kind=storage_kind,
         nodes_root=Path("/etc/pve/nodes"),
         dry_run=dry_run,
+        program=str(Path(__file__).resolve()),
+        cron_directory=None,
     )
     if code != 0:
         return 1
@@ -645,6 +655,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL: {exc}")
         failed = True
         pairs = []
+    # Standalone image jobs never enroll. Create/update ask about already-enrolled
+    # VMIDs before any download, then apply that choice only to successful builds.
+    standalone = job.mode == "image" and not job.vmids
+    prior_plan = None
+    if not standalone and job.vmids and pairs:
+        try:
+            prior_plan = plan_prior_enrollments(
+                reader,
+                _write,
+                job.vmids,
+                directory=ENROLL_DIR,
+            )
+        except PromptAbort:
+            print("aborted")
+            return 1
     succeeded: list[tuple[str, int | None]] = []
     for release, vmid in pairs:
         try:
@@ -660,23 +685,47 @@ def main(argv: list[str] | None = None) -> int:
         else:
             succeeded.append((release, vmid))
     print("done")
-    try:
-        offer_created(
-            reader,
-            _write,
-            created=_created_templates(job, succeeded),
-            distro=job.distro,
-            password_auth=job.password_auth,
-            permit_root=job.permit_root,
-            digest_for=_digest_for,
-            pin_for=_pin_for,
-            program=str(Path(__file__).resolve()),
-            directory=ENROLL_DIR,
-            cron_directory=None,
-            dry_run=job.dry_run,
-        )
-    except PromptAbort:
-        pass
+    if not standalone:
+        created = _created_templates(job, succeeded)
+        prior_vmids = prior_plan.vmids if prior_plan is not None else frozenset()
+        prior_created = [(release, vmid) for release, vmid in created if vmid in prior_vmids]
+        new_created = [(release, vmid) for release, vmid in created if vmid not in prior_vmids]
+        program = str(Path(__file__).resolve())
+        try:
+            if prior_plan is not None and prior_created:
+                apply_prior_enrollment(
+                    _write,
+                    plan=prior_plan,
+                    created=prior_created,
+                    distro=job.distro,
+                    password_auth=job.password_auth,
+                    permit_root=job.permit_root,
+                    digest_for=_digest_for,
+                    pin_for=_pin_for,
+                    program=program,
+                    directory=ENROLL_DIR,
+                    cron_directory=None,
+                    dry_run=job.dry_run,
+                )
+            # New enrollments only. Skip the empty turn-off ask when this run
+            # already handled prior enrollments (keep/change/off).
+            if new_created or prior_plan is None:
+                offer_created(
+                    reader,
+                    _write,
+                    created=new_created,
+                    distro=job.distro,
+                    password_auth=job.password_auth,
+                    permit_root=job.permit_root,
+                    digest_for=_digest_for,
+                    pin_for=_pin_for,
+                    program=program,
+                    directory=ENROLL_DIR,
+                    cron_directory=None,
+                    dry_run=job.dry_run,
+                )
+        except PromptAbort:
+            pass
     if _settle_cache(job, failed, reader):
         failed = True
     _report_backups(job, started)
