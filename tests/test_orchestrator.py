@@ -46,6 +46,7 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     download.convert = mock.MagicMock(name="convert")
     download.publish = mock.MagicMock(name="publish", return_value="written")
     download.clear_cache = mock.MagicMock(name="clear_cache")
+    download.file_digest = real_download.file_digest
     download.DownloadError = real_download.DownloadError
 
     customize = _stub("pve_prep.customize")
@@ -74,6 +75,7 @@ def _install_sibling_stubs(real_customize, real_vm, real_catalog, real_download)
     vm.config_has_os_disk = real_vm.config_has_os_disk
     vm.os_disk_storage = real_vm.os_disk_storage
     vm.os_disk_format = real_vm.os_disk_format
+    vm.boot_disk_location = real_vm.boot_disk_location
     vm.import_directories = real_vm.import_directories
     vm.insert_disk = mock.MagicMock(name="insert_disk")
     vm.set_guest_options = mock.MagicMock(name="set_guest_options")
@@ -1018,6 +1020,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(kwargs["password_auth"], job.password_auth)
         self.assertEqual(kwargs["permit_root"], job.permit_root)
         self.assertIs(kwargs["digest_for"], MOD._digest_for)
+        self.assertIs(kwargs["pin_for"], MOD._pin_for)
         self.assertEqual(kwargs["program"], str(Path(MOD.__file__).resolve()))
         self.assertEqual(kwargs["directory"], MOD.ENROLL_DIR)
         self.assertIsNone(kwargs["cron_directory"])

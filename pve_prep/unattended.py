@@ -16,24 +16,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .customize import CustomizeError
-from .download import DownloadError
+from .download import DownloadError, file_digest
 from .enroll import (
     ENROLL_DIR,
-    SCHEDULES,
     Enrollment,
     EnrollmentError,
+    enrollment_files,
     enrollments_for,
+    is_incomplete_enrollment,
+    load_enrollment_path,
     remove_enrollment,
     replace_digest,
 )
 from .job import DEFAULT_BACKUPS, DEFAULT_CACHE, Job
 from .runlog import LOG_DIR, RunLogError, write_run_log
 from .vm import (
+    boot_disk_location,
     is_file_storage,
     is_linked_clone,
     is_template,
     os_disk_format,
-    os_disk_storage,
     parse_qm_status,
     refuse_replace_target,
     unfinished_swap,
@@ -91,27 +93,59 @@ def prune_enrollments(
     nodes_root: Path = NODES_ROOT,
     dry_run: bool = False,
 ) -> list[str]:
-    """Remove records whose VMID is gone, a VM, or a container. Returns one line each."""
+    """Remove records that cannot be updated. Returns one line each.
+
+    A file missing storage or disk_digest is incomplete and is removed so a
+    schedule is not blocked by an older enrollment. A VMID that is gone from
+    the cluster, or is now a normal VM, a container, or a linked clone, is
+    removed too. Other unreadable files are reported and left in place.
+    """
     lines: list[str] = []
-    for schedule in SCHEDULES:
+    try:
+        files = enrollment_files(directory=directory)
+    except EnrollmentError as exc:
+        lines.append(f"Automated update records could not be read: {exc}")
+        return lines
+    for vmid, path in files:
         try:
-            records = enrollments_for(schedule, directory=directory)
+            record = load_enrollment_path(path, vmid)
         except EnrollmentError as exc:
-            lines.append(f"Automated update records could not be read: {exc}")
-            return lines
-        for record in records:
-            reason = stale_reason(record.vmid, vmlist_path=vmlist_path, nodes_root=nodes_root)
-            if reason is None:
+            if is_incomplete_enrollment(exc):
+                reason = (
+                    f"VMID {vmid} enrollment is missing its storage or disk fingerprint"
+                )
+                if dry_run:
+                    lines.append(
+                        f"Dry run: {reason}; its automated updates would be removed. "
+                        "Run pve-template-prep to enroll it again."
+                    )
+                    continue
+                try:
+                    remove_enrollment(vmid, directory=directory)
+                except EnrollmentError as removal:
+                    lines.append(
+                        f"{reason}, but its automated update record could not be removed: {removal}"
+                    )
+                    continue
+                lines.append(
+                    f"{reason}, so its automated updates were removed. "
+                    "Run pve-template-prep to enroll it again."
+                )
                 continue
-            if dry_run:
-                lines.append(f"Dry run: {reason}; its automated updates would be removed.")
-                continue
-            try:
-                remove_enrollment(record.vmid, directory=directory)
-            except EnrollmentError as exc:
-                lines.append(f"{reason}, but its automated update record could not be removed: {exc}")
-                continue
-            lines.append(f"{reason}, so its automated updates were removed.")
+            lines.append(f"Automated update record for VMID {vmid} could not be read: {exc}")
+            continue
+        reason = stale_reason(record.vmid, vmlist_path=vmlist_path, nodes_root=nodes_root)
+        if reason is None:
+            continue
+        if dry_run:
+            lines.append(f"Dry run: {reason}; its automated updates would be removed.")
+            continue
+        try:
+            remove_enrollment(record.vmid, directory=directory)
+        except EnrollmentError as exc:
+            lines.append(f"{reason}, but its automated update record could not be removed: {exc}")
+            continue
+        lines.append(f"{reason}, so its automated updates were removed.")
     return lines
 
 
@@ -256,6 +290,16 @@ def _failure_situation(record: Enrollment, exc: BaseException) -> str:
             "The boot disk is on block storage, which this update does not replace. "
             "The disk was left unchanged."
         )
+    if "enrolled on storage" in text or "moved off storage" in text:
+        return (
+            f"VMID {vmid} is no longer on the storage recorded at enrollment, "
+            "so the disk was left unchanged."
+        )
+    if "boot disk no longer matches" in text or "disk fingerprint" in text:
+        return (
+            f"VMID {vmid}'s boot disk no longer matches the image recorded at enrollment, "
+            "so the disk was left unchanged."
+        )
     if "has no OS disk" in text:
         return f"VMID {vmid} has no boot disk this update can replace. Nothing was changed."
     if "config failed" in text:
@@ -345,10 +389,17 @@ def _swap_one(
     config = getattr(cfg, "stdout", "") or ""
     refuse_replace_target(run, vmid, config, nodes_root)
 
-    storage = os_disk_storage(config)
+    try:
+        live_storage, _volid, disk_path = boot_disk_location(run, config)
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
+    if live_storage != record.storage:
+        raise RuntimeError(
+            f"VM {vmid} is on storage {live_storage or '(none)'}, "
+            f"but it was enrolled on storage {record.storage}"
+        )
+    storage = record.storage
     fmt = os_disk_format(config)
-    if not storage:
-        raise RuntimeError(f"VM {vmid} has no OS disk storage")
     if fmt not in {"raw", "qcow2"}:
         raise RuntimeError(f"VM {vmid} OS disk format {fmt or 'unknown'} is not raw or qcow2")
     kind = storage_kind(storage)
@@ -358,6 +409,14 @@ def _swap_one(
         raise RuntimeError(
             f"storage {storage} is {shown}. Disk images go on file storage only "
             "(directory, NFS, CIFS, btrfs, CephFS, GlusterFS)"
+        )
+    try:
+        live_disk = file_digest(Path(disk_path), "256")
+    except (OSError, DownloadError) as exc:
+        raise RuntimeError(f"VM {vmid} boot disk could not be fingerprinted: {exc}") from exc
+    if live_disk != record.disk_digest:
+        raise RuntimeError(
+            f"VM {vmid} boot disk no longer matches the image recorded at enrollment"
         )
 
     digest, alg = digest_for(record.distro, record.release)
@@ -386,7 +445,31 @@ def _swap_one(
             log_error=log_error,
         )
     )
-    replace_digest(vmid, digest, directory=directory, checksum_alg=alg)
+    # The new boot disk is the enrolled image for the next run.
+    after = _invoke(run, ["qm", "config", str(vmid)])
+    if getattr(after, "returncode", 1) != 0:
+        raise RuntimeError(f"VM {vmid} config failed after the disk swap")
+    try:
+        after_storage, _after_volid, after_path = boot_disk_location(
+            run, getattr(after, "stdout", "") or ""
+        )
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
+    if after_storage != record.storage:
+        raise RuntimeError(
+            f"VM {vmid} moved off storage {record.storage} during the update"
+        )
+    try:
+        new_disk = file_digest(Path(after_path), "256")
+    except (OSError, DownloadError) as exc:
+        raise RuntimeError(f"VM {vmid} new boot disk could not be fingerprinted: {exc}") from exc
+    replace_digest(
+        vmid,
+        digest,
+        directory=directory,
+        checksum_alg=alg,
+        disk_digest=new_disk,
+    )
 
 
 def run_unattended(
@@ -405,12 +488,14 @@ def run_unattended(
     """Swap every enrolled guest on schedule whose published digest changed.
 
     Records whose VMID is gone from the cluster, or is now a normal VM, a
-    linked clone, or a container, are removed first. One guest's failure is
-    printed and the rest still run. A downloaded image that does not match
-    its published checksum removes that record. A failed lookup or download
-    keeps it for the next run. Returns 1 when any guest failed, otherwise 0.
-    dry_run still calls perform, with the job marked dry_run, and leaves
-    every record unchanged. A failure writes
+    linked clone, or a container, are removed first, as are incomplete
+    enrollments that predate storage and disk_digest. One guest's failure is
+    printed and the rest still run. A guest whose live storage or boot-disk
+    fingerprint no longer matches the record is refused and left alone. A
+    downloaded image that does not match its published checksum removes that
+    record. A failed lookup or download keeps it for the next run. Returns 1
+    when any guest failed, otherwise 0. dry_run still calls perform, with the
+    job marked dry_run, and leaves every record unchanged. A failure writes
     /var/log/pve-template-prep/<vmid>.log and keeps that path in the
     sentence. The virt-customize log stays in the file.
     """

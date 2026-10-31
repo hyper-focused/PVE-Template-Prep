@@ -41,6 +41,7 @@ from pve_prep.vm import (
     is_file_storage,
     os_disk_format,
     os_disk_storage,
+    boot_disk_location,
     select_boot_disk,
     template_commands,
 )
@@ -313,6 +314,19 @@ local-lvm     lvmthin     disabled      100000000               0      100000000
         self.assertEqual(select_boot_disk(cfg), ("scsi0", "other:vm-901-disk-0"))
         self.assertEqual(os_disk_storage(cfg), "other")
         self.assertEqual(os_disk_storage("ide2: local:cloudinit,media=cdrom\n"), "")
+
+
+    def test_boot_disk_location_returns_storage_volid_and_path(self) -> None:
+        run = FakeRun([(0, "/mnt/pve/NFS/vm-910-disk-0.raw\n")])
+        storage, volid, path = boot_disk_location(
+            run, "template: 1\nscsi0: NFS-SATA-SSD1:vm-910-disk-0.raw\n"
+        )
+        self.assertEqual(storage, "NFS-SATA-SSD1")
+        self.assertEqual(volid, "NFS-SATA-SSD1:vm-910-disk-0.raw")
+        self.assertEqual(path, "/mnt/pve/NFS/vm-910-disk-0.raw")
+        self.assertEqual(run.calls, [["pvesm", "path", volid]])
+        with self.assertRaises(VmError):
+            boot_disk_location(FakeRun([]), "name: empty\n")
 
     def test_os_disk_format_follows_the_boot_disk(self) -> None:
         qcow = "boot: order=scsi0\nscsi0: nfs:910/vm-910-disk-0.qcow2,size=3G\n"

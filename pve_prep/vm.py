@@ -535,6 +535,29 @@ def os_disk_storage(config_text: str) -> str:
     return _storage_of(found[1])
 
 
+def boot_disk_location(run: Run, config_text: str) -> tuple[str, str, str]:
+    """Storage id, volume id, and host path of the boot OS disk.
+
+    The path comes from pvesm path. A missing disk, a failed path lookup, or
+    an empty path raises VmError. Callers that need a fingerprint hash that
+    path themselves.
+    """
+    found = select_boot_disk(config_text)
+    if found is None:
+        raise VmError("guest has no OS disk")
+    _bus, volid = found
+    storage = _storage_of(volid)
+    if not storage:
+        raise VmError(f"boot disk {volid} has no storage id")
+    located = run(["pvesm", "path", volid])
+    if getattr(located, "returncode", 1) != 0:
+        raise VmError(f"disk path failed for {volid}: {_detail(located)}")
+    path = _path_line(getattr(located, "stdout", "") or "")
+    if not path:
+        raise VmError(f"disk path for {volid} was empty")
+    return storage, volid, path
+
+
 def volume_format_of(volid: str, options: str = "") -> str:
     """raw or qcow2 from one qm disk. Empty when the format is not one of those.
 

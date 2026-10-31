@@ -30,13 +30,18 @@ _FILE_NAME = re.compile(r"([0-9]+)\.json\Z")
 _FIELDS = (
     "checksum_alg",
     "digest",
+    "disk_digest",
     "distro",
     "password_auth",
     "permit_root",
     "release",
     "schedule",
+    "storage",
     "vmid",
 )
+# Always SHA-256 of the enrolled boot-disk file. Upstream digests keep checksum_alg.
+_DISK_DIGEST_ALG = "256"
+_DISK_DIGEST_LEN = _DIGEST_LEN[_DISK_DIGEST_ALG]
 
 
 class EnrollmentError(Exception):
@@ -45,13 +50,21 @@ class EnrollmentError(Exception):
 
 @dataclass(frozen=True)
 class Enrollment:
-    """One enrolled guest. The JSON object has these fields and no others."""
+    """One enrolled guest. The JSON object has these fields and no others.
+
+    digest is the upstream published checksum. disk_digest is a SHA-256 of the
+    boot-disk file this tool left on storage. storage is the file-storage id
+    that held that disk. An unattended run refuses the guest when either the
+    live storage or the live disk fingerprint no longer matches.
+    """
 
     vmid: int
     distro: str
     release: str
     digest: str
     checksum_alg: str  # "256" or "512"
+    disk_digest: str  # SHA-256 of the enrolled boot-disk file
+    storage: str
     password_auth: bool
     permit_root: bool
     schedule: str  # weekly or monthly
@@ -62,6 +75,8 @@ class Enrollment:
         _check_token(self.release, "release")
         _check_alg(self.checksum_alg)
         _check_digest(self.digest, self.checksum_alg)
+        _check_disk_digest(self.disk_digest)
+        _check_token(self.storage, "storage")
         _check_bool(self.password_auth, "password_auth")
         _check_bool(self.permit_root, "permit_root")
         _check_schedule(self.schedule)
@@ -99,6 +114,16 @@ def _check_digest(digest: object, alg: str) -> str:
     want = _DIGEST_LEN[alg]
     if len(digest) != want:
         raise EnrollmentError(f"digest must be {want} lowercase hex characters")
+    return digest
+
+
+def _check_disk_digest(digest: object) -> str:
+    if not isinstance(digest, str) or _HEX.fullmatch(digest) is None:
+        raise EnrollmentError("disk_digest must be lowercase hex")
+    if len(digest) != _DISK_DIGEST_LEN:
+        raise EnrollmentError(
+            f"disk_digest must be {_DISK_DIGEST_LEN} lowercase hex characters"
+        )
     return digest
 
 
@@ -197,10 +222,20 @@ def _from_json(payload: object) -> Enrollment:
         release=payload["release"],
         digest=payload["digest"],
         checksum_alg=payload["checksum_alg"],
+        disk_digest=payload["disk_digest"],
+        storage=payload["storage"],
         password_auth=payload["password_auth"],
         permit_root=payload["permit_root"],
         schedule=payload["schedule"],
     )
+
+
+def is_incomplete_enrollment(exc: EnrollmentError) -> bool:
+    """True when a record predates storage and disk_digest, or omits them."""
+    text = str(exc)
+    if "missing" not in text:
+        return False
+    return "storage" in text or "disk_digest" in text
 
 
 def _existing_private_dir(directory: str | Path) -> Path | None:
@@ -317,7 +352,11 @@ def _record_paths(directory: Path) -> list[tuple[int, Path]]:
 
 
 def enrollments_for(schedule: str, *, directory: str | Path = ENROLL_DIR) -> list[Enrollment]:
-    """Records on schedule, sorted by VMID."""
+    """Records on schedule, sorted by VMID.
+
+    A file that cannot be read raises. Callers that must keep going after a
+    bad file should walk enrollment_files themselves.
+    """
     _check_schedule(schedule)
     root = _existing_private_dir(directory)
     if root is None:
@@ -331,18 +370,31 @@ def enrollments_for(schedule: str, *, directory: str | Path = ENROLL_DIR) -> lis
     return records
 
 
+def enrollment_files(*, directory: str | Path = ENROLL_DIR) -> list[tuple[int, Path]]:
+    """Every {vmid}.json path under directory, sorted by VMID. Absent dir is empty."""
+    root = _existing_private_dir(directory)
+    if root is None:
+        return []
+    return sorted(_record_paths(root), key=lambda item: item[0])
+
+
+def load_enrollment_path(path: Path, vmid: int) -> Enrollment:
+    """Read one enrollment file. path must be the {vmid}.json for that VMID."""
+    return _read_record(Path(path), _check_vmid(vmid))
+
+
 def replace_digest(
     vmid: int,
     digest: str,
     *,
     directory: str | Path = ENROLL_DIR,
     checksum_alg: str | None = None,
+    disk_digest: str | None = None,
 ) -> Enrollment:
-    """Store a new digest on the enrolled VMID and return the record.
+    """Store a new upstream digest, and optionally a new disk fingerprint.
 
-    checksum_alg defaults to the algorithm already stored. The digest is
-    checked against the algorithm that will be written, and a bad pair is
-    not saved.
+    checksum_alg defaults to the algorithm already stored. storage is never
+    changed here: the enrolled storage is the one the operator chose.
     """
     current = load_enrollment(vmid, directory=directory)
     if current is None:
@@ -350,6 +402,10 @@ def replace_digest(
     alg = current.checksum_alg if checksum_alg is None else checksum_alg
     _check_alg(alg)
     _check_digest(digest, alg)
-    updated = replace(current, digest=digest, checksum_alg=alg)
+    fingerprint = current.disk_digest if disk_digest is None else disk_digest
+    _check_disk_digest(fingerprint)
+    updated = replace(
+        current, digest=digest, checksum_alg=alg, disk_digest=fingerprint
+    )
     save_enrollment(updated, directory=directory)
     return updated

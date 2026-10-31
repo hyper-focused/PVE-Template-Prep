@@ -183,7 +183,7 @@ A release that fails does not stop the others, except as stated above.
 
 ## ENROLLED TEMPLATES
 
-Enrollment is asked only after this run finished at least one template: a new one, an existing template whose disk the create path replaced, or a template whose disk the update path replaced. The question comes after the builds finish and before the cache question. Section **Automated updates**, question `Choose a schedule. Highlight a selection and press enter`. The rows are `No automated updates` (default), `Weekly automated updates`, and `Monthly automated updates`. On a pipe the prompt is `Select [1]:` and `1` is no. That one answer applies to every template finished in the run. No record is written until the operator picks weekly or monthly. Standalone images are not asked and are not enrolled. A create left as a normal VM is not enrolled. End of input at this question installs nothing and changes no record. Templates already built stay.
+Enrollment is asked only after this run finished at least one template: a new one, an existing template whose disk the create path replaced, or a template whose disk the update path replaced. The question comes after the builds finish and before the cache question. Section **Automated updates**, question `Choose a schedule. Highlight a selection and press enter`. The rows are `No automated updates` (default), `Weekly automated updates`, and `Monthly automated updates`. On a pipe the prompt is `Select [1]:` and `1` is no. That one answer applies to every template finished in the run. No record is written until the operator picks weekly or monthly. Automated updates work only with file-based storage; they will not run on block storage. Leave the template's disk image and storage alone after enrollment, or the next update refuses. Standalone images are not asked and are not enrolled. A create left as a normal VM is not enrolled. End of input at this question installs nothing and changes no record. Templates already built stay.
 
 The person running the program decides. Weekly or monthly writes a new record for each template from this run, replacing any earlier record for that VMID with this run's release, SSH answers, and schedule. No, `1`, or Enter removes any earlier record for each of those VMIDs and prints `Automated updates for VMID <vmid> were removed.` A dry run says which records would be removed and removes none.
 
@@ -194,13 +194,17 @@ The proof of creation is a root-only JSON file, one per VMID, at `/var/lib/pve-t
 | `vmid` | The guest. |
 | `distro` | Catalog distribution. |
 | `release` | Catalog release. |
-| `digest` | Published checksum of the image applied to this template. |
-| `checksum_alg` | `256` or `512`. |
+| `digest` | Published checksum of the upstream image applied to this template. |
+| `checksum_alg` | `256` or `512` for `digest`. |
+| `disk_digest` | SHA-256 of the boot-disk file this tool left on storage. |
+| `storage` | File-storage id that held that disk when the guest was enrolled. |
 | `password_auth` | The SSH password-authentication answer from the creating run. |
 | `permit_root` | The root SSH answer from the creating run. |
 | `schedule` | `weekly` or `monthly`. |
 
-Newer means the catalog's current published checksum for that distro and release differs from the stored digest. The digest is rewritten only after the disk swap succeeds.
+Newer means the catalog's current published checksum for that distro and release differs from the stored digest. The upstream digest and the disk fingerprint are rewritten only after the disk swap succeeds.
+
+Before any download, an unattended run checks that the live boot disk is still on the enrolled `storage` and that its file still matches `disk_digest`. If either has changed — the disk moved, converted to block storage, or replaced by another image — the update refuses and leaves the guest alone. Automated updates work only with file-based storage.
 
 **When a record is removed.** Records are checked against `/etc/pve/.vmlist` and the guest's config under `/etc/pve/nodes/<node>/qemu-server/` at the start of every live interactive run and every unattended run. A record is removed when its VMID is no longer on the cluster, is now an LXC container, is now a normal VM, or is now a linked clone. Each removal prints one line naming the reason. A guest whose disk swap did not finish keeps its record. When the cluster list or the guest config cannot be read, nothing is removed, so a node outage never turns off updates. An unattended run also removes the record when the downloaded image does not match its published checksum; the existing disk is not changed, and the mail says to run the program to replace the template and enroll it again. A failed checksum lookup, an HTTP error such as 404 from a mirror that has not synced yet, or any other failure keeps the record and tries again on the next schedule.
 

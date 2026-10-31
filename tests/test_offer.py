@@ -51,6 +51,10 @@ def _digest(distro: str, release: str) -> tuple[str, str]:
     return _DIGEST, "256"
 
 
+def _pin(vmid: int) -> tuple[str, str]:
+    return "nfs-templates", "cd" * 32
+
+
 def _offer(lines: _Lines, enroll_dir: str, cron_dir: str, created, **kwargs):
     return offer_created(
         lines.read_line,
@@ -60,6 +64,7 @@ def _offer(lines: _Lines, enroll_dir: str, cron_dir: str, created, **kwargs):
         password_auth=kwargs.get("password_auth", False),
         permit_root=kwargs.get("permit_root", True),
         digest_for=kwargs.get("digest_for", _digest),
+        pin_for=kwargs.get("pin_for", _pin),
         program=kwargs.get("program", _PROGRAM),
         directory=enroll_dir,
         cron_directory=cron_dir,
@@ -83,6 +88,9 @@ class AskUnattendedScheduleTests(unittest.TestCase):
                 lines.text,
             )
             self.assertIn("It does not apply to a standalone image.", lines.text)
+            self.assertIn("file-based storage", lines.text)
+            self.assertIn("will not run on block storage", lines.text)
+            self.assertIn("Leave the template's disk image and storage alone", lines.text)
             self.assertIn(
                 "Enter does not install anything, and turns off earlier automated updates for these VMIDs.",
                 lines.text,
@@ -189,6 +197,8 @@ class OfferCreatedTests(unittest.TestCase):
                     release="24.04",
                     digest=_DIGEST,
                     checksum_alg="256",
+                    disk_digest="cd" * 32,
+                    storage="nfs-templates",
                     password_auth=False,
                     permit_root=True,
                     schedule="weekly",
@@ -258,14 +268,39 @@ class OfferCreatedTests(unittest.TestCase):
             {
                 "checksum_alg": "256",
                 "digest": _DIGEST,
+                "disk_digest": "cd" * 32,
                 "distro": "ubuntu",
                 "password_auth": False,
                 "permit_root": True,
                 "release": "24.04",
                 "schedule": "weekly",
+                "storage": "nfs-templates",
                 "vmid": 9001,
             },
         )
+
+    def test_pin_failure_skips_that_vmid_and_continues(self) -> None:
+        def pin_for(vmid: int) -> tuple[str, str]:
+            if vmid == 9001:
+                raise RuntimeError("disk path failed")
+            return "nfs-templates", "cd" * 32
+
+        lines = _Lines(["2"])
+        with private_tempdir() as enroll_dir, private_tempdir() as cron_dir:
+            result = _offer(
+                lines,
+                enroll_dir,
+                cron_dir,
+                [("12", 9001), ("13", 9002)],
+                pin_for=pin_for,
+            )
+            self.assertEqual(result, "weekly")
+            self.assertIn("Enrollment for 12 was not saved: disk path failed", lines.text)
+            self.assertIsNone(load_enrollment(9001, directory=enroll_dir))
+            kept = load_enrollment(9002, directory=enroll_dir)
+            self.assertIsNotNone(kept)
+            self.assertEqual(kept.storage, "nfs-templates")
+            self.assertEqual(kept.disk_digest, "cd" * 32)
 
     def test_digest_failure_skips_that_vmid_and_continues(self) -> None:
         def digest_for(distro: str, release: str) -> tuple[str, str]:
@@ -346,8 +381,10 @@ class OfferCreatedTests(unittest.TestCase):
                 vmid=vmid,
                 distro="ubuntu",
                 release="22.04",
-                digest="cd" * 32,
+                digest="11" * 32,
                 checksum_alg="256",
+                disk_digest="22" * 32,
+                storage="nfs-templates",
                 password_auth=True,
                 permit_root=False,
                 schedule=schedule,

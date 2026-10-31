@@ -24,7 +24,7 @@ from pve_prep.build import opening, run_fetched
 from pve_prep.catalog import normalize_release, releases_for
 from pve_prep.customize import apply as customize_apply
 from pve_prep.customize import argv as customize_argv
-from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, publish
+from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, file_digest, publish
 from pve_prep.enroll import ENROLL_DIR
 from pve_prep.job import DEFAULT_CACHE, Job, action_for, converts_to_template
 from pve_prep.offer import offer_created
@@ -34,6 +34,7 @@ from pve_prep.vm import (
     VmDestroyedError,
     backups_since,
     VmError,
+    boot_disk_location,
     config_has_os_disk,
     create_template,
     insert_disk,
@@ -426,6 +427,23 @@ def _digest_for(distro: str, release: str) -> tuple[str, str]:
     return digest, spec.checksum_alg
 
 
+def _pin_for(vmid: int) -> tuple[str, str]:
+    """Storage id and SHA-256 of the boot disk this run left on the guest.
+
+    An unattended refresh refuses the guest when either value no longer
+    matches, so a moved disk or a disk someone else replaced is not overwritten.
+    """
+    cfg = default_run(["qm", "config", str(vmid)])
+    if getattr(cfg, "returncode", 1) != 0:
+        raise RuntimeError(f"VM {vmid} config failed while recording enrollment")
+    storage, _volid, path = boot_disk_location(default_run, getattr(cfg, "stdout", "") or "")
+    try:
+        digest = file_digest(Path(path), "256")
+    except (OSError, DownloadError) as exc:
+        raise RuntimeError(f"VM {vmid} boot disk could not be fingerprinted: {exc}") from exc
+    return storage, digest
+
+
 def _created_templates(
     job: Job, succeeded: list[tuple[str, int | None]]
 ) -> list[tuple[str, int]]:
@@ -651,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
             password_auth=job.password_auth,
             permit_root=job.permit_root,
             digest_for=_digest_for,
+            pin_for=_pin_for,
             program=str(Path(__file__).resolve()),
             directory=ENROLL_DIR,
             cron_directory=None,

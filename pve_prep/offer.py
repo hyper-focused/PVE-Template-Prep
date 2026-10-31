@@ -26,6 +26,8 @@ def _record_json(record: Enrollment) -> str:
         "release": record.release,
         "digest": record.digest,
         "checksum_alg": record.checksum_alg,
+        "disk_digest": record.disk_digest,
+        "storage": record.storage,
         "password_auth": record.password_auth,
         "permit_root": record.permit_root,
         "schedule": record.schedule,
@@ -56,6 +58,7 @@ def offer_created(
     password_auth: bool,
     permit_root: bool,
     digest_for,
+    pin_for,
     program: str,
     directory,
     cron_directory,
@@ -63,8 +66,9 @@ def offer_created(
 ) -> str | None:
     """Ask, then enroll the templates this run created or replaced.
 
-    created is (release, vmid) pairs. None means nothing was offered or the
-    operator declined; a decline removes any record for those VMIDs. weekly
+    created is (release, vmid) pairs. pin_for(vmid) returns (storage, disk_digest)
+    for the boot disk this run left in place. None means nothing was offered or
+    the operator declined; a decline removes any record for those VMIDs. weekly
     or monthly is the schedule they chose, including when a digest or a save
     failed. PromptAbort propagates and changes no record.
     """
@@ -77,12 +81,15 @@ def offer_created(
     for release, vmid in created:
         try:
             digest, checksum_alg = digest_for(distro, release)
+            storage, disk_digest = pin_for(vmid)
             record = Enrollment(
                 vmid=vmid,
                 distro=distro,
                 release=release,
                 digest=digest,
                 checksum_alg=checksum_alg,
+                disk_digest=disk_digest,
+                storage=storage,
                 password_auth=password_auth,
                 permit_root=permit_root,
                 schedule=schedule,

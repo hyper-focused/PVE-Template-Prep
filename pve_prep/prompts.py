@@ -1137,6 +1137,10 @@ _UPDATE_ROWS = (
 _UPDATE_NOTE = (
     "These templates can get a cron script that replaces the boot disk "
     "when the upstream image checksum changes.\n"
+    "Automated updates work only with file-based storage (directory, NFS, CIFS, "
+    "and similar). They will not run on block storage such as ZFS, LVM, or RBD.\n"
+    "Leave the template's disk image and storage alone after enrollment. "
+    "If either changes, the next update refuses and leaves the guest as it is.\n"
     "It does not apply to a standalone image.\n"
     "Enter does not install anything, and turns off earlier automated updates for these VMIDs."
 )

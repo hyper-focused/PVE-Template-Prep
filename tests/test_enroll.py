@@ -35,6 +35,8 @@ def _record(
     release: str = "24.04",
     digest: str = "ab" * 32,
     checksum_alg: str = "256",
+    disk_digest: str = "cd" * 32,
+    storage: str = "nfs-templates",
     password_auth: bool = True,
     permit_root: bool = False,
     schedule: str = "weekly",
@@ -45,6 +47,8 @@ def _record(
         release=release,
         digest=digest,
         checksum_alg=checksum_alg,
+        disk_digest=disk_digest,
+        storage=storage,
         password_auth=password_auth,
         permit_root=permit_root,
         schedule=schedule,
@@ -65,11 +69,13 @@ class EnrollmentTests(unittest.TestCase):
                     {
                         "checksum_alg": "256",
                         "digest": record.digest,
+                        "disk_digest": record.disk_digest,
                         "distro": "ubuntu",
                         "password_auth": True,
                         "permit_root": False,
                         "release": "24.04",
                         "schedule": "weekly",
+                        "storage": "nfs-templates",
                         "vmid": 910,
                     },
                     sort_keys=True,
@@ -181,16 +187,27 @@ class EnrollmentTests(unittest.TestCase):
         with private_tempdir() as tmp:
             original = _record(digest="ab" * 32, permit_root=True, schedule="monthly")
             path = save_enrollment(original, directory=tmp)
-            updated = replace_digest(original.vmid, "cd" * 32, directory=tmp)
-            self.assertEqual(updated.digest, "cd" * 32)
-            self.assertEqual(replace(updated, digest=original.digest), original)
+            updated = replace_digest(original.vmid, "11" * 32, directory=tmp)
+            self.assertEqual(updated.digest, "11" * 32)
+            self.assertEqual(updated.disk_digest, original.disk_digest)
+            self.assertEqual(updated.storage, original.storage)
+            self.assertEqual(
+                replace(updated, digest=original.digest),
+                original,
+            )
             self.assertEqual(load_enrollment(original.vmid, directory=tmp), updated)
+            fingerprinted = replace_digest(
+                original.vmid, "22" * 32, directory=tmp, disk_digest="33" * 32
+            )
+            self.assertEqual(fingerprinted.digest, "22" * 32)
+            self.assertEqual(fingerprinted.disk_digest, "33" * 32)
+            self.assertEqual(fingerprinted.storage, "nfs-templates")
             before = path.read_bytes()
             for digest in ("AB" * 32, "a" * 63, "g" * 64, "ab" * 64):
                 with self.assertRaises(EnrollmentError):
                     replace_digest(original.vmid, digest, directory=tmp)
             self.assertEqual(path.read_bytes(), before)
-            self.assertEqual(load_enrollment(original.vmid, directory=tmp), updated)
+            self.assertEqual(load_enrollment(original.vmid, directory=tmp), fingerprinted)
             with self.assertRaises(EnrollmentError):
                 replace_digest(4242, "ab" * 32, directory=tmp)
 
@@ -247,6 +264,35 @@ class EnrollmentTests(unittest.TestCase):
                 load_enrollment(910, directory=followed)
             self.assertIn("symlink", str(caught.exception))
             self.assertTrue((real / "910.json").is_file())
+
+    def test_incomplete_enrollment_is_detected(self) -> None:
+        from pve_prep.enroll import is_incomplete_enrollment, load_enrollment_path
+
+        with private_tempdir() as tmp:
+            path = Path(tmp) / "910.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "checksum_alg": "256",
+                        "digest": "ab" * 32,
+                        "distro": "ubuntu",
+                        "password_auth": True,
+                        "permit_root": False,
+                        "release": "24.04",
+                        "schedule": "weekly",
+                        "vmid": 910,
+                    },
+                    sort_keys=True,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(EnrollmentError) as caught:
+                load_enrollment_path(path, 910)
+            self.assertTrue(is_incomplete_enrollment(caught.exception))
+            self.assertIn("missing disk_digest", str(caught.exception))
+            self.assertIn("storage", str(caught.exception))
 
     def test_remove_enrollment_deletes_only_that_record(self) -> None:
         with private_tempdir() as tmp:
