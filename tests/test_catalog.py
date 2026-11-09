@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 import unittest
+from datetime import date
 from pathlib import Path
+from unittest import mock
 
 from pve_prep.catalog import (
     DISTROS,
@@ -14,6 +16,7 @@ from pve_prep.catalog import (
     compile_distro,
     finalize_cloudlinux,
     finalize_fedora,
+    is_available,
     normalize_release,
     releases_for,
 )
@@ -148,12 +151,93 @@ class CatalogTests(unittest.TestCase):
         seen = []
         for path in sorted(directory.glob("*.json")):
             payload = json.loads(path.read_text(encoding="utf-8"))
-            specs = releases_for(payload["id"])
+            specs = releases_for(payload["id"], today=date.max)
             versions = [row["version"] for row in payload["releases"]]
             self.assertEqual([spec.release for spec in specs], versions)
             self.assertEqual(specs[0].source, payload["source"]["type"])
             seen.append(payload["id"])
         self.assertEqual(set(seen), set(DISTROS))
+
+    def test_available_must_be_a_real_iso_date(self) -> None:
+        def payload(available):
+            return {
+                "id": "example",
+                "name": "Example",
+                "family": "deb",
+                "order": 1,
+                "checksum_alg": "256",
+                "source": {
+                    "type": "pattern",
+                    "base": "https://example.com/{release}/",
+                    "filename": "img-{release}.qcow2",
+                    "checksum": "SHA256SUMS",
+                },
+                "releases": [{"version": "1", "eol": False, "available": available}],
+            }
+
+        specs, _aliases = compile_distro(payload("2030-01-02"), filename="example.json")
+        self.assertEqual(specs[0].available, "2030-01-02")
+        self.assertFalse(is_available(specs[0], date(2030, 1, 1)))
+        self.assertTrue(is_available(specs[0], date(2030, 1, 2)))
+        for bad in ("2030-1-2", "2030-02-30", "soon", 20300102, ""):
+            with self.assertRaises(CatalogError) as caught:
+                compile_distro(payload(bad), filename="example.json")
+            self.assertIn("example.json", str(caught.exception))
+
+    def test_unpublished_release_is_refused_by_name(self) -> None:
+        specs, aliases = compile_distro(
+            {
+                "id": "example",
+                "name": "Example",
+                "family": "deb",
+                "order": 1,
+                "checksum_alg": "256",
+                "source": {
+                    "type": "pattern",
+                    "base": "https://example.com/{release}/",
+                    "filename": "img-{release}.qcow2",
+                    "checksum": "SHA256SUMS",
+                },
+                "releases": [
+                    {"version": "1", "eol": False},
+                    {"version": "2", "eol": False, "available": "2030-01-02"},
+                ],
+            },
+            filename="example.json",
+        )
+
+        class _Before(date):
+            @classmethod
+            def today(cls):
+                return date(2030, 1, 1)
+
+        class _After(date):
+            @classmethod
+            def today(cls):
+                return date(2030, 1, 2)
+
+        with (
+            mock.patch("pve_prep.catalog._CATALOG", {"example": specs}),
+            mock.patch("pve_prep.catalog._ALIASES", {"example": aliases}),
+            mock.patch("pve_prep.catalog.date", _Before),
+        ):
+            self.assertEqual(
+                [spec.release for spec in releases_for("example")],
+                ["1"],
+            )
+            with self.assertRaises(CatalogError) as caught:
+                normalize_release("example", "2")
+        self.assertIn("not published until 2030-01-02", str(caught.exception))
+        with (
+            mock.patch("pve_prep.catalog._CATALOG", {"example": specs}),
+            mock.patch("pve_prep.catalog._ALIASES", {"example": aliases}),
+            mock.patch("pve_prep.catalog.date", _After),
+        ):
+            self.assertEqual(normalize_release("example", "2"), "2")
+            self.assertEqual(
+                [spec.release for spec in releases_for("example")],
+                ["1", "2"],
+            )
 
     def test_bad_distro_file_names_the_file(self) -> None:
         payload = {

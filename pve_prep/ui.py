@@ -275,13 +275,14 @@ def widget_style(*, instruction: str = "note"):
         [
             ("qmark", _style("header")),
             ("question", _style("header")),
-            ("answer", _style("success")),
+            ("answer", _style("success") + " nobold"),
             ("pointer", _style("highlight")),
             # prompt_toolkit's own style reverses selected rows. The palette colors them instead.
             ("highlighted", _style("highlight") + " noreverse"),
             ("selected", _style("success") + " noreverse"),
             ("instruction", _style(instruction)),
             ("danger", _style("danger")),
+            ("success", _style("success")),
             ("text", _style("option")),
             ("disabled", _style("note")),
             ("separator", _style("note")),
@@ -449,19 +450,32 @@ def checkbox(message: str, choices, *, instruction: str | None = None, validate=
     return _run(question)
 
 
-def prompt_tokens(message: str, *, hint: str | None = None, danger_word: str | None = None):
+def prompt_tokens(
+    message: str,
+    *,
+    hint: str | None = None,
+    danger_word: str | None = None,
+    success_word: str | None = None,
+):
     """The text prompt line, laid out the way questionary lays out qmark, question, instruction.
 
     hint is the (y/n) [Yes] or [9001] part, drawn as highlight. danger_word
-    is drawn red wherever it appears in the question.
+    is drawn red wherever it appears in the question. success_word is drawn
+    in the success color. The quotes around either word stay with the question.
     """
     tokens = [("class:qmark", " "), ("class:question", " ")]
     body = indent(message)
+    marked = ""
+    mark_class = ""
     if danger_word and danger_word in body:
-        parts = body.split(danger_word)
+        marked, mark_class = danger_word, "class:danger"
+    elif success_word and success_word in body:
+        marked, mark_class = success_word, "class:success"
+    if marked:
+        parts = body.split(marked)
         for index, part in enumerate(parts):
             if index:
-                tokens.append(("class:danger", danger_word))
+                tokens.append((mark_class, marked))
             if part:
                 tokens.append(("class:question", part))
     else:
@@ -475,28 +489,62 @@ def prompt_tokens(message: str, *, hint: str | None = None, danger_word: str | N
     return tokens
 
 
+def _input_lexer(*, danger_word: str | None, yes_green: bool):
+    """How typed characters are colored.
+
+    A delete gate is red. A yes/no field paints y or yes in the success
+    color and leaves n in the plain text color. Every other field paints
+    the whole value in that same success color.
+    """
+    _ensure_vendor()
+    from prompt_toolkit.document import Document
+    from prompt_toolkit.lexers import Lexer, SimpleLexer
+
+    if danger_word:
+        return SimpleLexer("class:danger")
+    if not yes_green:
+        return SimpleLexer("class:success")
+
+    class _YesLexer(Lexer):
+        def lex_document(self, document: Document):
+            def get_line(lineno: int):
+                line = document.lines[lineno]
+                if line.lower() in {"y", "ye", "yes"}:
+                    return [("class:success", line)]
+                if line:
+                    return [("class:text", line)]
+                return []
+
+            return get_line
+
+    return _YesLexer()
+
+
 def text(
     message: str,
     *,
     default: str = "",
     hint: str | None = None,
     danger_word: str | None = None,
+    success_word: str | None = None,
+    yes_green: bool = False,
     **kwargs,
 ):
     """Empty string is an answer. None means cancelled.
 
     A prompt_toolkit session, not questionary.text, because the question
     is formatted text: danger_word is red in the question and in the field.
+    success_word is the success color in the question. On a yes/no field,
+    a typed y or yes is that same color.
     """
-    from prompt_toolkit.lexers import SimpleLexer
     from prompt_toolkit.shortcuts import PromptSession
     from prompt_toolkit.styles import merge_styles
     from questionary.constants import DEFAULT_STYLE
 
     session = PromptSession(
-        prompt_tokens(message, hint=hint, danger_word=danger_word),
+        prompt_tokens(message, hint=hint, danger_word=danger_word, success_word=success_word),
         style=merge_styles([DEFAULT_STYLE, widget_style(instruction="highlight")]),
-        lexer=SimpleLexer("class:danger" if danger_word else "class:answer"),
+        lexer=_input_lexer(danger_word=danger_word, yes_green=yes_green),
         **_app_kwargs(),
         **kwargs,
     )

@@ -7,6 +7,29 @@
 
 set -euo pipefail
 
+# Closing notes. A pipe, NO_COLOR, or TERM=dumb stays plain.
+# Success is a medium light green (xterm 78). Labels use the header cyan (xterm 45).
+report_installed() {
+  local version="$1"
+  local green="" label="" bold="" reset=""
+  if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
+    bold=$'\033[1m'
+    reset=$'\033[0m'
+    if [[ "${TERM:-}" == "linux" || "${TERM:-}" == "eterm-color" ]]; then
+      green=$'\033[92m'
+      label=$'\033[36m'
+    else
+      green=$'\033[38;5;78m'
+      label=$'\033[38;5;45m'
+    fi
+  fi
+  echo
+  printf '%s\n' "${green}Installation of pve-template-prep ${version} complete!${reset}"
+  echo
+  printf '%s\n' "${label}To run: (as root or sudo):${reset} ${bold}pve-template-prep${reset}"
+  printf '%s\n' "${label}To do a dry run:${reset} ${bold}pve-template-prep --dry-run${reset}"
+}
+
 DEST="${DEST:-/opt/pve-template-prep}"
 REPO="${REPO:-hyper-focused/PVE-Template-Prep}"
 REF="${REF:-main}"
@@ -17,13 +40,18 @@ MODULES=(
   __init__.py
   build.py
   catalog.py
+  cronscript.py
   customize.py
   download.py
+  enroll.py
   job.py
+  offer.py
   prompts.py
+  runlog.py
   safedir.py
   termbg.py
   ui.py
+  unattended.py
   update.py
   vm.py
 )
@@ -69,7 +97,7 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-echo "Downloading ${ARCHIVE_URL}"
+echo "Downloading pve-template-prep....."
 curl -fsSL "$ARCHIVE_URL" -o "$work/src.tar.gz"
 tar -xzf "$work/src.tar.gz" -C "$work"
 
@@ -90,9 +118,30 @@ fi
 for name in "${MODULES[@]}" "${DATA_FILES[@]}"; do
   if [[ ! -f "$src/pve_prep/$name" ]]; then
     echo "archive is missing pve_prep/$name" >&2
+    echo "This install.sh is newer than the ${REF} archive it downloaded (${ARCHIVE_URL})." >&2
+    echo "Download install.sh from ${REF}, or run it with REF set to the branch it came from:" >&2
+    echo "  REF=<branch> bash install.sh" >&2
     exit 1
   fi
 done
+
+# Same string -V prints. Parsed, not imported as the program.
+version="$(
+  PYTHONPATH="$src" python3 - "$src/pve_prep/__init__.py" <<'PY'
+import sys
+from pathlib import Path
+
+from pve_prep.update import parse_version, version_key
+
+found = parse_version(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if found is None or version_key(found) is None:
+    raise SystemExit(1)
+print(found)
+PY
+)" || {
+  echo "pve_prep/__init__.py has no x.y.z __version__" >&2
+  exit 1
+}
 for name in "${ROOT_FILES[@]}"; do
   if [[ ! -f "$src/$name" ]]; then
     echo "archive is missing $name" >&2
@@ -152,6 +201,7 @@ copy_tree() {
   done < <(find "$from" -type f -print0)
 }
 
+echo "Installing pve-template-prep ${version} at ${DEST}....."
 install -d -o root -g root -m 0755 "$DEST"
 install -d -o root -g root -m 0755 "$DEST/pve_prep"
 install -o root -g root -m 0755 "$src/pve-template-prep.py" "$DEST/pve-template-prep.py"
@@ -261,6 +311,11 @@ for path in paths:
 sys.path.insert(0, str(vendor))
 sys.path.insert(0, str(root))
 import pve_prep.catalog  # noqa: E402
+import pve_prep.cronscript  # noqa: E402
+import pve_prep.enroll  # noqa: E402
+import pve_prep.offer  # noqa: E402
+import pve_prep.runlog  # noqa: E402
+import pve_prep.unattended  # noqa: E402
 from pve_prep.ui import load_palette  # noqa: E402
 
 load_palette(root / "pve_prep" / "palette.json")
@@ -304,6 +359,4 @@ fi
 install -d -o root -g root -m 0755 "$(dirname "$BIN_LINK")"
 ln -sfn "$DEST/pve-template-prep.py" "$BIN_LINK"
 
-echo "Installed ${DEST}"
-echo "Run: sudo pve-template-prep"
-echo "Dry run, no root: pve-template-prep --dry-run"
+report_installed "$version"

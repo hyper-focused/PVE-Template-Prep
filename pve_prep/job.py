@@ -50,6 +50,8 @@ class Job:
     verbose: bool = False
     # Boot disks whose import format is the one already in the VM config.
     kept_format: tuple[tuple[int, str], ...] = ()
+    # Unattended cron. Hide the build narration and the virt-customize log.
+    quiet: bool = False
 
 
 def published_name(distro: str, release: str, disk_format: str) -> str:
@@ -118,6 +120,9 @@ def converts_to_template(job: Job, vmid: int | None) -> bool:
     if action_for(job, vmid) != "template":
         return False
     if vmid is not None and vmid in job.template_vmids:
+        return True
+    # A replaced template keeps its template flag; only its disk changes.
+    if vmid is not None and vmid in job.destroy_vmids:
         return True
     return job.make_template
 

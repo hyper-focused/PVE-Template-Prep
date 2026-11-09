@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, replace
+from datetime import date
 from html import unescape
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -30,6 +31,7 @@ class ImageSpec:
     checksum: str = ""
     source: str = "pattern"
     name: str = ""
+    available: str = ""
 
 
 _DISTRO_DIR = Path(__file__).resolve().parent / "distros"
@@ -38,7 +40,7 @@ _TOKEN = re.compile(r"\{([A-Za-z0-9_]+)\}")
 _FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*\Z")
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*\Z")
 _DISTRO_KEYS = {"id", "name", "family", "order", "checksum_alg", "source", "releases"}
-_RELEASE_KEYS = {"version", "eol", "codename", "aliases"}
+_RELEASE_KEYS = {"version", "eol", "codename", "aliases", "available"}
 _SOURCE_KEYS = {
     "pattern": {"type", "base", "filename", "checksum"},
     "fedora-index": {"type", "base"},
@@ -115,6 +117,29 @@ def _fill(template: str, fields: dict[str, str | None], filename: str, where: st
 def _label(name: str, release: str, eol: bool) -> str:
     suffix = " (EOL)" if eol else ""
     return f"{name} {release}{suffix}"
+
+
+def _available(item: dict, filename: str, version: str) -> str:
+    """Optional first day the release is published, YYYY-MM-DD. Empty is always."""
+    if "available" not in item:
+        return ""
+    raw = item["available"]
+    if not isinstance(raw, str):
+        raise _bad(filename, f"release {version} available must be YYYY-MM-DD")
+    try:
+        parsed = date.fromisoformat(raw)
+    except ValueError:
+        raise _bad(filename, f"release {version} available must be YYYY-MM-DD") from None
+    if parsed.isoformat() != raw:
+        raise _bad(filename, f"release {version} available must be YYYY-MM-DD")
+    return raw
+
+
+def is_available(spec: ImageSpec, today: date | None = None) -> bool:
+    """False before the release's published date. A release with no date is available."""
+    if not spec.available:
+        return True
+    return date.fromisoformat(spec.available) <= (today or date.today())
 
 
 def _release_row(row: object, filename: str) -> tuple[str, str, bool, tuple[str, ...]]:
@@ -284,25 +309,23 @@ def compile_distro(payload: object, *, filename: str) -> tuple[tuple[ImageSpec, 
             if key in aliases:
                 raise _bad(filename, f"duplicate alias {token}")
             aliases[key] = version
+        available = _available(row, filename, version)
         if source_type == "pattern":
-            specs.append(
-                _pattern_spec(distro, name, family, alg, source, version, codename, eol, filename)
-            )
+            spec = _pattern_spec(distro, name, family, alg, source, version, codename, eol, filename)
         else:
-            specs.append(
-                _index_spec(
-                    distro,
-                    name,
-                    family,
-                    alg,
-                    source,
-                    version,
-                    codename,
-                    eol,
-                    filename,
-                    source_type,
-                )
+            spec = _index_spec(
+                distro,
+                name,
+                family,
+                alg,
+                source,
+                version,
+                codename,
+                eol,
+                filename,
+                source_type,
             )
+        specs.append(replace(spec, available=available))
     return tuple(specs), aliases
 
 
@@ -347,13 +370,17 @@ def load_distros(
 DISTROS, _CATALOG, _ALIASES = load_distros(_DISTRO_DIR)
 
 
-def releases_for(distro: str) -> tuple[ImageSpec, ...]:
-    """Releases from that distro's config file, in file order."""
+def releases_for(distro: str, *, today: date | None = None) -> tuple[ImageSpec, ...]:
+    """Published releases from that distro's config file, in file order.
+
+    A row whose available date is still ahead is left out until that day.
+    """
     key = distro.strip().casefold()
     try:
-        return _CATALOG[key]
+        specs = _CATALOG[key]
     except KeyError:
         raise CatalogError(f"unknown distro: {distro}") from None
+    return tuple(spec for spec in specs if is_available(spec, today))
 
 
 def normalize_release(distro: str, raw: str) -> str:
@@ -364,9 +391,13 @@ def normalize_release(distro: str, raw: str) -> str:
         raise CatalogError(f"unknown distro: {distro}")
     token = raw.strip().casefold()
     try:
-        return table[token]
+        version = table[token]
     except KeyError:
         raise CatalogError(f"unknown {key} release: {raw}") from None
+    for spec in _CATALOG[key]:
+        if spec.release == version and not is_available(spec):
+            raise CatalogError(f"{spec.name} {version} is not published until {spec.available}")
+    return version
 
 
 def _clean_name(raw: str) -> str:

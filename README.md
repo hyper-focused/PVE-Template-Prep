@@ -90,6 +90,7 @@ Then it downloads, verifies, converts, preps, and imports each release. At the e
 | CloudLinux can't install updates | It needs a license, and unlicensed it's a very calm brick | Register the guest |
 | A build died partway | The download is kept in the cache | Run it again. It reuses the download |
 | Where did my old disk go? | You said yes to the backup | `/var/backups/pve-template-prep`, as `vm-<vmid>-<bus>.bak.<UTC>.qcow2`. Cleanup never touches it |
+| A weekly or monthly refresh replaced edits on the template disk | That run replaces the boot disk when the published checksum changes. Edits made after the template was created are not detected. The backup is what remains of the old disk | Copy what you still need from `/var/backups/pve-template-prep`. Enrollment is in the [reference](docs/MANPAGE.md#enrolled-templates) |
 
 **About ZFS, LVM, and other block storage.** The tool builds disks as files, so it won't write to a zvol, a logical volume, RBD, or iSCSI. Those storages are left out of the menus, and updating a template whose boot disk lives on one is refused. The workaround is painless: build a **standalone image** (it lands in a file storage's `import/` folder), then in Proxmox use **Hardware, Add, Import Hard Disk** and pick your ZFS or LVM storage as the target. Proxmox converts it on the way in, and the guest prep rides along. The CLI version is in the [reference](docs/MANPAGE.md#examples).
 
@@ -107,7 +108,7 @@ All images are the distro's official 64-bit cloud images, checked against the ch
 | Ubuntu | 22.04, 24.04, 26.04 | `cloud-images.ubuntu.com` server cloudimg, `SHA256SUMS` |
 | AlmaLinux | 8, 9, 10 | `repo.almalinux.org` GenericCloud, `CHECKSUM` |
 | CloudLinux | 8, 9, 10 | `images.cloudlinux.com/catalog.json` supplies the file and its SHA256 |
-| Fedora | 43, 44 | `download.fedoraproject.org` Generic qcow2, picked from the release index |
+| Fedora | 43, 44, 45 (from 2026-11-03) | `download.fedoraproject.org` Generic qcow2, picked from the release index |
 
 Each distro is one file in `pve_prep/distros/`, and a release is one row in it. No CentOS, no Rocky, no UEFI images, in this version.
 
