@@ -131,7 +131,7 @@ Two runs share `/var/tmp/pve-template-prep/cache`. The end of one run, interacti
 
 ## A release is listed from its release day
 
-A catalog row may carry `available`, a `YYYY-MM-DD` date. Before that day on the host's clock, the release is not in the menu and is refused by name. That lets a release ship in the catalog ahead of time, such as Fedora 45 on its scheduled date of 2026-11-03, without offering a download that does not exist yet. A slipped release fails at download with an HTTP error, before any guest is touched, and the record-keeping rules above treat that as transient.
+A catalog row may carry `available`, a `YYYY-MM-DD` date. Before that day on the host's clock, the release is not in the menu and is refused by name. That lets a release ship in the catalog ahead of its publish day without offering a download that does not exist yet. A slipped release fails at download with an HTTP error, before any guest is touched, and the record-keeping rules above treat that as transient.
 
 ## The cron script is a wrapper
 

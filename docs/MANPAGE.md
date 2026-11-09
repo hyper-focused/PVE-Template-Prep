@@ -275,9 +275,9 @@ Images are the 64-bit (`x86_64` / `amd64`) cloud images published by each distri
 | Ubuntu | 22.04 (jammy), 24.04 (noble), 26.04 (resolute) | `cloud-images.ubuntu.com/releases/<codename>/release/ubuntu-<rel>-server-cloudimg-amd64.img` | `SHA256SUMS` |
 | AlmaLinux | 8, 9, 10 | `repo.almalinux.org/almalinux/<rel>/cloud/x86_64/images/AlmaLinux-<rel>-GenericCloud-latest.x86_64.qcow2` | `CHECKSUM` |
 | CloudLinux | 8, 9, 10 | Minimal OpenStack qcow2, chosen from `images.cloudlinux.com/catalog.json` | SHA256 from the same catalog row |
-| Fedora | 43, 44, 45 (from 2026-11-03) | `Fedora-Cloud-Base-Generic-<rel>-*.x86_64.qcow2`, the newest compose in the `download.fedoraproject.org` release index (compared as numbers: `1.10` is newer than `1.9`) | The `CHECKSUM` file for that compose |
+| Fedora | 43, 44 | `Fedora-Cloud-Base-Generic-<rel>-*.x86_64.qcow2`, the newest compose in the `download.fedoraproject.org` release index (compared as numbers: `1.10` is newer than `1.9`) | The `CHECKSUM` file for that compose |
 
-Notes: a release with an `available` date in its catalog file is not listed, and is refused by name, until that day on the host's clock. Fedora 45 is listed from 2026-11-03, the Fedora Project's scheduled release date. If the release slips, the download fails with an HTTP error before any template is touched. CloudLinux logs in as `cloudlinux` and its packages do not update until the guest is registered with a license. Not offered: CentOS, Rocky, openSUSE, Arch, RHEL, Fedora 42 and earlier, CloudLinux 6 and 7, and UEFI images.
+Notes: a release with an `available` date in its catalog file is not listed, and is refused by name, until that day on the host's clock. If the release slips, the download fails with an HTTP error before any template is touched. CloudLinux logs in as `cloudlinux` and its packages do not update until the guest is registered with a license. Not offered: CentOS, Rocky, openSUSE, Arch, RHEL, Fedora 42 and earlier, CloudLinux 6 and 7, and UEFI images.
 
 Each distribution is one file, `pve_prep/distros/<distro>.json`: menu name, package family, checksum algorithm, source pattern, and a row per release (version, codename, aliases, EOL flag). Adding or dropping a release is an edit to that file.
 
