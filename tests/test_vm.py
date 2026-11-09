@@ -711,24 +711,25 @@ class InsertDiskTests(unittest.TestCase):
         root.mkdir()
         return root
 
+    def _live_disk(self, tmp: str, name: str = "base-910-disk-0.qcow2") -> Path:
+        live = Path(tmp) / "storage" / name
+        live.parent.mkdir(parents=True)
+        live.write_bytes(b"OLDDISK")
+        return live
+
     def test_template_boot_disk_is_replaced_and_the_template_stays(self) -> None:
         old = "NFS-SATA-SSD1:base-910-disk-0"
-        new = "NFS-SATA-SSD1:vm-910-disk-1"
         with private_tempdir() as tmp:
+            live = self._live_disk(tmp)
             run = FakeRun(
                 [
                     (0, "status: stopped\n"),
                     (0, f"template: 1\nname: keep-me\nscsi0: {old}\nnet0: virtio=AA:BB,bridge=vmbr1\n"),
                     (0, "[]"),
+                    (0, f"{live}\n"),
                     (0, ""),
-                    (0, ""),
-                    (0, f"unused0: {new}\nscsi0: {old}\n"),
-                    (0, ""),
-                    (0, f"unused0: {old}\nscsi0: {new}\n"),
-                    (0, ""),
-                    (0, ""),
-                    (0, ""),
-                ]
+                ],
+                touch_convert=True,
             )
             result = insert_disk(
                 vmid=910,
@@ -739,23 +740,27 @@ class InsertDiskTests(unittest.TestCase):
                 run=run,
                 nodes_root=self._nodes(tmp),
             )
-        self.assertEqual(result.volid, new)
-        self.assertTrue(result.kept_template)
-        self.assertEqual(result.backup_dir, "")
-        self.assertEqual(run.calls[3], ["qm", "set", "910", "--template", "0", "--tags", "pve-prep-swap-910"])
-        self.assertEqual(run.calls[6], ["qm", "set", "910", "--scsi0", f"{new},discard=on,ssd=1"])
-        self.assertEqual(run.calls[-2:], [["qm", "template", "910"], ["qm", "set", "910", "--delete", "tags"]])
+            self.assertEqual(result.volid, old)
+            self.assertTrue(result.kept_template)
+            self.assertEqual(result.backup_dir, "")
+            self.assertEqual(live.read_bytes(), b"qcow")
+            self.assertFalse(any(live.parent.glob("*.pve-prep-old.*")))
+            self.assertFalse(any(live.parent.glob("*.pve-prep-new.*")))
+        self.assertEqual(run.calls[3], ["pvesm", "path", old])
+        self.assertEqual(run.calls[4][:4], ["qemu-img", "convert", "-O", "qcow2"])
+        self.assertFalse(any(call[:2] == ["qm", "importdisk"] for call in run.calls))
+        self.assertNotIn(["qm", "set", "910", "--template", "0", "--tags", "pve-prep-swap-910"], run.calls)
+        self.assertNotIn(["qm", "template", "910"], run.calls)
         self.assertNotIn(["qm", "destroy", "910"], run.calls)
-        self.assertNotIn(["qm", "create", "910"], run.calls)
 
     def test_pvesm_usage_line_still_lists_and_a_plain_disk_is_replaced(self) -> None:
         old = "NFS-SATA-SSD1:base-910-disk-0"
-        new = "NFS-SATA-SSD1:vm-910-disk-1"
         table = (
             "Volid                                                           Format  Type             Size VMID\n"
             f"{old}                                   raw     images     3221225472 910\n"
         )
         with private_tempdir() as tmp:
+            live = self._live_disk(tmp, "base-910-disk-0.raw")
             run = FakeRun(
                 [
                     (0, "status: stopped\n"),
@@ -767,15 +772,10 @@ class InsertDiskTests(unittest.TestCase):
                         "pvesm list <storage> [OPTIONS]\n",
                     ),
                     (0, table),
+                    (0, f"{live}\n"),
                     (0, ""),
-                    (0, ""),
-                    (0, f"unused0: {new}\nscsi0: {old}\n"),
-                    (0, ""),
-                    (0, f"unused0: {old}\nscsi0: {new}\n"),
-                    (0, ""),
-                    (0, ""),
-                    (0, ""),
-                ]
+                ],
+                touch_convert=True,
             )
             result = insert_disk(
                 vmid=910,
@@ -784,37 +784,29 @@ class InsertDiskTests(unittest.TestCase):
                 disk_policy="overwrite",
                 dry_run=False,
                 run=run,
+                volume_format="raw",
                 nodes_root=self._nodes(tmp),
             )
-        self.assertEqual(result.volid, new)
-        self.assertTrue(result.kept_template)
+            self.assertEqual(result.volid, old)
+            self.assertEqual(live.read_bytes(), b"qcow")
         self.assertEqual(run.calls[2], ["pvesm", "list", STORAGE, "--output-format", "json"])
         self.assertEqual(run.calls[3], ["pvesm", "list", STORAGE])
-        self.assertEqual(run.calls[4], ["qm", "set", "910", "--template", "0", "--tags", "pve-prep-swap-910"])
-        self.assertEqual(run.calls[7], ["qm", "set", "910", "--scsi0", f"{new},discard=on,ssd=1"])
-        self.assertEqual(run.calls[-2:], [["qm", "template", "910"], ["qm", "set", "910", "--delete", "tags"]])
-        self.assertNotIn(["qm", "destroy", "910"], run.calls)
-        self.assertNotIn(["qm", "create", "910"], run.calls)
+        self.assertEqual(run.calls[5][:4], ["qemu-img", "convert", "-O", "raw"])
+        self.assertFalse(any(call[:2] == ["qm", "importdisk"] for call in run.calls))
 
     def test_template_backup_copies_then_replaces_the_boot_disk(self) -> None:
         old = "NFS-SATA-SSD1:base-910-disk-0"
-        new = "NFS-SATA-SSD1:vm-910-disk-1"
         with private_tempdir() as tmp:
+            live = self._live_disk(tmp)
             cache = Path(tmp) / "cache"
             run = FakeRun(
                 [
                     (0, "status: stopped\n"),
                     (0, f"template: 1\nscsi0: {old}\n"),
                     (0, "[]"),
-                    (0, "/mnt/pve/NFS/base-910-disk-0.qcow2\n"),
+                    (0, f"{live}\n"),
                     (0, ""),
-                    (0, ""),
-                    (0, ""),
-                    (0, f"unused0: {new}\nscsi0: {old}\n"),
-                    (0, ""),
-                    (0, f"unused0: {old}\nscsi0: {new}\n"),
-                    (0, ""),
-                    (0, ""),
+                    (0, f"{live}\n"),
                     (0, ""),
                 ],
                 touch_convert=True,
@@ -830,31 +822,30 @@ class InsertDiskTests(unittest.TestCase):
                 nodes_root=self._nodes(tmp),
             )
             self.assertEqual(result.backup_dir, str(cache))
+            self.assertEqual(live.read_bytes(), b"qcow")
+            backups = list(cache.glob("*.qcow2"))
+            self.assertEqual(len(backups), 1)
         self.assertTrue(result.kept_template)
         self.assertEqual(run.calls[3], ["pvesm", "path", old])
         self.assertEqual(run.calls[4][:4], ["qemu-img", "convert", "-O", "qcow2"])
-        self.assertEqual(run.calls[-2:], [["qm", "template", "910"], ["qm", "set", "910", "--delete", "tags"]])
-        self.assertNotIn(["qm", "set", "910", "--scsi1", f"{new},discard=on,ssd=1"], run.calls)
+        self.assertEqual(run.calls[5], ["pvesm", "path", old])
+        self.assertEqual(run.calls[6][:4], ["qemu-img", "convert", "-O", "qcow2"])
+        self.assertFalse(any(call[:2] == ["qm", "importdisk"] for call in run.calls))
 
-    def test_copies_done_skips_a_second_qemu_img(self) -> None:
+    def test_copies_done_skips_backup_convert_but_still_stages(self) -> None:
         old = "NFS-SATA-SSD1:base-910-disk-0"
-        new = "NFS-SATA-SSD1:vm-910-disk-1"
         with private_tempdir() as tmp:
+            live = self._live_disk(tmp)
             cache = Path(tmp) / "cache"
             run = FakeRun(
                 [
                     (0, "status: stopped\n"),
                     (0, f"template: 1\nscsi0: {old}\n"),
                     (0, "[]"),
+                    (0, f"{live}\n"),
                     (0, ""),
-                    (0, ""),
-                    (0, f"unused0: {new}\nscsi0: {old}\n"),
-                    (0, ""),
-                    (0, f"unused0: {old}\nscsi0: {new}\n"),
-                    (0, ""),
-                    (0, ""),
-                    (0, ""),
-                ]
+                ],
+                touch_convert=True,
             )
             result = insert_disk(
                 vmid=910,
@@ -868,8 +859,10 @@ class InsertDiskTests(unittest.TestCase):
                 nodes_root=self._nodes(tmp),
             )
             self.assertEqual(result.backup_dir, str(cache))
+            self.assertEqual(live.read_bytes(), b"qcow")
         self.assertTrue(result.kept_template)
-        self.assertFalse(any(call[:2] == ["qemu-img", "convert"] for call in run.calls))
+        converts = [call for call in run.calls if call[:2] == ["qemu-img", "convert"]]
+        self.assertEqual(len(converts), 1)
 
     def test_linked_clone_on_shared_storage_blocks_the_insert(self) -> None:
         listing = json.dumps(
@@ -940,6 +933,7 @@ class InsertDiskTests(unittest.TestCase):
                     (0, "status: stopped\n"),
                     (0, "template: 1\nscsi0: NFS-SATA-SSD1:base-910-disk-0\n"),
                     (0, "[]"),
+                    (0, self._MISSING_PATH),
                     (0, ""),
                     (1, "import failed\n"),
                     (0, "name: keep-me\n"),
@@ -961,6 +955,34 @@ class InsertDiskTests(unittest.TestCase):
         self.assertEqual(run.calls[-2:], [["qm", "template", "910"], ["qm", "set", "910", "--delete", "tags"]])
         self.assertNotIn(["qm", "destroy", "910"], run.calls)
 
+    def test_failed_file_stage_leaves_the_live_disk(self) -> None:
+        old = "NFS-SATA-SSD1:base-910-disk-0"
+        with private_tempdir() as tmp:
+            live = self._live_disk(tmp)
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, f"template: 1\nscsi0: {old}\n"),
+                    (0, "[]"),
+                    (0, f"{live}\n"),
+                    (1, "convert failed\n"),
+                ]
+            )
+            with self.assertRaises(VmError) as caught:
+                insert_disk(
+                    vmid=910,
+                    storage=STORAGE,
+                    image_path=IMAGE,
+                    disk_policy="overwrite",
+                    dry_run=False,
+                    run=run,
+                    nodes_root=self._nodes(tmp),
+                )
+            self.assertIn("image convert failed", str(caught.exception))
+            self.assertEqual(live.read_bytes(), b"OLDDISK")
+            self.assertFalse(any(live.parent.glob("*.pve-prep-*")))
+        self.assertNotIn(["qm", "set", "910", "--template", "0", "--tags", "pve-prep-swap-910"], run.calls)
+
 
     def _insert(self, run: "FakeRun", tmp: str) -> object:
         return insert_disk(
@@ -973,6 +995,8 @@ class InsertDiskTests(unittest.TestCase):
             nodes_root=self._nodes(tmp),
         )
 
+    _MISSING_PATH = "/nonexistent/pve-prep-missing-disk.qcow2\n"
+
     def test_existing_unused_disk_is_not_attached_as_the_new_image(self) -> None:
         old = "NFS-SATA-SSD1:base-910-disk-0"
         stale = "NFS-SATA-SSD1:vm-910-disk-1"
@@ -983,6 +1007,7 @@ class InsertDiskTests(unittest.TestCase):
                     (0, "status: stopped\n"),
                     (0, f"template: 1\nscsi0: {old}\nunused0: {stale}\n"),
                     (0, "[]"),
+                    (0, self._MISSING_PATH),
                     (0, ""),
                     (0, ""),
                     (0, f"scsi0: {old}\nunused0: {stale}\nunused1: {new}\n"),
@@ -995,8 +1020,8 @@ class InsertDiskTests(unittest.TestCase):
             )
             result = self._insert(run, tmp)
         self.assertEqual(result.volid, new)
-        self.assertEqual(run.calls[6], ["qm", "set", "910", "--scsi0", f"{new},discard=on,ssd=1"])
-        self.assertEqual(run.calls[8], ["qm", "set", "910", "--delete", "unused2"])
+        self.assertEqual(run.calls[7], ["qm", "set", "910", "--scsi0", f"{new},discard=on,ssd=1"])
+        self.assertEqual(run.calls[9], ["qm", "set", "910", "--delete", "unused2"])
         self.assertNotIn(["qm", "set", "910", "--delete", "unused0"], run.calls)
 
     def test_failed_attach_discards_the_import_and_keeps_user_tags(self) -> None:
@@ -1008,6 +1033,7 @@ class InsertDiskTests(unittest.TestCase):
                     (0, "status: stopped\n"),
                     (0, f"template: 1\ntags: prod;web\nscsi0: {old}\n"),
                     (0, "[]"),
+                    (0, self._MISSING_PATH),
                     (0, ""),
                     (0, ""),
                     (0, f"scsi0: {old}\nunused0: {new}\n"),
@@ -1022,12 +1048,12 @@ class InsertDiskTests(unittest.TestCase):
                 self._insert(run, tmp)
         self.assertIn("template flag was restored", str(caught.exception))
         self.assertEqual(
-            run.calls[3],
+            run.calls[4],
             ["qm", "set", "910", "--template", "0", "--tags", "prod;web;pve-prep-swap-910"],
         )
-        self.assertEqual(run.calls[8], ["qm", "set", "910", "--delete", "unused0"])
-        self.assertEqual(run.calls[9], ["qm", "template", "910"])
-        self.assertEqual(run.calls[10], ["qm", "set", "910", "--tags", "prod;web"])
+        self.assertEqual(run.calls[9], ["qm", "set", "910", "--delete", "unused0"])
+        self.assertEqual(run.calls[10], ["qm", "template", "910"])
+        self.assertEqual(run.calls[11], ["qm", "set", "910", "--tags", "prod;web"])
 
     def test_old_disk_cleanup_failure_reports_an_updated_template(self) -> None:
         old = "NFS-SATA-SSD1:base-910-disk-0"
@@ -1038,6 +1064,7 @@ class InsertDiskTests(unittest.TestCase):
                     (0, "status: stopped\n"),
                     (0, f"template: 1\ntags: prod;web\nscsi0: {old}\n"),
                     (0, "[]"),
+                    (0, self._MISSING_PATH),
                     (0, ""),
                     (0, ""),
                     (0, f"scsi0: {old}\nunused0: {new}\n"),
@@ -1053,10 +1080,10 @@ class InsertDiskTests(unittest.TestCase):
         self.assertTrue(result.kept_template)
         self.assertIn("volume is locked", result.cleanup_error)
         self.assertIn("--delete unused0", result.cleanup_error)
-        self.assertEqual(run.calls[6], ["qm", "set", "910", "--scsi0", f"{new},discard=on,ssd=1"])
-        self.assertEqual(run.calls[8], ["qm", "set", "910", "--delete", "unused0"])
-        self.assertEqual(run.calls[9], ["qm", "template", "910"])
-        self.assertEqual(run.calls[10], ["qm", "set", "910", "--tags", "prod;web"])
+        self.assertEqual(run.calls[7], ["qm", "set", "910", "--scsi0", f"{new},discard=on,ssd=1"])
+        self.assertEqual(run.calls[9], ["qm", "set", "910", "--delete", "unused0"])
+        self.assertEqual(run.calls[10], ["qm", "template", "910"])
+        self.assertEqual(run.calls[11], ["qm", "set", "910", "--tags", "prod;web"])
         self.assertNotIn(["qm", "set", "910", "--delete", "scsi0"], run.calls)
 
     def test_template_failure_after_cleanup_failure_keeps_the_marker(self) -> None:
@@ -1068,6 +1095,7 @@ class InsertDiskTests(unittest.TestCase):
                     (0, "status: stopped\n"),
                     (0, f"template: 1\ntags: prod;web\nscsi0: {old}\n"),
                     (0, "[]"),
+                    (0, self._MISSING_PATH),
                     (0, ""),
                     (0, ""),
                     (0, f"scsi0: {old}\nunused0: {new}\n"),
@@ -1098,6 +1126,7 @@ class InsertDiskTests(unittest.TestCase):
                     (0, "status: stopped\n"),
                     (0, f"template: 1\nscsi0: {old}\n"),
                     (0, "[]"),
+                    (0, self._MISSING_PATH),
                     (0, ""),
                     (1, "import failed\n"),
                     (0, f"scsi0: {old}\n"),
@@ -1158,6 +1187,7 @@ class InsertDiskTests(unittest.TestCase):
                     (0, "status: stopped\n"),
                     (0, f"template: 1\ntags: web;pve-prep-swap-910\nscsi0: {old}\n"),
                     (0, "[]"),
+                    (0, self._MISSING_PATH),
                     (0, ""),
                     (0, ""),
                     (0, f"scsi0: {old}\nunused0: {new}\n"),
@@ -1170,7 +1200,7 @@ class InsertDiskTests(unittest.TestCase):
             )
             result = self._insert(run, tmp)
         self.assertEqual(result.volid, new)
-        self.assertEqual(run.calls[3], ["qm", "set", "910", "--template", "0", "--tags", "web;pve-prep-swap-910"])
+        self.assertEqual(run.calls[4], ["qm", "set", "910", "--template", "0", "--tags", "web;pve-prep-swap-910"])
         self.assertEqual(run.calls[-2:], [["qm", "template", "910"], ["qm", "set", "910", "--tags", "web"]])
 
     def test_another_vmids_marker_does_not_unlock_a_normal_vm(self) -> None:
