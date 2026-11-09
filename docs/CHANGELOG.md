@@ -4,6 +4,14 @@ All notable changes to pve-template-prep. Newest first. The format follows [Keep
 
 An installed copy offers a new release when the version string on `main` changes. Changes merged without a version bump are listed under **Unreleased** and arrive only through a freshly downloaded `install.sh`, which upgrades in place.
 
+## 1.4.1 - 2026-11-09
+
+### Changed
+- **Same-storage template updates replace the boot-disk file in place.** The new image is staged beside the live volume, the live file is renamed aside, the staged file takes its name, and the aside copy is deleted. The VM config volid and template flag stay put. No `qm importdisk`, no swap marker, and no `qm template` round-trip when the enrolled storage already holds that file. A replacement onto a different storage still uses the import/attach path. Linked clones are still refused.
+
+### Added
+- **Fedora 45** is in the catalog (`Fedora-Cloud-Base-Generic` from `download.fedoraproject.org`).
+
 ## 1.4.0 - 2026-10-29
 
 ### Changed

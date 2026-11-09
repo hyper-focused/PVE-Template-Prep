@@ -78,7 +78,7 @@ class InstallManifestTests(unittest.TestCase):
         self.assertIn('report_installed "$version"', text)
         source = (ROOT / "pve_prep" / "__init__.py").read_text(encoding="utf-8")
         found = parse_version(source)
-        self.assertEqual(found, "1.4.0")
+        self.assertEqual(found, "1.4.1")
         self.assertEqual(found, __version__)
         self.assertIsNotNone(version_key(found or ""))
 
@@ -86,18 +86,18 @@ class InstallManifestTests(unittest.TestCase):
         text = (ROOT / "install.sh").read_text(encoding="utf-8")
         match = re.search(r"^report_installed\(\) \{.*?\n\}", text, re.M | re.S)
         self.assertIsNotNone(match)
-        script = match.group(0) + '\nreport_installed "1.4.0"\n'
+        script = match.group(0) + '\nreport_installed "1.4.1"\n'
         plain = _run_report(script, {"NO_COLOR": "1", "TERM": "xterm-256color"})
         self.assertEqual(
             plain,
             "\n"
-            "Installation of pve-template-prep 1.4.0 complete!\n"
+            "Installation of pve-template-prep 1.4.1 complete!\n"
             "\n"
             "To run: (as root or sudo): pve-template-prep\n"
             "To do a dry run: pve-template-prep --dry-run\n",
         )
         colored = _run_report(script, {"TERM": "xterm-256color"})
-        self.assertIn("\033[38;5;78mInstallation of pve-template-prep 1.4.0 complete!\033[0m", colored)
+        self.assertIn("\033[38;5;78mInstallation of pve-template-prep 1.4.1 complete!\033[0m", colored)
         self.assertIn("\033[38;5;45mTo run: (as root or sudo):\033[0m \033[1mpve-template-prep\033[0m", colored)
         self.assertIn("\033[38;5;45mTo do a dry run:\033[0m \033[1mpve-template-prep --dry-run\033[0m", colored)
         dumb = _run_report(script, {"TERM": "dumb"})

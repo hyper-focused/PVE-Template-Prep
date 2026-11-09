@@ -144,9 +144,11 @@ exec /usr/local/sbin/pve-template-prep --unattended weekly
 
 The monthly file says `monthly`. The script does not download and it does not call `qm`. `--unattended` runs this program, so the swap stays the update path's swap. If that path already exists with different text, it is left unchanged. The tool does not overwrite a script it did not write. The host keeps one automated-update schedule: installing weekly removes our monthly wrapper when it is still ours, and the reverse. When the last enrollment for a schedule is gone, that wrapper is removed too. A dry run prints the script and the record and writes neither.
 
-## The new disk is attached before the old one is deleted
+## Same-storage updates replace the file in place
 
-The unattended swap does not detach the boot disk first. Detach, then attach, leaves the template with no boot disk when the attach fails. The order is the one the interactive update already uses. The current boot disk is backed up to `/var/backups/pve-template-prep`. The new image is downloaded and prepped with the SSH answers stored on the record. It is attached to the boot bus. Only then is the old volume deleted and `qm template` run. A failed attach still has the old disk. A failed delete is cleanup: the guest is already on the new image, which is the same outcome as the marker section above. Storage and format are read from that live boot disk, so a move onto another file storage still updates, and block storage is still refused. Memory, cores, bridge, name, and firewall are not rewritten.
+When the replacement stays on the storage that already holds the boot disk, the tool does not call `qm importdisk`. It writes the new image beside the live file (`*.pve-prep-new.<pid>`), optionally backs up the live file, renames the live file aside, renames the staged file onto the live name, then deletes the aside copy. The config volid and template flag never change, so there is no swap marker and no `qm template` round-trip. A failed stage leaves the live file alone. A failed install rename puts the aside copy back when it can. The run lock already serializes the mutation.
+
+A replacement onto a different storage still imports a new volume, attaches it, then deletes the old unused disk and runs `qm template`, with the swap marker while the template flag is cleared. Detach-then-attach is not used: that would leave the guest with no boot disk if the attach failed. Block storage is still refused. Linked clones are still refused. Memory, cores, bridge, name, and firewall are not rewritten.
 
 The run assumes the boot disk was not customized after creation. It does not look for those edits. A newer published checksum replaces the disk, and the backup is what remains of the previous one.
 
