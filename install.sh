@@ -361,6 +361,15 @@ if (( ${#missing_packages[@]} > 0 )); then
   apt-get install -y --no-install-recommends "${missing_packages[@]}"
 fi
 
+# libguestfs caches a built appliance under /var/tmp/.guestfs-<uid>. An
+# appliance built before dhcpcd-base was installed still has no DHCP client,
+# so --install keeps hanging until that cache is dropped. Clear on every
+# install when dhcpcd-base is present, including when apt already had it.
+if command -v dpkg-query >/dev/null 2>&1 && package_installed dhcpcd-base; then
+  echo "Clearing libguestfs appliance cache so dhcpcd is picked up"
+  rm -rf /var/tmp/.guestfs-*
+fi
+
 install -d -o root -g root -m 0755 "$(dirname "$BIN_LINK")"
 ln -sfn "$DEST/pve-template-prep.py" "$BIN_LINK"
 
