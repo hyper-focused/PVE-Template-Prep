@@ -864,7 +864,10 @@ class OrchestratorTest(unittest.TestCase):
             self.assertRaises(SystemExit) as caught,
         ):
             MOD.preflight(_image_job(dry_run=False, prep=True))
-        self.assertIn("apt-get install --no-install-recommends guestfs-tools libguestfs-xfs", str(caught.exception))
+        self.assertIn(
+            "apt-get install --no-install-recommends guestfs-tools libguestfs-xfs dhcpcd-base",
+            str(caught.exception),
+        )
         self.assertIn("qemu-img", str(caught.exception))
 
     def test_preflight_tool_set_by_mode(self) -> None:
@@ -887,17 +890,44 @@ class OrchestratorTest(unittest.TestCase):
         self.assertEqual(image_tools, ["qemu-img", "virt-customize"])
         self.assertEqual(template_tools, ["qemu-img", "virt-customize", "qm", "pvesm"])
 
-    def test_preflight_requires_xfs_support_even_with_virt_customize(self) -> None:
+    def test_preflight_requires_prep_packages_even_with_virt_customize(self) -> None:
         installed = SimpleNamespace(returncode=0, stdout="install ok installed", stderr="")
-        absent = SimpleNamespace(returncode=1, stdout="", stderr="dpkg-query: no packages found matching libguestfs-xfs\n")
+        absent_xfs = SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="dpkg-query: no packages found matching libguestfs-xfs\n",
+        )
+        absent_dhcp = SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="dpkg-query: no packages found matching dhcpcd-base\n",
+        )
+
+        def which(name: str):
+            return "/usr/bin/" + name
+
         with (
             mock.patch.object(MOD.os, "geteuid", return_value=0),
-            mock.patch.object(MOD.shutil, "which", side_effect=lambda name: "/usr/bin/" + name),
+            mock.patch.object(MOD.shutil, "which", side_effect=which),
         ):
-            with mock.patch.object(MOD.subprocess, "run", return_value=absent), self.assertRaises(SystemExit) as caught:
+            with mock.patch.object(MOD.subprocess, "run", return_value=absent_xfs), self.assertRaises(SystemExit) as caught:
                 MOD.preflight(_image_job(dry_run=False, prep=True))
             self.assertIn("missing libguestfs-xfs", str(caught.exception))
+            self.assertIn("dhcpcd-base", str(caught.exception))
+
+            def xfs_ok_dhcp_absent(argv, **_kwargs):
+                if argv[-1] == "libguestfs-xfs":
+                    return installed
+                return absent_dhcp
+
+            with (
+                mock.patch.object(MOD.subprocess, "run", side_effect=xfs_ok_dhcp_absent),
+                self.assertRaises(SystemExit) as caught,
+            ):
+                MOD.preflight(_image_job(dry_run=False, prep=True))
+            self.assertIn("missing dhcpcd-base", str(caught.exception))
             self.assertIn("--no-install-recommends", str(caught.exception))
+
             with mock.patch.object(MOD.subprocess, "run", return_value=installed):
                 MOD.preflight(_image_job(dry_run=False, prep=True))
             # No answer is not "installed". Stop before the download.
@@ -907,7 +937,7 @@ class OrchestratorTest(unittest.TestCase):
             ):
                 MOD.preflight(_image_job(dry_run=False, prep=True))
             self.assertIn("could not check libguestfs-xfs with dpkg-query", str(caught.exception))
-            self.assertIn("--no-install-recommends", str(caught.exception))
+            self.assertIn("dhcpcd-base", str(caught.exception))
 
     def test_main_live_calls_preflight(self) -> None:
         job = _image_job(dry_run=False, releases=("12",))
