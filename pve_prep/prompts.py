@@ -1389,9 +1389,7 @@ def _prior_enrollment_note(records) -> str:
         + "\n".join(lines)
         + "\n"
         "Keep the current schedule, change it, or unenroll from automated "
-        "updates. Unenrolling keeps the enrollment file so interactive Update "
-        "can still find them. The choice is applied after this run finishes "
-        "the builds that succeed."
+        "updates."
     )
 
 
