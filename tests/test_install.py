@@ -86,7 +86,7 @@ class InstallManifestTests(unittest.TestCase):
         text = (ROOT / "install.sh").read_text(encoding="utf-8")
         match = re.search(r"^report_installed\(\) \{.*?\n\}", text, re.M | re.S)
         self.assertIsNotNone(match)
-        script = match.group(0) + '\nreport_installed "1.4.1"\n'
+        script = match.group(0) + '\nreport_installed "1.4.1" "auto"\n'
         plain = _run_report(script, {"NO_COLOR": "1", "TERM": "xterm-256color"})
         self.assertEqual(
             plain,
@@ -94,14 +94,24 @@ class InstallManifestTests(unittest.TestCase):
             "Installation of pve-template-prep 1.4.1 complete!\n"
             "\n"
             "To run: (as root or sudo): pve-template-prep\n"
-            "To do a dry run: pve-template-prep --dry-run\n",
+            "To do a dry run: pve-template-prep --dry-run\n"
+            "Detail logs: auto (change with install.sh --logs=auto|on|off)\n",
         )
         colored = _run_report(script, {"TERM": "xterm-256color"})
         self.assertIn("\033[38;5;78mInstallation of pve-template-prep 1.4.1 complete!\033[0m", colored)
         self.assertIn("\033[38;5;45mTo run: (as root or sudo):\033[0m \033[1mpve-template-prep\033[0m", colored)
         self.assertIn("\033[38;5;45mTo do a dry run:\033[0m \033[1mpve-template-prep --dry-run\033[0m", colored)
+        self.assertIn("\033[38;5;45mDetail logs:\033[0m \033[1mauto\033[0m", colored)
         dumb = _run_report(script, {"TERM": "dumb"})
         self.assertNotIn("\033", dumb)
+
+    def test_logs_flag_is_documented_in_install_sh(self) -> None:
+        text = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("--logs=auto", text)
+        self.assertIn("--logs=on", text)
+        self.assertIn("--logs=off", text)
+        self.assertIn('LOG_POLICY_FILE="${LOG_POLICY_FILE:-$LOG_POLICY_DIR/logging}"', text)
+        self.assertIn('printf \'%s\\n\' "$LOGS" > "$LOG_POLICY_FILE"', text)
 
 
 if __name__ == "__main__":

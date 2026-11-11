@@ -7,7 +7,7 @@ pve-template-prep - build Proxmox VE 9 cloud-image templates, template boot disk
 ## SYNOPSIS
 
 ```
-pve-template-prep [--dry-run] [-v | --verbose]
+pve-template-prep [--dry-run] [-v | --verbose] [--logs=on|off]
 pve-template-prep --unattended weekly|monthly
 pve-template-prep -V | --version
 pve-template-prep -h | --help
@@ -39,7 +39,9 @@ Every disk written is a `.qcow2` or `.raw` file on file storage ([STORAGE](#stor
 | Option | Description |
 | --- | --- |
 | `--dry-run` | Run the whole session and print the commands. Nothing is downloaded or changed, and root is not required. Block storage that can be read is still left out of menus. The build-time storage check is skipped, because `pvesm` may be unreadable without root. The cache question is asked and nothing is deleted. An enrollment answer prints the cron script and the record and writes neither. |
-| `--unattended weekly` or `--unattended monthly` | Refresh enrolled templates without prompting. `weekly` (the cron path) always refreshes weekly enrollments and, on calendar days 1–7, monthly enrollments too. `monthly` forces monthly-only. See [ENROLLED TEMPLATES](#enrolled-templates). |
+| `--unattended weekly` or `--unattended monthly` | Refresh enrolled templates without prompting. `weekly` (the cron path) always refreshes weekly enrollments and, on calendar days 1–7, monthly enrollments too. `monthly` forces monthly-only. See [ENROLLED TEMPLATES](#enrolled-templates). Unattended refreshes always write a detail log for each VMID that changed or failed. |
+| `--logs=on` | Write `/var/log/pve-template-prep/<vmid>.log` for each VMID this interactive run touches, regardless of the install policy. |
+| `--logs=off` | Suppress interactive detail logs for this run when install used `--logs=on`. With `--logs=auto` or `--logs=off` at install time this is a no-op. Does not disable unattended logging. |
 | `-v`, `--verbose` | Show each `virt-customize` command and its log instead of the progress line. |
 | `-V`, `--version` | Print `pve-template-prep <x.y.z>` and exit 0. Does not check for updates. |
 | `-h`, `--help` | Print usage and exit 0. |
@@ -300,7 +302,7 @@ A failed release asks the same cache question and reports that the download is s
 
 ## PROGRESS OUTPUT
 
-On a terminal each release prints an accent-colored line naming what is being built, then `Converting <name> image...` with `qemu-img -p` progress, then `Preparing <name> image for Proxmox PVE...` with one estimated progress line (`(percent/100%)  <phase>`). The bracketed numbers in `virt-customize` output are elapsed seconds, so its log is hidden unless `-v` is given. When output is not a terminal, plain lines are printed and the `virt-customize` log is shown. On failure the captured log is printed followed by the error. An unattended run is the exception: it prints neither the progress line nor the `virt-customize` log, and a failure writes that log under `/var/log/pve-template-prep/` instead. Terminal echo is disabled during the session so type-ahead is drawn once.
+On a terminal each release prints an accent-colored line naming what is being built, then `Converting <name> image...` with `qemu-img -p` progress, then `Preparing <name> image for Proxmox PVE...` with one estimated progress line (`(percent/100%)  <phase>`). The bracketed numbers in `virt-customize` output are elapsed seconds, so its log is hidden unless `-v` is given. When output is not a terminal, plain lines are printed and the `virt-customize` log is shown. On failure the captured log is printed followed by the error. An unattended run is the exception: it prints neither the progress line nor the `virt-customize` log, and writes detail under `/var/log/pve-template-prep/` for each VMID that changed or failed. Interactive runs follow the install logging policy (`auto` by default: no file logs; `on`: every VMID touched; `off`: none) unless `--logs=on` or `--logs=off` overrides that session. Terminal echo is disabled during the session so type-ahead is drawn once.
 
 Colors come from `pve_prep/palette.json`. The theme is `PVE_PREP_THEME`, otherwise the terminal's reported background (OSC 11, with a DA1 reply as end marker and a one-second limit), otherwise `COLORFGBG`, otherwise dark. A background with Rec. 709 luma of 0.5 or more is light.
 
@@ -317,6 +319,14 @@ Colors come from `pve_prep/palette.json`. The theme is `PVE_PREP_THEME`, otherwi
 | `PROMPT_TOOLKIT_COLOR_DEPTH` | `DEPTH_1_BIT`, `DEPTH_4_BIT`, `DEPTH_8_BIT`, or `DEPTH_24_BIT` overrides `TERM` and `COLORTERM`. |
 | `LIBGUESTFS_BACKEND` | Passed to `virt-customize`. Default `direct` when unset. |
 
+`install.sh` also accepts:
+
+| Option | Effect |
+| --- | --- |
+| `--logs=auto` | Default. Interactive runs write no detail files; unattended refreshes still log VMIDs that changed or failed. Written to `/etc/pve-template-prep/logging`. |
+| `--logs=on` | Interactive runs write a detail log for every VMID touched. |
+| `--logs=off` | Interactive runs write no detail files. Unattended refreshes still log changes and failures. |
+
 `install.sh` also reads:
 
 | Variable | Default | Effect |
@@ -325,6 +335,8 @@ Colors come from `pve_prep/palette.json`. The theme is `PVE_PREP_THEME`, otherwi
 | `BIN_LINK` | `/usr/local/sbin/pve-template-prep` | Command link. |
 | `REPO` | `hyper-focused/PVE-Template-Prep` | GitHub `owner/name`. |
 | `REF` | `main` | Branch to download. |
+| `LOG_POLICY_DIR` | `/etc/pve-template-prep` | Directory for the logging policy file. |
+| `LOG_POLICY_FILE` | `$LOG_POLICY_DIR/logging` | One-word policy file: `auto`, `on`, or `off`. |
 
 ## FILES
 
@@ -338,7 +350,8 @@ Colors come from `pve_prep/palette.json`. The theme is `PVE_PREP_THEME`, otherwi
 | `/var/tmp/pve-template-prep/cache/` | Download cache. |
 | `/var/backups/pve-template-prep/` | Disk backups. |
 | `/var/lib/pve-template-prep/<vmid>.json` | Enrollment record for one template. Root-only, mode `0600`. No file means the template is never selected. |
-| `/var/log/pve-template-prep/<vmid>.log` | Detail for an unattended refresh that failed, or that left the previous disk unused. Root-only, mode `0600`. Replaced on the next such run. Cron mail names this path. |
+| `/etc/pve-template-prep/logging` | Install-time logging policy: `auto`, `on`, or `off`. Written by `install.sh --logs=…`. Missing or invalid means `auto`. |
+| `/var/log/pve-template-prep/<vmid>.log` | Detail log for one VMID. Unattended: written when that guest changed or failed (cron mail names the path on failure or leftover-disk cleanup). Interactive: written when policy is `on` or the run used `--logs=on`. Root-only, mode `0600`. Replaced on the next write for that VMID. |
 | `/etc/cron.weekly/pve-template-prep` | Host auto-update wrapper, mode `0755`. Exec `pve-template-prep --unattended weekly` (weekly enrollments every run; monthly on days 1–7). Different text is left unchanged. A leftover monthly wrapper this tool wrote is removed. |
 | `<storage path>/import/` | Destination of standalone images. |
 | `/etc/ssh/sshd_config.d/00-enableroot.conf` | Written inside the guest image when an SSH question is answered yes. |

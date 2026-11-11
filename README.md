@@ -40,7 +40,9 @@ bash install.sh
 pve-template-prep
 ```
 
-**What to expect:** the installer takes a few seconds. It downloads the tool from GitHub into `/opt/pve-template-prep`, makes sure the files are root-owned and locked down, and links the command at `/usr/local/sbin/pve-template-prep`. It installs those packages itself if you skipped that line. It touches nothing else on the host. Run it again later and it upgrades in place.
+Optional logging at install: `bash install.sh --logs=auto` (default: unattended detail logs only), `--logs=on` (every VMID every run), or `--logs=off` (no interactive file logs; unattended still logs changes). Override one interactive run with `pve-template-prep --logs=on` or `--logs=off`.
+
+**What to expect:** the installer takes a few seconds. It downloads the tool from GitHub into `/opt/pve-template-prep`, makes sure the files are root-owned and locked down, and links the command at `/usr/local/sbin/pve-template-prep`. It installs those packages itself if you skipped that line. It writes the logging policy under `/etc/pve-template-prep/logging`. Run it again later and it upgrades in place.
 
 Want a look first? `pve-template-prep --dry-run` asks the same questions and prints what it *would* do. No root, no downloads, no changes.
 

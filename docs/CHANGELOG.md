@@ -4,6 +4,11 @@ All notable changes to pve-template-prep. Newest first. The format follows [Keep
 
 An installed copy offers a new release when the version string on `main` changes. Changes merged without a version bump are listed under **Unreleased** and arrive only through a freshly downloaded `install.sh`, which upgrades in place.
 
+## Unreleased
+
+### Added
+- **Install-time and per-run detail logging policy.** `install.sh --logs=auto` (default) keeps interactive runs quiet and still writes `/var/log/pve-template-prep/<vmid>.log` for unattended VMIDs that changed or failed. `--logs=on` logs every VMID touched on interactive runs too. `--logs=off` turns interactive file logs off. `pve-template-prep --logs=on` forces file logs for that session; `--logs=off` only suppresses when install used `--logs=on`. Unattended refreshes always log changed or failed VMIDs. The choice is stored in `/etc/pve-template-prep/logging`.
+
 ## 1.4.1 - 2026-11-11
 
 ### Changed
