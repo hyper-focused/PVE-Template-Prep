@@ -32,15 +32,21 @@ def opening(action: str, label: str, job, vmid: int | None) -> str:
     raise ValueError(f"unknown action {action}")
 
 
-def _volume_leaf(volid: str) -> str:
-    """Image name from a Proxmox volid (storage:name), or empty."""
+def _volume_parts(volid: str) -> tuple[str, str]:
+    """Return (storage id, image filename) from a Proxmox volid.
+
+    Volids look like NFS-SATA-SSD1:9010/base-9010-disk-1.qcow2. The finish
+    line names the file once and the storage once; it does not repeat the
+    path after the colon (that is not a host path).
+    """
     text = str(volid or "").strip()
     if not text:
-        return ""
-    _storage, sep, name = text.partition(":")
-    if not sep or not name:
-        return text.rsplit("/", 1)[-1]
-    return name.rsplit("/", 1)[-1]
+        return "", ""
+    storage, sep, name = text.partition(":")
+    if not sep:
+        return "", text.rsplit("/", 1)[-1]
+    image = name.strip("/").rsplit("/", 1)[-1]
+    return storage.strip(), image
 
 
 def _result_volid(result) -> str:
@@ -66,13 +72,12 @@ def _backup_sentence(policy: str, result) -> str:
 
 def _installed_disk_sentence(label: str, result) -> str:
     """Boot-disk finish line for every distro/release."""
-    volid = _result_volid(result)
-    image = _volume_leaf(volid)
+    storage, image = _volume_parts(_result_volid(result))
     head = f"{label} VM disk image"
     if image:
         head += f" {image}"
-    if volid:
-        return f"{head} created and installed at {volid}."
+    if storage:
+        return f"{head} created and installed at {storage}."
     return f"{head} created and installed."
 
 

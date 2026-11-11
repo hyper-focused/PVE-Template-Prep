@@ -326,7 +326,7 @@ class OrchestratorTest(unittest.TestCase):
             MOD.run_one(job, "12", 910)
         self.assertIn(
             "Debian 12 VM disk image vm-910-disk-1 created and installed at "
-            "dir-templates:vm-910-disk-1.\n"
+            "dir-templates.\n"
             "No backup of prior disk image was retained.\n"
             "Name, memory, cores, and bridge were not updated: VM 910 failed at qm set.",
             buf.getvalue(),
@@ -483,7 +483,7 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("\nCreating Debian 12 VM template\n\n", text)
         self.assertIn(
             f"\n\nDebian 12 VM disk image vm-910-disk-1 created and installed at "
-            f"dir-templates:vm-910-disk-1.\n"
+            f"dir-templates.\n"
             f"Backup of prior disk image saved in {DEFAULT_BACKUPS}.\n",
             text,
         )
@@ -505,7 +505,7 @@ class OrchestratorTest(unittest.TestCase):
             MOD.run_one(kept, "12", 910)
         self.assertIn(
             "\n\nDebian 12 VM disk image vm-910-disk-0 created and installed at "
-            "dir-templates:vm-910-disk-0.\n"
+            "dir-templates.\n"
             "Backup of prior disk image saved in the backup directory.\n",
             buf.getvalue(),
         )
@@ -515,7 +515,7 @@ class OrchestratorTest(unittest.TestCase):
             MOD.run_one(replaced, "12", 910)
         self.assertIn(
             "\n\nDebian 12 VM disk image vm-910-disk-0 created and installed at "
-            "dir-templates:vm-910-disk-0.\n"
+            "dir-templates.\n"
             "No backup of prior disk image was retained.\n",
             buf.getvalue(),
         )
@@ -530,13 +530,13 @@ class OrchestratorTest(unittest.TestCase):
             MOD.run_one(replaced, "12", 910)
         self.assertIn(
             "Debian 12 VM disk image vm-910-disk-1 created and installed at "
-            "dir-templates:vm-910-disk-1.\n"
+            "dir-templates.\n"
             "No backup of prior disk image was retained.",
             buf.getvalue(),
         )
         self.assertNotIn("Template 910 kept", buf.getvalue())
         cleaned = SimpleNamespace(
-            volid="dir-templates:vm-910-disk-1",
+            volid="NFS-SATA-SSD1:9010/base-9010-disk-1.qcow2",
             kept_template=True,
             backup_dir="/var/backups/pve-template-prep",
             cleanup_error="volume is locked",
@@ -545,13 +545,16 @@ class OrchestratorTest(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             MOD.run_one(replaced, "12", 910)
+        text = buf.getvalue()
         self.assertIn(
-            "Debian 12 VM disk image vm-910-disk-1 created and installed at "
-            "dir-templates:vm-910-disk-1.\n"
+            "Debian 12 VM disk image base-9010-disk-1.qcow2 created and installed at "
+            "NFS-SATA-SSD1.\n"
             "Backup of prior disk image saved in /var/backups/pve-template-prep.\n"
             "Old disk cleanup failed: volume is locked.",
-            buf.getvalue(),
+            text,
         )
+        self.assertNotIn("NFS-SATA-SSD1:9010/", text)
+        self.assertNotIn("/images/", text)
         self.assertNotIn("Previous disk deleted.", buf.getvalue())
         self.assertNotIn("Template 910 updated", buf.getvalue())
         self.assertNotIn("template flag was restored", buf.getvalue())
