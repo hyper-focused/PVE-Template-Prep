@@ -142,7 +142,8 @@ class EnrollmentTests(unittest.TestCase):
                 replace(good, vmid=vmid)
         _record(vmid=100)
         _record(vmid=999_999_999)
-        for schedule in ("daily", "Weekly", "weekly ", ""):
+        _record(schedule="none")
+        for schedule in ("daily", "Weekly", "weekly ", "", "yearly"):
             with self.assertRaises(EnrollmentError):
                 replace(good, schedule=schedule)
         for distro in ("", "deb ian", "a/b", "a..b", "foo/../bar"):

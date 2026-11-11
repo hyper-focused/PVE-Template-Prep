@@ -32,12 +32,18 @@ def cron_script(program: str, schedule: str) -> str:
     return f"#!/bin/sh\nexec {shlex.quote(program)} --unattended {schedule}\n"
 
 
-def _cron_dir(schedule: str, directory: str | Path | None) -> Path:
+def _cron_dir(
+    schedule: str,
+    directory: str | Path | None,
+    *,
+    create: bool = False,
+) -> Path:
     """/etc/cron.<schedule>, or <directory>/cron.<schedule> for a test root.
 
     A custom root mirrors the /etc layout so weekly and monthly never share
-    one file. The override root must already exist; only cron.<schedule>
-    under it is created. /etc/cron.* is never created.
+    one file. The override root must already exist. When create is True, only
+    cron.<schedule> under a custom root is created; /etc/cron.* is never
+    created. Removal looks up the path without creating it.
     """
     if directory is None:
         return Path(f"/etc/cron.{schedule}")
@@ -45,10 +51,11 @@ def _cron_dir(schedule: str, directory: str | Path | None) -> Path:
     if root.is_symlink() or not root.is_dir():
         raise CronScriptError(f"{root}: not a directory")
     path = root / f"cron.{schedule}"
-    try:
-        path.mkdir(mode=0o755, exist_ok=True)
-    except OSError as exc:
-        raise CronScriptError(f"{path}: {exc}") from exc
+    if create:
+        try:
+            path.mkdir(mode=0o755, exist_ok=True)
+        except OSError as exc:
+            raise CronScriptError(f"{path}: {exc}") from exc
     return path
 
 
@@ -62,10 +69,11 @@ def install_cron_script(
 
     The same text is not rewritten. Different text raises CronScriptError and
     is left unchanged. A symlink directory or destination is not followed.
-    The cron directory is not created.
+    Under a custom root, cron.<schedule> is created when missing. /etc/cron.*
+    is never created.
     """
     text = cron_script(program, schedule)
-    cron_dir = _cron_dir(schedule, directory)
+    cron_dir = _cron_dir(schedule, directory, create=True)
     # lstat, then open the directory itself. A symlink must not receive the script.
     if cron_dir.is_symlink():
         raise CronScriptError(f"{cron_dir} is a symlink")

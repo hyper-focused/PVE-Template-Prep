@@ -2,7 +2,7 @@
 # Copyright 2026 Robert Tyree and hyper-focused
 """Unattended disk swap for enrolled templates.
 
-One schedule walks the enrollment files. A guest whose published digest
+One cron cadence walks enrollment files whose schedule matches. A guest whose published digest
 matches the record is left alone. Anything else is handed to perform as
 an insert of that one VMID. This module does not download an image and
 does not call qm importdisk.

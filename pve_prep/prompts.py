@@ -1299,31 +1299,32 @@ def _ask_guest_settings(read_line, write, *, hardware: bool, convert: bool, coun
 
 
 _UPDATE_ROWS = (
-    ("No automated updates", "no"),
+    ("No automated updates", "none"),
     ("Weekly automated updates", "weekly"),
     ("Monthly automated updates", "monthly"),
 )
 _UPDATE_NOTE = (
-    "These templates can get a cron script that replaces the boot disk "
-    "when the upstream image checksum changes.\n"
+    "These templates get an enrollment record so a later Update can find them "
+    "by distro and release.\n"
+    "Weekly or monthly also installs a cron script that replaces the boot disk "
+    "when the upstream image checksum changes. Each template keeps its own "
+    "schedule; picking weekly here does not move earlier monthly enrollments.\n"
     "Automated updates work only with file-based storage (directory, NFS, CIFS, "
     "and similar). They will not run on block storage such as ZFS, LVM, or RBD.\n"
     "Leave the template's disk image and storage alone after enrollment. "
     "If either changes, the next update refuses and leaves the guest as it is.\n"
-    "One schedule applies to every enrolled template on this host. "
-    "Picking weekly or monthly moves earlier enrollments onto that schedule "
-    "and removes the other cron script.\n"
     "It does not apply to a standalone image.\n"
-    "Enter does not install anything, and turns off earlier automated updates for these VMIDs."
+    "Enter writes the enrollment with no automated updates."
 )
 
 
 _PRIOR_ROWS = (
     ("Keep current schedule", "keep"),
     ("Change schedule", "change"),
-    ("Turn off automated updates", "off"),
+    ("Turn off automated updates", "none"),
 )
 _CHANGE_ROWS = (
+    ("No automated updates", "none"),
     ("Weekly automated updates", "weekly"),
     ("Monthly automated updates", "monthly"),
 )
@@ -1331,27 +1332,26 @@ _CHANGE_ROWS = (
 
 def _prior_enrollment_note(records) -> str:
     """List already-enrolled VMIDs and their schedules for the pre-download ask."""
-    schedules = sorted({record.schedule for record in records})
-    cadence = " and ".join(schedules) if schedules else "weekly/monthly"
     lines = [
         f"VMID {record.vmid} ({record.distro} {record.release}): {record.schedule}"
         for record in records
     ]
     return (
-        f"Already enrolled for {cadence} auto-updates:\n"
+        "Already enrolled:\n"
         + "\n".join(lines)
         + "\n"
         "Keep the current schedule, change it, or turn automated updates off "
-        "for these VMIDs. The choice is applied after this run finishes the "
-        "builds that succeed."
+        "for these VMIDs. Turning updates off keeps the enrollment file so "
+        "interactive Update can still find the VMID. The choice is applied "
+        "after this run finishes the builds that succeed."
     )
 
 
 def ask_prior_enrollment(read_line, write, records) -> str:
     """Pre-download choice for VMIDs that already have enrollment files.
 
-    Returns keep, weekly, monthly, or off. weekly/monthly mean change to that
-    schedule. records must be non-empty. Default is keep.
+    Returns keep, weekly, monthly, or none. weekly/monthly/none mean change to
+    that schedule. records must be non-empty. Default is keep.
     """
     if not records:
         raise ValueError("records must be non-empty")
@@ -1379,11 +1379,12 @@ def ask_prior_enrollment(read_line, write, records) -> str:
                 "2": "change",
                 "c": "change",
                 "change": "change",
-                "3": "off",
-                "o": "off",
-                "off": "off",
-                "n": "off",
-                "no": "off",
+                "3": "none",
+                "o": "none",
+                "off": "none",
+                "n": "none",
+                "no": "none",
+                "none": "none",
             },
             "1",
             "pick 1, 2, or 3",
@@ -1396,7 +1397,7 @@ def ask_prior_enrollment(read_line, write, records) -> str:
                 write,
                 "Choose a schedule. Highlight a selection and press enter",
                 list(_CHANGE_ROWS),
-                default="weekly",
+                default="none",
             )
         else:
             for index, (title, _value) in enumerate(_CHANGE_ROWS, start=1):
@@ -1406,13 +1407,17 @@ def ask_prior_enrollment(read_line, write, records) -> str:
                 write,
                 "Select [1]: ",
                 {
-                    "1": "weekly",
+                    "1": "none",
+                    "n": "none",
+                    "no": "none",
+                    "none": "none",
+                    "2": "weekly",
                     "weekly": "weekly",
-                    "2": "monthly",
+                    "3": "monthly",
                     "monthly": "monthly",
                 },
                 "1",
-                "pick 1 or 2",
+                "pick 1, 2, or 3",
             )
         done = {value: f"{title}." for title, value in _CHANGE_ROWS}
         _selected(read_line, write, done[schedule])
@@ -1422,11 +1427,11 @@ def ask_prior_enrollment(read_line, write, records) -> str:
     return picked
 
 
-def ask_unattended_schedule(read_line, write) -> str | None:
-    """Cron schedule for templates this run built that had no prior record.
+def ask_unattended_schedule(read_line, write) -> str:
+    """Per-template schedule for templates this run built that had no prior record.
 
-    weekly or monthly is the one schedule for the host. None means no cron
-    script for those VMIDs. Enter installs nothing.
+    Returns weekly, monthly, or none. none keeps the enrollment for interactive
+    Update without installing a cron refresh. Enter picks none.
     """
     _section(read_line, write, "Automated updates")
     _say(read_line, write, _UPDATE_NOTE, "note")
@@ -1436,7 +1441,7 @@ def ask_unattended_schedule(read_line, write) -> str | None:
             write,
             "Choose a schedule. Highlight a selection and press enter",
             list(_UPDATE_ROWS),
-            default="no",
+            default="none",
         )
     else:
         for index, (title, _value) in enumerate(_UPDATE_ROWS, start=1):
@@ -1446,9 +1451,10 @@ def ask_unattended_schedule(read_line, write) -> str | None:
             write,
             "Select [1]: ",
             {
-                "1": "no",
-                "n": "no",
-                "no": "no",
+                "1": "none",
+                "n": "none",
+                "no": "none",
+                "none": "none",
                 "2": "weekly",
                 "weekly": "weekly",
                 "3": "monthly",
@@ -1459,26 +1465,25 @@ def ask_unattended_schedule(read_line, write) -> str | None:
         )
     done = {value: f"{title}." for title, value in _UPDATE_ROWS}
     _selected(read_line, write, done[picked])
-    if picked == "no":
-        return None
     return picked
 
 
 def ask_turn_off_updates(read_line, write, *, count: int) -> bool:
-    """True when the operator turns off every existing enrollment.
+    """True when the operator turns off automated updates on every enrollment.
 
     Used when this run finished no new template to enroll but enrollments are
-    already on disk, so a manual return can still clear automated updates.
+    already on disk. Records stay with schedule none so Update can find them.
     """
     noun = "template" if count == 1 else "templates"
     _section(read_line, write, "Automated updates")
     _say(
         read_line,
         write,
-        f"{count} {noun} already enrolled for automated updates. "
+        f"{count} {noun} already enrolled. "
         "This run did not finish a template that needed a new enrollment.\n"
-        "Turn off automated updates for all of them? That removes their "
-        "enrollment files and our cron script when nothing remains.",
+        "Turn off automated updates for all of them? Enrollment files stay "
+        "(schedule none) so interactive Update can still find those VMIDs. "
+        "Cron scripts are removed when nothing remains on weekly or monthly.",
         "note",
     )
     return _ask_bool(read_line, write, "Turn off automated updates?\n", False)

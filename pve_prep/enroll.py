@@ -20,7 +20,9 @@ from pathlib import Path
 from .safedir import UnsafeDirError, prepare_private_dir, verify_private_dir
 
 ENROLL_DIR = "/var/lib/pve-template-prep"
-SCHEDULES = ("weekly", "monthly")
+# none keeps the record for interactive Update without a cron refresh.
+SCHEDULES = ("weekly", "monthly", "none")
+CRON_SCHEDULES = ("weekly", "monthly")
 
 _MIN_VMID = 100
 _MAX_VMID = 999_999_999
@@ -67,7 +69,7 @@ class Enrollment:
     storage: str
     password_auth: bool
     permit_root: bool
-    schedule: str  # weekly or monthly
+    schedule: str  # weekly, monthly, or none
 
     def __post_init__(self) -> None:
         _check_vmid(self.vmid)
