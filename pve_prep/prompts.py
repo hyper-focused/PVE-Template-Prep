@@ -908,6 +908,112 @@ def _keep_insert(
     return None
 
 
+def _enrolled_for_release(enrolled_vmids, distro: str, release: str) -> list[int]:
+    """VMIDs enrolled for this distro/release. Empty when lookup is absent or fails."""
+    if enrolled_vmids is None or not distro:
+        return []
+    try:
+        found = enrolled_vmids(distro, release)
+    except Exception:
+        return []
+    if found is None:
+        return []
+    out: list[int] = []
+    for item in found:
+        try:
+            vmid = int(item)
+        except (TypeError, ValueError):
+            continue
+        if vmid not in out:
+            out.append(vmid)
+    return out
+
+
+def _enrollment_pin_problem(enrollment_pin, vmid: int) -> str | None:
+    """Refusal from the enrollment storage/fingerprint pin. None accepts."""
+    if enrollment_pin is None:
+        return None
+    try:
+        problem = enrollment_pin(vmid)
+    except Exception:
+        return f"VMID {vmid} enrollment pin could not be checked."
+    if problem is None:
+        return None
+    text = str(problem).strip()
+    return text or None
+
+
+def _pin_refusal(problem: str) -> bool:
+    """True when the refusal is a storage or disk-fingerprint pin mismatch."""
+    return (
+        "but it was enrolled on storage" in problem
+        or "boot disk no longer matches the image recorded at enrollment" in problem
+    )
+
+
+def _accept_update_vmid(
+    read_line,
+    write,
+    *,
+    vmid: int,
+    label: str,
+    names: dict[int, str],
+    chosen: list[int],
+    placed: list[tuple[int, str]],
+    formats: list[tuple[int, str]],
+    known_kinds: dict[str, str],
+    vmids_in_use,
+    guest_role,
+    disk_storage,
+    disk_format_of,
+    enrollment_pin=None,
+) -> str | None:
+    """Validate and keep one update VMID. None means accepted; else the refusal."""
+    duplicate = _duplicate_reason(names, vmid)
+    if duplicate:
+        return duplicate
+    occupied = _occupied((vmid,), vmids_in_use)
+    if occupied is None:
+        role = _guest_role(guest_role, vmid, default="template")
+        refused = _replace_reason(vmid, role) if guest_role is not None else None
+        if refused:
+            return refused
+        problem = _keep_insert(
+            disk_storage, disk_format_of, vmid, placed, formats, known_kinds
+        )
+        if problem:
+            return problem
+        pin_problem = _enrollment_pin_problem(enrollment_pin, vmid)
+        if pin_problem:
+            return pin_problem
+        _say(
+            read_line,
+            write,
+            "Could not check that VMID. The run inserts the disk if the VM exists.",
+            "warning",
+        )
+        names[vmid] = label
+        chosen.append(vmid)
+        return None
+    if vmid not in occupied:
+        return f"VMID {vmid} is not in use. Type a template VMID."
+    role = _guest_role(guest_role, vmid, default="template")
+    refused = _replace_reason(vmid, role)
+    if refused:
+        return refused
+    problem = _keep_insert(
+        disk_storage, disk_format_of, vmid, placed, formats, known_kinds
+    )
+    if problem:
+        return problem
+    pin_problem = _enrollment_pin_problem(enrollment_pin, vmid)
+    if pin_problem:
+        return pin_problem
+    names[vmid] = label
+    chosen.append(vmid)
+    return None
+
+
 def _ask_image_vmids(
     read_line,
     write,
@@ -917,10 +1023,19 @@ def _ask_image_vmids(
     disk_storage=None,
     disk_format_of=None,
     kinds: dict[str, str] | None = None,
+    *,
+    distro: str = "",
+    enrolled_vmids=None,
+    enrollment_pin=None,
 ):
-    """One existing template VMID per release.
+    """One enrolled template VMID per release.
 
-    A free VMID is refused. Enter does not publish a file.
+    Update only touches guests with `/var/lib/pve-template-prep/<vmid>.json`.
+    A unique match for the distro/release is used without a free-form prompt.
+    Several matches are listed and one of those VMIDs must be typed. No match
+    aborts: a template this tool did not create cannot be updated here.
+    enrollment_pin(vmid) returns a refusal when the live storage or disk
+    fingerprint no longer matches the enrollment; a pin mismatch aborts.
     Returns (vmids, template VMID set, kept storage, kept format).
     The template set stays empty. A new template is the other build choice.
     """
@@ -930,59 +1045,155 @@ def _ask_image_vmids(
     formats: list[tuple[int, str]] = []
     known_kinds = dict(kinds or {})
     _section(read_line, write, "Template VMID(s)")
-    for _release, label in named:
+    for release, label in named:
+        enrolled = _enrolled_for_release(enrolled_vmids, distro, release)
+        if not enrolled:
+            _say(
+                read_line,
+                write,
+                f"No enrollment for {label}. Only templates this tool created "
+                f"(or enrolled) can be updated.",
+                "danger",
+            )
+            raise PromptAbort("not enrolled")
+        if len(enrolled) == 1:
+            vmid = enrolled[0]
+            problem = _accept_update_vmid(
+                read_line,
+                write,
+                vmid=vmid,
+                label=label,
+                names=names,
+                chosen=chosen,
+                placed=placed,
+                formats=formats,
+                known_kinds=known_kinds,
+                vmids_in_use=vmids_in_use,
+                guest_role=guest_role,
+                disk_storage=disk_storage,
+                disk_format_of=disk_format_of,
+                enrollment_pin=enrollment_pin,
+            )
+            if problem is None:
+                _say(
+                    read_line,
+                    write,
+                    f"Using enrolled VMID {vmid} for {label}.",
+                    "note",
+                )
+                continue
+            if _pin_refusal(problem):
+                _say(
+                    read_line,
+                    write,
+                    f"Enrolled VMID {vmid} for {label} cannot be updated: {problem}",
+                    "danger",
+                )
+                raise PromptAbort("enrollment pin")
+            # Transient read failures can clear on a retry; stay on this enrolled VMID.
+            _say(
+                read_line,
+                write,
+                f"Enrolled VMID {vmid} for {label} cannot be used yet: {problem}",
+                "warning",
+            )
+        listed = ", ".join(str(vmid) for vmid in enrolled)
         base = f"{label} VM Template ID: "
-        reason = ""
+        reason = f"Enrolled VMIDs for {label}: {listed}. Type one."
         while True:
             vmid = _read_one_vmid(read_line, write, base, reason=reason)
             reason = ""
             if vmid is None:
                 reason = "A VMID is required."
                 continue
-            duplicate = _duplicate_reason(names, vmid)
-            if duplicate:
-                reason = duplicate
+            if vmid not in enrolled:
+                reason = f"VMID {vmid} is not enrolled for {label}. Type one of: {listed}."
                 continue
-            occupied = _occupied((vmid,), vmids_in_use)
-            if occupied is None:
-                role = _guest_role(guest_role, vmid, default="template")
-                refused = _replace_reason(vmid, role) if guest_role is not None else None
-                if refused:
-                    reason = refused
-                    continue
-                problem = _keep_insert(
-                    disk_storage, disk_format_of, vmid, placed, formats, known_kinds
-                )
-                if problem:
-                    reason = problem
-                    continue
-                _say(
-                    read_line,
-                    write,
-                    "Could not check that VMID. The run inserts the disk if the VM exists.",
-                    "warning",
-                )
-                names[vmid] = label
-                chosen.append(vmid)
-                break
-            if vmid not in occupied:
-                reason = f"VMID {vmid} is not in use. Type a template VMID."
-                continue
-            role = _guest_role(guest_role, vmid, default="template")
-            refused = _replace_reason(vmid, role)
-            if refused:
-                reason = refused
-                continue
-            problem = _keep_insert(
-                    disk_storage, disk_format_of, vmid, placed, formats, known_kinds
-                )
+            problem = _accept_update_vmid(
+                read_line,
+                write,
+                vmid=vmid,
+                label=label,
+                names=names,
+                chosen=chosen,
+                placed=placed,
+                formats=formats,
+                known_kinds=known_kinds,
+                vmids_in_use=vmids_in_use,
+                guest_role=guest_role,
+                disk_storage=disk_storage,
+                disk_format_of=disk_format_of,
+                enrollment_pin=enrollment_pin,
+            )
             if problem:
                 reason = problem
                 continue
-            names[vmid] = label
-            chosen.append(vmid)
             break
     return tuple(chosen), frozenset(), tuple(placed), tuple(formats)
+
+
+def _filter_unchanged_updates(
+    read_line,
+    write,
+    *,
+    distro: str,
+    paired: list[tuple[str, int]],
+    labels: dict[str, str],
+    enrollment_digest=None,
+    published_digest=None,
+) -> list[tuple[str, int]]:
+    """Drop releases whose published checksum still matches enrollment.
+
+    When both digests are available and equal, the operator is told there is
+    no newer source image and asked whether to rebuild anyway (default no).
+    A missing digest lookup skips the question for that release.
+    """
+    kept: list[tuple[str, int]] = []
+    for release, vmid in paired:
+        label = labels.get(release, release)
+        stored = None
+        current = None
+        if enrollment_digest is not None:
+            try:
+                stored = enrollment_digest(vmid)
+            except Exception:
+                stored = None
+        if published_digest is not None:
+            try:
+                current = published_digest(distro, release)
+            except Exception:
+                current = None
+        if (
+            isinstance(stored, str)
+            and stored
+            and isinstance(current, str)
+            and current
+            and stored.casefold() == current.casefold()
+        ):
+            _say(
+                read_line,
+                write,
+                f"No newer source image for {label} (VMID {vmid}). "
+                f"The published checksum matches the enrollment.",
+                "warning",
+            )
+            if not _ask_bool(
+                read_line,
+                write,
+                "Rebuild this template anyway?",
+                False,
+            ):
+                _selected(
+                    read_line,
+                    write,
+                    f"Skipping {label} (VMID {vmid}).",
+                    "note",
+                )
+                continue
+        kept.append((release, vmid))
+    if not kept:
+        raise PromptAbort("no updates selected")
+    return kept
 
 
 def _yn_prompt(body: str, default: bool) -> str:
@@ -1130,59 +1341,65 @@ def _ask_guest_settings(read_line, write, *, hardware: bool, convert: bool, coun
 
 
 _UPDATE_ROWS = (
-    ("No automated updates", "no"),
+    ("No automated updates", "none"),
     ("Weekly automated updates", "weekly"),
     ("Monthly automated updates", "monthly"),
 )
 _UPDATE_NOTE = (
-    "These templates can get a cron script that replaces the boot disk "
-    "when the upstream image checksum changes.\n"
+    "These templates get an enrollment record so a later Update can find them "
+    "by distro and release.\n"
+    "Weekly or monthly also installs one /etc/cron.weekly script. That run "
+    "refreshes weekly templates every week, and monthly templates when the "
+    "calendar day is the 1st through the 7th. Each template keeps its own "
+    "schedule preference; picking weekly here does not move earlier monthly "
+    "enrollments.\n"
     "Automated updates work only with file-based storage (directory, NFS, CIFS, "
     "and similar). They will not run on block storage such as ZFS, LVM, or RBD.\n"
     "Leave the template's disk image and storage alone after enrollment. "
     "If either changes, the next update refuses and leaves the guest as it is.\n"
-    "One schedule applies to every enrolled template on this host. "
-    "Picking weekly or monthly moves earlier enrollments onto that schedule "
-    "and removes the other cron script.\n"
     "It does not apply to a standalone image.\n"
-    "Enter does not install anything, and turns off earlier automated updates for these VMIDs."
+    "Enter writes the enrollment with no automated updates."
 )
 
 
 _PRIOR_ROWS = (
     ("Keep current schedule", "keep"),
     ("Change schedule", "change"),
-    ("Turn off automated updates", "off"),
+    ("Unenroll from automated updates", "none"),
 )
 _CHANGE_ROWS = (
+    ("No automated updates", "none"),
     ("Weekly automated updates", "weekly"),
     ("Monthly automated updates", "monthly"),
 )
 
 
 def _prior_enrollment_note(records) -> str:
-    """List already-enrolled VMIDs and their schedules for the pre-download ask."""
-    schedules = sorted({record.schedule for record in records})
-    cadence = " and ".join(schedules) if schedules else "weekly/monthly"
+    """List already-enrolled templates and their schedules for the pre-download ask."""
+    if len(records) == 1:
+        head = "This Template is enrolled for automated updates:\n"
+    else:
+        head = "These Templates are enrolled for automated updates:\n"
     lines = [
         f"VMID {record.vmid} ({record.distro} {record.release}): {record.schedule}"
         for record in records
     ]
     return (
-        f"Already enrolled for {cadence} auto-updates:\n"
+        head
         + "\n".join(lines)
         + "\n"
-        "Keep the current schedule, change it, or turn automated updates off "
-        "for these VMIDs. The choice is applied after this run finishes the "
-        "builds that succeed."
+        "Keep the current schedule, change it, or unenroll from automated "
+        "updates. Unenrolling keeps the enrollment file so interactive Update "
+        "can still find them. The choice is applied after this run finishes "
+        "the builds that succeed."
     )
 
 
 def ask_prior_enrollment(read_line, write, records) -> str:
-    """Pre-download choice for VMIDs that already have enrollment files.
+    """Pre-download choice for templates that already have enrollment files.
 
-    Returns keep, weekly, monthly, or off. weekly/monthly mean change to that
-    schedule. records must be non-empty. Default is keep.
+    Returns keep, weekly, monthly, or none. weekly/monthly/none mean change to
+    that schedule. records must be non-empty. Default is keep.
     """
     if not records:
         raise ValueError("records must be non-empty")
@@ -1192,7 +1409,7 @@ def ask_prior_enrollment(read_line, write, records) -> str:
         picked = _pick(
             read_line,
             write,
-            "Already enrolled. Keep, change schedule, or turn off?",
+            "These Templates are enrolled. Keep, change, or unenroll?",
             list(_PRIOR_ROWS),
             default="keep",
         )
@@ -1210,11 +1427,12 @@ def ask_prior_enrollment(read_line, write, records) -> str:
                 "2": "change",
                 "c": "change",
                 "change": "change",
-                "3": "off",
-                "o": "off",
-                "off": "off",
-                "n": "off",
-                "no": "off",
+                "3": "none",
+                "o": "none",
+                "off": "none",
+                "n": "none",
+                "no": "none",
+                "none": "none",
             },
             "1",
             "pick 1, 2, or 3",
@@ -1227,7 +1445,7 @@ def ask_prior_enrollment(read_line, write, records) -> str:
                 write,
                 "Choose a schedule. Highlight a selection and press enter",
                 list(_CHANGE_ROWS),
-                default="weekly",
+                default="none",
             )
         else:
             for index, (title, _value) in enumerate(_CHANGE_ROWS, start=1):
@@ -1237,13 +1455,17 @@ def ask_prior_enrollment(read_line, write, records) -> str:
                 write,
                 "Select [1]: ",
                 {
-                    "1": "weekly",
+                    "1": "none",
+                    "n": "none",
+                    "no": "none",
+                    "none": "none",
+                    "2": "weekly",
                     "weekly": "weekly",
-                    "2": "monthly",
+                    "3": "monthly",
                     "monthly": "monthly",
                 },
                 "1",
-                "pick 1 or 2",
+                "pick 1, 2, or 3",
             )
         done = {value: f"{title}." for title, value in _CHANGE_ROWS}
         _selected(read_line, write, done[schedule])
@@ -1253,11 +1475,11 @@ def ask_prior_enrollment(read_line, write, records) -> str:
     return picked
 
 
-def ask_unattended_schedule(read_line, write) -> str | None:
-    """Cron schedule for templates this run built that had no prior record.
+def ask_unattended_schedule(read_line, write) -> str:
+    """Per-template schedule for templates this run built that had no prior record.
 
-    weekly or monthly is the one schedule for the host. None means no cron
-    script for those VMIDs. Enter installs nothing.
+    Returns weekly, monthly, or none. none keeps the enrollment for interactive
+    Update without installing a cron refresh. Enter picks none.
     """
     _section(read_line, write, "Automated updates")
     _say(read_line, write, _UPDATE_NOTE, "note")
@@ -1267,7 +1489,7 @@ def ask_unattended_schedule(read_line, write) -> str | None:
             write,
             "Choose a schedule. Highlight a selection and press enter",
             list(_UPDATE_ROWS),
-            default="no",
+            default="none",
         )
     else:
         for index, (title, _value) in enumerate(_UPDATE_ROWS, start=1):
@@ -1277,9 +1499,10 @@ def ask_unattended_schedule(read_line, write) -> str | None:
             write,
             "Select [1]: ",
             {
-                "1": "no",
-                "n": "no",
-                "no": "no",
+                "1": "none",
+                "n": "none",
+                "no": "none",
+                "none": "none",
                 "2": "weekly",
                 "weekly": "weekly",
                 "3": "monthly",
@@ -1290,29 +1513,32 @@ def ask_unattended_schedule(read_line, write) -> str | None:
         )
     done = {value: f"{title}." for title, value in _UPDATE_ROWS}
     _selected(read_line, write, done[picked])
-    if picked == "no":
-        return None
     return picked
 
 
 def ask_turn_off_updates(read_line, write, *, count: int) -> bool:
-    """True when the operator turns off every existing enrollment.
+    """True when the operator unenrolls every template from automated updates.
 
     Used when this run finished no new template to enroll but enrollments are
-    already on disk, so a manual return can still clear automated updates.
+    already on disk. Records stay with schedule none so Update can find them.
     """
-    noun = "template" if count == 1 else "templates"
+    if count == 1:
+        head = "This Template is enrolled for automated updates. "
+        ask = "Unenroll this Template from automated updates?\n"
+    else:
+        head = "These Templates are enrolled for automated updates. "
+        ask = "Unenroll these Templates from automated updates?\n"
     _section(read_line, write, "Automated updates")
     _say(
         read_line,
         write,
-        f"{count} {noun} already enrolled for automated updates. "
-        "This run did not finish a template that needed a new enrollment.\n"
-        "Turn off automated updates for all of them? That removes their "
-        "enrollment files and our cron script when nothing remains.",
+        head
+        + "This run did not finish a template that needed a new enrollment.\n"
+        "Unenroll from automated updates? Enrollment files stay so interactive "
+        "Update can still find them.",
         "note",
     )
-    return _ask_bool(read_line, write, "Turn off automated updates?\n", False)
+    return _ask_bool(read_line, write, ask, False)
 
 
 def ask_cache_cleanup(read_line, write, *, cache: str, failed: bool) -> bool:
@@ -1594,12 +1820,22 @@ def interview(
     disk_storage=None,
     disk_format_of=None,
     import_storages=None,
+    enrolled_vmids=None,
+    enrollment_digest=None,
+    published_digest=None,
+    enrollment_pin=None,
 ) -> Job:
     """Walk the operator through one job.
 
     read_line() -> str, and raises EOFError on EOF. None is also EOF.
     Empty answers accept the default shown in that question, when it has one.
     A bad answer asks the same question again. YES starts the run. X exits.
+    enrolled_vmids(distro, release) -> list[int] supplies enrolled VMIDs on
+    the update path; only those VMIDs can be updated. enrollment_pin(vmid)
+    refuses when the live storage or disk fingerprint no longer matches the
+    enrollment. enrollment_digest(vmid) and published_digest(distro, release)
+    compare checksums so an unchanged upstream image asks before rebuilding
+    (default no).
     """
     write = _Output(write, paint=ui.enabled(read_line))
     build = _ask_build(read_line, write)
@@ -1653,7 +1889,26 @@ def interview(
             disk_storage,
             disk_format_of,
             kinds,
+            distro=distro,
+            enrolled_vmids=enrolled_vmids,
+            enrollment_pin=enrollment_pin,
         )
+        labels = dict(named)
+        filtered = _filter_unchanged_updates(
+            read_line,
+            write,
+            distro=distro,
+            paired=list(zip(releases, vmids)),
+            labels=labels,
+            enrollment_digest=enrollment_digest,
+            published_digest=published_digest,
+        )
+        releases = tuple(release for release, _vmid in filtered)
+        vmids = tuple(vmid for _release, vmid in filtered)
+        named = tuple((release, labels[release]) for release, _vmid in filtered)
+        count = len(releases)
+        kept = tuple(item for item in kept if item[0] in set(vmids))
+        kept_format = tuple(item for item in kept_format if item[0] in set(vmids))
         destroy_vmids = frozenset()
         dest_dir = ""
         storage, disk_format, kept, kept_format = _image_storage(

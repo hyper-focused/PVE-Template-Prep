@@ -25,7 +25,12 @@ from pve_prep.catalog import normalize_release, releases_for
 from pve_prep.customize import apply as customize_apply
 from pve_prep.customize import argv as customize_argv
 from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, file_digest, publish
-from pve_prep.enroll import ENROLL_DIR
+from pve_prep.enroll import (
+    ENROLL_DIR,
+    enrollments_matching,
+    load_enrollment,
+    pin_mismatch_reason,
+)
 from pve_prep.job import DEFAULT_CACHE, Job, action_for, converts_to_template
 from pve_prep.offer import apply_prior_enrollment, offer_created, plan_prior_enrollments
 from pve_prep.prompts import PromptAbort, ask_cache_cleanup, interview
@@ -254,6 +259,53 @@ def disk_format(vmid: int) -> str | None:
     return os_disk_format(proc.stdout or "")
 
 
+def enrolled_vmids_for(distro: str, release: str) -> list[int]:
+    """VMIDs enrolled for this distro/release. Empty when none or unreadable."""
+    try:
+        return [record.vmid for record in enrollments_matching(distro, release)]
+    except Exception:
+        return []
+
+
+def enrollment_digest_for(vmid: int) -> str | None:
+    """Upstream digest stored at enrollment. None when missing or unreadable."""
+    try:
+        record = load_enrollment(vmid)
+    except Exception:
+        return None
+    if record is None:
+        return None
+    return record.digest
+
+
+def enrollment_pin_for(vmid: int) -> str | None:
+    """Why this enrolled guest must not be updated. None when the pin matches.
+
+    Compares the live boot-disk storage and SHA-256 to the enrollment record,
+    same check an unattended refresh uses before a swap.
+    """
+    try:
+        record = load_enrollment(vmid)
+    except Exception as exc:
+        return f"VMID {vmid} enrollment could not be read: {exc}"
+    if record is None:
+        return f"VMID {vmid} has no enrollment"
+    try:
+        storage, disk_digest = _pin_for(vmid)
+    except Exception as exc:
+        return f"VMID {vmid} boot disk could not be fingerprinted: {exc}"
+    return pin_mismatch_reason(record, storage, disk_digest)
+
+
+def published_digest_for(distro: str, release: str) -> str | None:
+    """Current published upstream digest. None when the lookup fails."""
+    try:
+        digest, _alg = _digest_for(distro, release)
+    except Exception:
+        return None
+    return digest
+
+
 # Packages that ship no command to look for.
 # libguestfs-xfs is only a Recommends of libguestfs0, so virt-customize can be
 # present without it; XFS guests (the EL family) then fail to mount after the
@@ -355,6 +407,10 @@ def run_one(job: Job, release: str, vmid: int | None) -> str:
     spec = _spec_for(job.distro, release)
     label = _product(spec, job.distro, release)
     action = action_for(job, vmid)
+    # Update inserts re-check the enrollment pin immediately before work, so a
+    # disk moved after the interview is still refused (same as unattended).
+    if action == "insert" and vmid is not None and not job.dry_run:
+        _assert_enrollment_pin(vmid)
     if not job.quiet:
         print()
         _announce(opening(action, label, job, vmid), "accent")
@@ -434,10 +490,11 @@ def _digest_for(distro: str, release: str) -> tuple[str, str]:
 
 
 def _pin_for(vmid: int) -> tuple[str, str]:
-    """Storage id and SHA-256 of the boot disk this run left on the guest.
+    """Storage id and SHA-256 of the boot disk currently on the guest.
 
-    An unattended refresh refuses the guest when either value no longer
-    matches, so a moved disk or a disk someone else replaced is not overwritten.
+    Used when writing enrollment after a successful build, and when interactive
+    Update or an unattended refresh checks that the live disk still matches
+    the record so a moved or replaced disk is not overwritten.
     """
     cfg = default_run(["qm", "config", str(vmid)])
     if getattr(cfg, "returncode", 1) != 0:
@@ -448,6 +505,23 @@ def _pin_for(vmid: int) -> tuple[str, str]:
     except (OSError, DownloadError) as exc:
         raise RuntimeError(f"VM {vmid} boot disk could not be fingerprinted: {exc}") from exc
     return storage, digest
+
+
+def _assert_enrollment_pin(vmid: int) -> None:
+    """Refuse an enrolled insert when the storage/fingerprint pin no longer matches.
+
+    Guests with no enrollment file are left to the other insert guards (file
+    storage, template role). Interactive Update always has a record by then.
+    """
+    try:
+        record = load_enrollment(vmid)
+    except Exception as exc:
+        raise RuntimeError(f"VMID {vmid} enrollment could not be read: {exc}") from exc
+    if record is None:
+        return
+    problem = enrollment_pin_for(vmid)
+    if problem:
+        raise RuntimeError(problem)
 
 
 def _created_templates(
@@ -615,7 +689,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--unattended",
         choices=("weekly", "monthly"),
-        help="refresh enrolled templates for this schedule without prompting",
+        help=(
+            "refresh enrolled templates without prompting; weekly (cron) also "
+            "refreshes monthly enrollments on days 1-7, monthly forces monthly only"
+        ),
     )
     args = parser.parse_args(argv)
     print(f"{parser.prog} {__version__}")
@@ -645,6 +722,10 @@ def main(argv: list[str] | None = None) -> int:
                 disk_storage=disk_storage,
                 disk_format_of=disk_format,
                 import_storages=import_storages,
+                enrolled_vmids=enrolled_vmids_for,
+                enrollment_digest=enrollment_digest_for,
+                published_digest=published_digest_for,
+                enrollment_pin=enrollment_pin_for,
             )
     except PromptAbort:
         print("aborted")

@@ -39,7 +39,7 @@ Every disk written is a `.qcow2` or `.raw` file on file storage ([STORAGE](#stor
 | Option | Description |
 | --- | --- |
 | `--dry-run` | Run the whole session and print the commands. Nothing is downloaded or changed, and root is not required. Block storage that can be read is still left out of menus. The build-time storage check is skipped, because `pvesm` may be unreadable without root. The cache question is asked and nothing is deleted. An enrollment answer prints the cron script and the record and writes neither. |
-| `--unattended weekly` or `--unattended monthly` | Refresh templates enrolled on that schedule. Skips the self-update prompt and the interview. The command is non-interactive. See [ENROLLED TEMPLATES](#enrolled-templates). |
+| `--unattended weekly` or `--unattended monthly` | Refresh enrolled templates without prompting. `weekly` (the cron path) always refreshes weekly enrollments and, on calendar days 1–7, monthly enrollments too. `monthly` forces monthly-only. See [ENROLLED TEMPLATES](#enrolled-templates). |
 | `-v`, `--verbose` | Show each `virt-customize` command and its log instead of the progress line. |
 | `-V`, `--version` | Print `pve-template-prep <x.y.z>` and exit 0. Does not check for updates. |
 | `-h`, `--help` | Print usage and exit 0. |
@@ -56,7 +56,7 @@ An unrecognized option prints usage and exits 2.
 | `qm`, `pvesm` | create, update |
 | `virt-customize` (`guestfs-tools`) | all jobs, because guest prep always runs |
 | Outbound HTTPS to the image mirrors | all live runs |
-| Outbound network from the guest appliance | all live runs: `virt-customize --install` fetches packages from inside the image. Deb guests get `Acquire::ForceIPv4` and short apt timeouts written before `--install`, because Ubuntu mirrors often hang on IPv6 in the appliance while Debian still succeeds |
+| Outbound network from the guest appliance | all live runs: `virt-customize --install` fetches packages from inside the image. Deb guests get `Acquire::ForceIPv4` and short apt timeouts written before `--install`. EL guests get `ip_resolve=4` for dnf/yum (drop-ins plus an append to `dnf.conf`/`yum.conf`) before `--install`. AAAA black-holes in the appliance hang Ubuntu apt and Alma/Fedora dnf the same way |
 | Outbound HTTPS to GitHub | update check, `install.sh` |
 
 Python 3, `qm`, `pvesm`, and `qemu-img` are present on a stock PVE 9 node. `guestfs-tools`, `libguestfs-xfs`, and `dhcpcd-base` are not; `install.sh` installs whichever of them is missing, checked per package, with `--no-install-recommends`, which skips `libguestfs-tools`, `guestfish`, `guestmount`, and `virt-p2v`. `libguestfs-xfs` is named explicitly so XFS root filesystems (RHEL-family guests) can be mounted. `dhcpcd-base` is named explicitly because Debian trixie / PVE 9 `guestfs-tools` does not Depend on it yet; without it the appliance has no DHCP client and `virt-customize --install` hangs on DNS/apt. Prefer `dhcpcd-base` over `dhcpcd` so the host does not get a DHCP client service. After installing any of those packages, `install.sh` removes `/var/tmp/.guestfs-*` so a previously cached appliance (built without `dhcpcd`) is not reused. A missing tool, a missing package, or a `dpkg-query` that cannot answer, stops the run before the interview. The message is `missing <name>` or `could not check <name> with dpkg-query`, then `apt-get install --no-install-recommends guestfs-tools libguestfs-xfs dhcpcd-base`.
@@ -85,8 +85,8 @@ Section **PVE Template and Disk Image Builder**, question `Highlight desired tem
 
 Section **Template VMID(s)**, one field per release. Standalone images skip this step.
 
-- **Create:** `Debian 13 VM Template ID [9002]:`. Enter takes the bracket, the next free ID from 9001 (see [VMIDS](#vmids-and-replacement)). A typed ID that is in use must be a template; it is replaced. Two releases that both take the default receive consecutive free IDs.
-- **Update:** `Ubuntu 24.04 VM Template ID:`, no default. The ID must be an existing template.
+- **Create:** `Debian 13 VM Template ID [9002]:`. Enter takes the bracket, the next free ID from 9001 (see [VMIDS](#vmids-and-replacement)). A typed ID that is in use must be a template; it is replaced. Two releases that both take the default receive consecutive free IDs. Replacing an existing template on this path is intentional and does not ask about a matching upstream checksum.
+- **Update:** Only VMIDs with `/var/lib/pve-template-prep/<vmid>.json` for the chosen distro and release. When exactly one enrollment matches, that VMID is used with a note and no free-form prompt. Several matches are listed and one of those VMIDs must be typed. No match ends the session with `No enrollment for …`. The live boot-disk storage and SHA-256 must still match the enrollment `storage` and `disk_digest`; a mismatch refuses that guest (unique enrollment aborts; several enrollments re-ask for another VMID). The same pin is checked again immediately before the disk swap. After VMIDs are accepted, a published checksum that still matches the enrollment digest warns `No newer source image …` and asks `Rebuild this template anyway? (y/n) [No]:`. Enter skips that release; skipping every release aborts.
 
 A list or range is rejected. A refused ID is asked again and the next prompt states why.
 
@@ -140,7 +140,7 @@ Section **Confirm Selections** states the consequence in one line and asks for o
 | Existing templates' disks are replaced, no backup | `DELETE` |
 | Existing boot disks are deleted, no backup | `DELETE` |
 
-`X` exits with no change. On a terminal, `YES` is the success color and `DELETE` is red. The quotes stay with the question. Under `--dry-run` the screen says nothing has been built.
+`X` exits with no change. On a terminal, `YES` is bright green (the success role) and `DELETE` is red. The quotes stay with the question. A yes/no field's `(y/n) [Yes]` hint uses that same green; VMID defaults stay highlight blue. Under `--dry-run` the screen says nothing has been built.
 
 ### After the builds
 
@@ -183,11 +183,11 @@ A release that fails does not stop the others, except as stated above.
 
 ## ENROLLED TEMPLATES
 
-**Already enrolled VMIDs (before download).** On create or update, after VMIDs are known and before any download or import, each selected VMID that already has `/var/lib/pve-template-prep/<vmid>.json` is listed. Section **Automated updates**, question `Already enrolled. Keep, change schedule, or turn off?` The rows are `Keep current schedule` (default), `Change schedule` (then weekly or monthly), and `Turn off automated updates`. That choice is stored for the run and applied only to builds that succeed: keep or change rewrites the record with this run's release, SSH answers, upstream digest, storage, and disk fingerprint; turn off removes the JSON. When no enrollment remains for a schedule, the matching `/etc/cron.{weekly,monthly}/pve-template-prep` wrapper is removed if this tool wrote it. Standalone image jobs never ask.
+**Already enrolled Templates (before download).** On create or update, after VMIDs are known and before any download or import, each selected VMID that already has `/var/lib/pve-template-prep/<vmid>.json` is listed. Section **Automated updates**, note `These Templates are enrolled for automated updates` (or `This Template is…` for one), question `These Templates are enrolled. Keep, change, or unenroll?` The rows are `Keep current schedule` (default), `Change schedule` (then none, weekly, or monthly), and `Unenroll from automated updates` (sets `schedule` to `none`). That choice is stored for the run and applied only to builds that succeed: keep or change rewrites the record with this run's release, SSH answers, upstream digest, storage, disk fingerprint, and schedule. Unenrolling keeps the JSON with `schedule` `none` so interactive Update can still find the Template. Only the VMIDs in this run change; other enrollments keep their own schedules. Cron cleanup after none is silent: when our weekly wrapper is present and no weekly/monthly enrollments remain, it is removed, and any leftover monthly wrapper is cleared. Standalone image jobs never ask.
 
-**New enrollments (after builds).** Templates this run finished that had no prior record get the normal schedule question after the builds and before the cache question. Question `Choose a schedule. Highlight a selection and press enter`. The rows are `No automated updates` (default), `Weekly automated updates`, and `Monthly automated updates`. On a pipe the prompt is `Select [1]:` and `1` is no. That one answer applies to every such new template. No record is written until the operator picks weekly or monthly. One schedule applies to every enrolled template on this host: picking weekly or monthly moves earlier enrollments onto that schedule and removes the other cron script. Automated updates work only with file-based storage; they will not run on block storage. Leave the template's disk image and storage alone after enrollment, or the next update refuses. Standalone images are not asked and are not enrolled. A create left as a normal VM is not enrolled. End of input at this question installs nothing. Templates already built stay.
+**New enrollments (after builds).** Templates this run finished that had no prior record get the schedule question after the builds and before the cache question. Question `Choose a schedule. Highlight a selection and press enter`. The rows are `No automated updates` (default), `Weekly automated updates`, and `Monthly automated updates`. On a pipe the prompt is `Select [1]:` and `1` is none. That one answer applies to every such new template in this run and always writes an enrollment file: `none` keeps the record for interactive Update without a cron refresh; weekly or monthly also installs the single `/etc/cron.weekly` wrapper. Earlier enrollments are not moved onto the new cadence, so weekly and monthly preferences coexist under one cron script. Automated updates work only with file-based storage; they will not run on block storage. Leave the template's disk image and storage alone after enrollment, or the next update refuses. Standalone images are not asked and are not enrolled. A create left as a normal VM is not enrolled. End of input at this question installs nothing. Templates already built stay.
 
-The proof of creation is a root-only JSON file, one per VMID, at `/var/lib/pve-template-prep/<vmid>.json` (mode `0600`). It is not a Proxmox tag. A template with no file is never selected. The directory is held to the same checks as the backup directory.
+The proof of creation is a root-only JSON file, one per VMID, at `/var/lib/pve-template-prep/<vmid>.json` (mode `0600`). It is not a Proxmox tag. A template with no file is never selected on Update. The directory is held to the same checks as the backup directory.
 
 | Field | Contents |
 | --- | --- |
@@ -200,24 +200,24 @@ The proof of creation is a root-only JSON file, one per VMID, at `/var/lib/pve-t
 | `storage` | File-storage id that held that disk when the guest was enrolled. |
 | `password_auth` | The SSH password-authentication answer from the creating run. |
 | `permit_root` | The root SSH answer from the creating run. |
-| `schedule` | `weekly` or `monthly`. |
+| `schedule` | `weekly`, `monthly`, or `none`. |
 
 Newer means the catalog's current published checksum for that distro and release differs from the stored digest. The upstream digest and the disk fingerprint are rewritten only after the disk swap succeeds.
 
-Before any download, an unattended run checks that the live boot disk is still on the enrolled `storage` and that its file still matches `disk_digest`. If either has changed — the disk moved, converted to block storage, or replaced by another image — the update refuses and leaves the guest alone. Automated updates work only with file-based storage.
+Before any download, an unattended run checks that the live boot disk is still on the enrolled `storage` and that its file still matches `disk_digest`. Interactive Update applies the same pin when a VMID is accepted and again immediately before the disk swap. If either value has changed — the disk moved, converted to block storage, or replaced by another image — the update refuses and leaves the guest alone. Automated updates work only with file-based storage.
 
 **When a record is removed.** Records are checked against `/etc/pve/.vmlist` and the guest's config under `/etc/pve/nodes/<node>/qemu-server/` at the start of every live interactive run and every unattended run. A record is removed when its VMID is no longer on the cluster, is now an LXC container, is now a normal VM, or is now a linked clone. Each removal prints one line naming the reason. A guest whose disk swap did not finish keeps its record. When the cluster list or the guest config cannot be read, nothing is removed, so a node outage never turns off updates. An unattended run also removes the record when the downloaded image does not match its published checksum; the existing disk is not changed, and the mail says to run the program to replace the template and enroll it again. A failed checksum lookup, an HTTP error such as 404 from a mirror that has not synced yet, or any other failure keeps the record and tries again on the next schedule.
 
-The first enrollment for a schedule installs `/etc/cron.weekly/pve-template-prep` or `/etc/cron.monthly/pve-template-prep`, mode `0755`. The whole body is:
+The first weekly or monthly enrollment installs `/etc/cron.weekly/pve-template-prep`, mode `0755`. The whole body is:
 
 ```sh
 #!/bin/sh
 exec /usr/local/sbin/pve-template-prep --unattended weekly
 ```
 
-The monthly file uses `monthly` in place of `weekly`. The script does not download images and does not call `qm`. If that path already exists with different text, it is left unchanged. Only one of these wrappers should be active: the host keeps a single automated-update schedule. When the last record for a schedule is removed, that wrapper is deleted if it is still ours. A dry run prints the script and the record and writes neither.
+The script does not download images and does not call `qm`. If that path already exists with different text, it is left unchanged. A leftover `/etc/cron.monthly/pve-template-prep` this tool wrote is removed; monthly preferences are handled by the weekly run on calendar days 1 through 7. Records with `schedule` `none` are never selected by cron. When the last weekly or monthly record is gone, the weekly wrapper is deleted if it is still ours. A dry run prints the script and the record and writes neither.
 
-`--unattended weekly` or `--unattended monthly` skips the self-update prompt and the interview. The command is non-interactive. It takes the run lock, removes stale records as above, then for each matching record, a matching digest prints that the VMID is current and that the disk was left unchanged. A different digest backs up the current boot disk to `/var/backups/pve-template-prep`, downloads and preps a new image with the stored SSH answers, then replaces the boot-disk file in place on the enrolled storage (or imports onto another storage when the live disk has moved). Block storage is refused. Memory, cores, bridge, name, and firewall are not rewritten.
+`--unattended weekly` or `--unattended monthly` skips the self-update prompt and the interview. The command is non-interactive. It takes the run lock, removes stale records as above, then refreshes matching enrollments: `weekly` always includes weekly records and, on days 1–7, monthly records; `monthly` forces monthly-only. A matching digest prints that the VMID is current and that the disk was left unchanged. A different digest backs up the current boot disk to `/var/backups/pve-template-prep`, downloads and preps a new image with the stored SSH answers, then replaces the boot-disk file in place on the enrolled storage (or imports onto another storage when the live disk has moved). Block storage is refused. Memory, cores, bridge, name, and firewall are not rewritten.
 
 Cron mail is one sentence per guest. A finished swap says `SUCCESSFUL` and names `/var/backups/pve-template-prep/`. A failure says `FAILED` and names what was left in place: the existing disk was not changed, the guest is running or missing or not a template, the boot disk is on block storage, guest preparation failed, or the new disk is attached and `qm template <vmid>` still has to be run. A guest whose last swap did not finish says to run `qm template <vmid>` and that this run left the disk as it found it. When the new disk is in place but the old volume could not be deleted, the sentence stays `SUCCESSFUL` and says the previous disk was left unused. The build narration and the `virt-customize` log are not mailed. A failure, and a swap that left the old disk unused, replaces `/var/log/pve-template-prep/<vmid>.log` and the sentence names that file. A dry run says the template would be updated and that nothing was changed.
 
@@ -339,8 +339,7 @@ Colors come from `pve_prep/palette.json`. The theme is `PVE_PREP_THEME`, otherwi
 | `/var/backups/pve-template-prep/` | Disk backups. |
 | `/var/lib/pve-template-prep/<vmid>.json` | Enrollment record for one template. Root-only, mode `0600`. No file means the template is never selected. |
 | `/var/log/pve-template-prep/<vmid>.log` | Detail for an unattended refresh that failed, or that left the previous disk unused. Root-only, mode `0600`. Replaced on the next such run. Cron mail names this path. |
-| `/etc/cron.weekly/pve-template-prep` | Weekly wrapper, mode `0755`. Exec `pve-template-prep --unattended weekly`. Different text is left unchanged. |
-| `/etc/cron.monthly/pve-template-prep` | Monthly wrapper, mode `0755`. Exec `pve-template-prep --unattended monthly`. Different text is left unchanged. |
+| `/etc/cron.weekly/pve-template-prep` | Host auto-update wrapper, mode `0755`. Exec `pve-template-prep --unattended weekly` (weekly enrollments every run; monthly on days 1–7). Different text is left unchanged. A leftover monthly wrapper this tool wrote is removed. |
 | `<storage path>/import/` | Destination of standalone images. |
 | `/etc/ssh/sshd_config.d/00-enableroot.conf` | Written inside the guest image when an SSH question is answered yes. |
 
@@ -368,7 +367,7 @@ Build templates for one distribution, accepting every default (one distribution 
 pve-template-prep
 ```
 
-Refresh a template's boot disk: choose job `2`, enter the template's VMID, and keep the backup default.
+Refresh a template's boot disk: choose job `2` for an enrolled template (or create and type that VMID to overwrite without the checksum gate), then keep the backup default.
 
 Make a template on ZFS. Run the program with job `3` and choose an import storage and format. The file lands in `<path>/import/`, for example `/var/lib/vz/import/debian-13-pve.qcow2`. Then import it with ZFS as the target. In the web UI use **Hardware, Add, Import Hard Disk**. On the CLI:
 

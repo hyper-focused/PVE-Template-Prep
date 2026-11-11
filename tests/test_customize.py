@@ -66,12 +66,32 @@ class ArgvTests(unittest.TestCase):
         self.assertNotIn("SELINUX", text)
         self.assertNotIn("firewalld", text)
 
-    def test_el_skips_apt_force_ipv4_writes(self) -> None:
+    def test_el_forces_ipv4_before_install(self) -> None:
         args = argv("disk.img", "el")
         self.assertEqual(args[:3], ["virt-customize", "-a", "disk.img"])
-        self.assertEqual(args[3], "--install")
-        self.assertNotIn("--write", args)
+        install_at = args.index("--install")
+        self.assertGreater(install_at, 3)
+        before = args[:install_at]
+        self.assertEqual(before.count("--mkdir"), 2)
+        self.assertIn("/etc/dnf/libdnf5.conf.d", before)
+        self.assertIn("/etc/dnf/dnf.conf.d", before)
+        self.assertEqual(before.count("--write"), 2)
+        self.assertTrue(any("ip_resolve=4" in part for part in before))
+        self.assertTrue(any("99-pve-prep-ipv4.conf" in part for part in before))
+        # Append under [main] without replacing the distro dnf.conf.
+        setup = [
+            before[i + 1]
+            for i, part in enumerate(before)
+            if part == "--run-command"
+        ]
+        self.assertEqual(len(setup), 2)
+        self.assertTrue(any("/etc/dnf/dnf.conf" in cmd and "ip_resolve=4" in cmd for cmd in setup))
+        self.assertTrue(any("/etc/yum.conf" in cmd and "ip_resolve=4" in cmd for cmd in setup))
         self.assertNotIn("ForceIPv4", " ".join(args))
+        self.assertLess(args.index("--mkdir"), install_at)
+        self.assertLess(args.index("--write"), install_at)
+        for cmd in setup:
+            self.assertLess(args.index(cmd), install_at)
 
     def test_format_is_passed_before_the_disk(self) -> None:
         args = argv("disk.raw", "deb", disk_format="raw")
@@ -83,7 +103,11 @@ class ArgvTests(unittest.TestCase):
         args = argv("disk.img", "el")
         install = args[args.index("--install") + 1]
         self.assertIn("cloud-utils-growpart", install)
-        text = "\n".join(_commands(args))
+        # Family/shared commands are after --install; IPv4 setup is before.
+        after = args[args.index("--install") + 2 :]
+        text = "\n".join(
+            after[i + 1] for i, part in enumerate(after) if part == "--run-command"
+        )
         self.assertIn("SELINUX=permissive", text)
         self.assertIn("firewalld", text)
         self.assertIn("grubby", text)
@@ -91,7 +115,11 @@ class ArgvTests(unittest.TestCase):
         self.assertNotIn("/etc/chrony/chrony.conf", text)
         self.assertNotIn("apparmor", text)
         self.assertNotIn("snapd", text)
-        grub = next(cmd for cmd in _commands(args) if "GRUB_CMDLINE_LINUX" in cmd)
+        grub = next(
+            after[i + 1]
+            for i, part in enumerate(after)
+            if part == "--run-command" and "GRUB_CMDLINE_LINUX" in after[i + 1]
+        )
         self.assertIn(r"\(GRUB_CMDLINE_LINUX", grub)
 
     def test_shared_commands(self) -> None:
@@ -312,7 +340,7 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(code, -15)
         self.assertIn("Installing packages", log)
         self.assertIn("no virt-customize output", log)
-        self.assertIn("stopping hung apt", log)
+        self.assertIn("stopping hung package install", log)
 
 
 if __name__ == "__main__":

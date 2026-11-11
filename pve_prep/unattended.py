@@ -2,7 +2,9 @@
 # Copyright 2026 Robert Tyree and hyper-focused
 """Unattended disk swap for enrolled templates.
 
-One schedule walks the enrollment files. A guest whose published digest
+A weekly unattended run walks weekly enrollments, and also monthly ones when
+the calendar day is 1 through 7. --unattended monthly forces monthly only.
+A guest whose published digest
 matches the record is left alone. Anything else is handed to perform as
 an insert of that one VMID. This module does not download an image and
 does not call qm importdisk.
@@ -12,7 +14,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from .customize import CustomizeError
@@ -25,9 +27,34 @@ from .enroll import (
     enrollments_for,
     is_incomplete_enrollment,
     load_enrollment_path,
+    pin_mismatch_reason,
     remove_enrollment,
     replace_digest,
 )
+
+# Inclusive. An --unattended weekly run also refreshes monthly enrollments then.
+MONTHLY_IN_WEEKLY_DAYS = frozenset(range(1, 8))
+
+
+def cadences_for_unattended(
+    schedule: str,
+    *,
+    today: date | None = None,
+) -> tuple[str, ...]:
+    """Enrollment schedules one unattended invocation refreshes.
+
+    weekly always includes weekly records. On calendar days 1 through 7 it
+    also includes monthly. monthly alone forces only monthly records (manual
+    or legacy cron). none is never selected.
+    """
+    if schedule == "monthly":
+        return ("monthly",)
+    if schedule != "weekly":
+        raise ValueError(f"unattended schedule must be weekly or monthly, not {schedule!r}")
+    day = (today or date.today()).day
+    if day in MONTHLY_IN_WEEKLY_DAYS:
+        return ("weekly", "monthly")
+    return ("weekly",)
 from .job import DEFAULT_BACKUPS, DEFAULT_CACHE, Job
 from .runlog import LOG_DIR, RunLogError, write_run_log
 from .vm import (
@@ -393,11 +420,6 @@ def _swap_one(
         live_storage, _volid, disk_path = boot_disk_location(run, config)
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
-    if live_storage != record.storage:
-        raise RuntimeError(
-            f"VM {vmid} is on storage {live_storage or '(none)'}, "
-            f"but it was enrolled on storage {record.storage}"
-        )
     storage = record.storage
     fmt = os_disk_format(config)
     if fmt not in {"raw", "qcow2"}:
@@ -414,10 +436,9 @@ def _swap_one(
         live_disk = file_digest(Path(disk_path), "256")
     except (OSError, DownloadError) as exc:
         raise RuntimeError(f"VM {vmid} boot disk could not be fingerprinted: {exc}") from exc
-    if live_disk != record.disk_digest:
-        raise RuntimeError(
-            f"VM {vmid} boot disk no longer matches the image recorded at enrollment"
-        )
+    pin_problem = pin_mismatch_reason(record, live_storage, live_disk)
+    if pin_problem:
+        raise RuntimeError(pin_problem)
 
     digest, alg = digest_for(record.distro, record.release)
     if digest == record.digest and alg == record.checksum_alg:
@@ -486,21 +507,25 @@ def run_unattended(
     vmlist_path: Path = VMLIST,
     program: str | None = None,
     cron_directory: str | Path | None = None,
+    today: date | None = None,
 ) -> int:
-    """Swap every enrolled guest on schedule whose published digest changed.
+    """Swap enrolled guests whose published digest changed.
 
-    Records whose VMID is gone from the cluster, or is now a normal VM, a
-    linked clone, or a container, are removed first, as are incomplete
-    enrollments that predate storage and disk_digest. One guest's failure is
-    printed and the rest still run. A guest whose live storage or boot-disk
-    fingerprint no longer matches the record is refused and left alone. A
-    downloaded image that does not match its published checksum removes that
-    record. A failed lookup or download keeps it for the next run. When
-    program is set, cron wrappers with no enrollments left are removed.
-    Returns 1 when any guest failed, otherwise 0. dry_run still calls
-    perform, with the job marked dry_run, and leaves every record unchanged.
-    A failure writes /var/log/pve-template-prep/<vmid>.log and keeps that
-    path in the sentence. The virt-customize log stays in the file.
+    schedule selects the cadences via cadences_for_unattended: weekly always
+    refreshes weekly records and, on days 1 through 7, monthly records too.
+    monthly forces only monthly. Records whose VMID is gone from the cluster,
+    or is now a normal VM, a linked clone, or a container, are removed first,
+    as are incomplete enrollments that predate storage and disk_digest. One
+    guest's failure is printed and the rest still run. A guest whose live
+    storage or boot-disk fingerprint no longer matches the record is refused
+    and left alone. A downloaded image that does not match its published
+    checksum removes that record. A failed lookup or download keeps it for
+    the next run. When program is set, the weekly cron wrapper is removed if
+    no weekly or monthly enrollments remain, and a leftover monthly wrapper
+    is cleared. Returns 1 when any guest failed, otherwise 0. dry_run still
+    calls perform, with the job marked dry_run, and leaves every record
+    unchanged. A failure writes /var/log/pve-template-prep/<vmid>.log and
+    keeps that path in the sentence. The virt-customize log stays in the file.
     """
     from pve_prep.offer import reconcile_cron_scripts
 
@@ -512,45 +537,52 @@ def run_unattended(
         dry_run=dry_run,
     ):
         print(line)
-    for record in enrollments_for(schedule, directory=directory):
-        try:
-            _swap_one(
-                record,
-                directory=directory,
-                log_directory=log_directory,
-                digest_for=digest_for,
-                run=run,
-                perform=perform,
-                storage_kind=storage_kind,
-                nodes_root=nodes_root,
-                dry_run=dry_run,
-            )
-        except Exception as exc:
-            path, error = _write_detail(
-                record,
-                _log_text(record, exc),
-                directory=log_directory,
-            )
-            situation = _failure_situation(record, exc)
-            if _checksum_mismatch(exc) and not dry_run:
-                try:
-                    remove_enrollment(record.vmid, directory=directory)
-                except EnrollmentError as removal:
-                    situation += f" Its automated update record could not be removed: {removal}"
-                else:
-                    situation += (
-                        " It was removed from automated updates. "
-                        "Run pve-template-prep to replace the template and enroll it again."
-                    )
-            print(
-                failure_line(
+    seen: set[int] = set()
+    for cadence in cadences_for_unattended(schedule, today=today):
+        for record in enrollments_for(cadence, directory=directory):
+            if record.vmid in seen:
+                continue
+            seen.add(record.vmid)
+            try:
+                _swap_one(
                     record,
-                    situation=situation,
-                    log_path=path,
-                    log_error=error,
+                    directory=directory,
+                    log_directory=log_directory,
+                    digest_for=digest_for,
+                    run=run,
+                    perform=perform,
+                    storage_kind=storage_kind,
+                    nodes_root=nodes_root,
+                    dry_run=dry_run,
                 )
-            )
-            failed = True
+            except Exception as exc:
+                path, error = _write_detail(
+                    record,
+                    _log_text(record, exc),
+                    directory=log_directory,
+                )
+                situation = _failure_situation(record, exc)
+                if _checksum_mismatch(exc) and not dry_run:
+                    try:
+                        remove_enrollment(record.vmid, directory=directory)
+                    except EnrollmentError as removal:
+                        situation += (
+                            f" Its automated update record could not be removed: {removal}"
+                        )
+                    else:
+                        situation += (
+                            " It was removed from automated updates. "
+                            "Run pve-template-prep to replace the template and enroll it again."
+                        )
+                print(
+                    failure_line(
+                        record,
+                        situation=situation,
+                        log_path=path,
+                        log_error=error,
+                    )
+                )
+                failed = True
     if program is not None:
         reconcile_cron_scripts(
             print,

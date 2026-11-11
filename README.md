@@ -60,7 +60,7 @@ Run `pve-template-prep` and answer in order. Enter takes the default almost ever
 
 1. **What to build.** New template (default), update an existing template's disk, or a standalone image.
 2. **Distro**, then **one to three releases**. Space ticks a release, Enter accepts the list.
-3. **VMIDs** (new template and update only). Enter picks the next free ID from 9001. Typing an ID that's in use means "replace it", and only a template can be replaced.
+3. **VMIDs** (new template and update only). Create: Enter picks the next free ID from 9001; typing an ID that's in use means "replace it", and only a template can be replaced (that path skips the source-checksum gate). Update: only enrolled VMIDs from `/var/lib/pve-template-prep/` for that distro/release; a unique match is used without typing, several matches are listed, and no enrollment aborts. If the published checksum still matches enrollment, update asks before rebuilding (default No).
 4. **Storage and format.** qcow2 or raw. A new template asks where its disk goes. A standalone image asks which storage's `import/` folder. An update reuses the storage and format the old disk had.
 5. **Defaults.** SSH password login: yes. Root SSH login: yes. Bridge `vmbr0`, 2048 MB, 2 cores, convert to a template when done. Answer `n` to be asked about each.
 6. **Backup** (only if something is being replaced). Enter copies the old disk to `/var/backups/pve-template-prep` first.

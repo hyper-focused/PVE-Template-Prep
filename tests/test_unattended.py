@@ -18,11 +18,17 @@ _TESTS = Path(__file__).resolve().parent
 if str(_TESTS) not in sys.path:
     sys.path.insert(0, str(_TESTS))
 
+from datetime import date  # noqa: E402
+
 from privtmp import private_tempdir  # noqa: E402
 from pve_prep.enroll import Enrollment, load_enrollment, save_enrollment  # noqa: E402
 from pve_prep.job import DEFAULT_BACKUPS, DEFAULT_CACHE, Job, action_for  # noqa: E402
 from pve_prep.download import DownloadError  # noqa: E402
-from pve_prep.unattended import run_unattended, stale_reason  # noqa: E402
+from pve_prep.unattended import (  # noqa: E402
+    cadences_for_unattended,
+    run_unattended,
+    stale_reason,
+)
 
 
 _OLD = "ab" * 32
@@ -153,6 +159,8 @@ def _run(
     records: list[Enrollment],
     steps: list,
     *,
+    schedule: str = "weekly",
+    today: date | None = None,
     digest: tuple[str, str] | None = (_NEW, "256"),
     storage_kind: str = "dir",
     perform=None,
@@ -214,7 +222,7 @@ def _run(
         buffer = StringIO()
         with redirect_stdout(buffer):
             outcome.code = run_unattended(
-                "weekly",
+                schedule,
                 directory=root,
                 log_directory=logs,
                 digest_for=digest_for,
@@ -224,6 +232,7 @@ def _run(
                 nodes_root=nodes,
                 dry_run=dry_run,
                 vmlist_path=vmlist_path,
+                today=today,
             )
         outcome.out = buffer.getvalue()
         if logs.is_dir():
@@ -264,6 +273,54 @@ def _assert_insert(test: unittest.TestCase, job: Job, record: Enrollment, storag
     test.assertFalse(job.clean_cache)
     test.assertFalse(job.verbose)
     test.assertEqual(action_for(job, record.vmid), "insert")
+
+
+class CadenceWindowTests(unittest.TestCase):
+    def test_weekly_includes_monthly_only_in_the_first_week(self) -> None:
+        self.assertEqual(
+            cadences_for_unattended("weekly", today=date(2026, 3, 1)),
+            ("weekly", "monthly"),
+        )
+        self.assertEqual(
+            cadences_for_unattended("weekly", today=date(2026, 3, 7)),
+            ("weekly", "monthly"),
+        )
+        self.assertEqual(
+            cadences_for_unattended("weekly", today=date(2026, 3, 8)),
+            ("weekly",),
+        )
+        self.assertEqual(
+            cadences_for_unattended("monthly", today=date(2026, 3, 15)),
+            ("monthly",),
+        )
+
+    def test_weekly_run_skips_monthly_outside_the_window(self) -> None:
+        weekly = _record(vmid=910, schedule="weekly")
+        monthly = _record(vmid=911, schedule="monthly", release="22.04")
+        done = _run(
+            [weekly, monthly],
+            _gate(),
+            digest=(_OLD, "256"),
+            today=date(2026, 3, 15),
+        )
+        self.assertEqual(done.code, 0)
+        self.assertEqual(done.asked, [("ubuntu", "24.04")])
+        self.assertIn("VMID 910 is current", done.out)
+        self.assertNotIn("VMID 911", done.out)
+
+    def test_weekly_run_refreshes_monthly_inside_the_window(self) -> None:
+        weekly = _record(vmid=910, schedule="weekly")
+        monthly = _record(vmid=911, schedule="monthly", release="22.04")
+        done = _run(
+            [weekly, monthly],
+            _gate() + _gate(),
+            digest=(_OLD, "256"),
+            today=date(2026, 3, 3),
+        )
+        self.assertEqual(done.code, 0)
+        self.assertEqual(done.asked, [("ubuntu", "24.04"), ("ubuntu", "22.04")])
+        self.assertIn("VMID 910 is current", done.out)
+        self.assertIn("VMID 911 is current", done.out)
 
 
 class UnattendedTests(unittest.TestCase):

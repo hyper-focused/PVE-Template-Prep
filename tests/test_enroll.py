@@ -21,7 +21,9 @@ from pve_prep.enroll import (  # noqa: E402
     Enrollment,
     EnrollmentError,
     enrollments_for,
+    enrollments_matching,
     load_enrollment,
+    pin_mismatch_reason,
     remove_enrollment,
     replace_digest,
     save_enrollment,
@@ -88,6 +90,19 @@ class EnrollmentTests(unittest.TestCase):
             names = sorted(entry.name for entry in Path(tmp).iterdir())
             self.assertEqual(names, ["910.json"])
 
+    def test_enrollments_matching_filters_by_distro_and_release(self) -> None:
+        with private_tempdir() as tmp:
+            save_enrollment(_record(vmid=910, distro="debian", release="12"), directory=tmp)
+            save_enrollment(_record(vmid=911, distro="debian", release="13"), directory=tmp)
+            save_enrollment(_record(vmid=912, distro="ubuntu", release="12"), directory=tmp)
+            save_enrollment(
+                _record(vmid=913, distro="debian", release="12", digest="ef" * 32),
+                directory=tmp,
+            )
+            matched = enrollments_matching("debian", "12", directory=tmp)
+            self.assertEqual([record.vmid for record in matched], [910, 913])
+            self.assertEqual(enrollments_matching("fedora", "45", directory=tmp), [])
+
     def test_enrollments_for_returns_one_schedule_sorted_by_vmid(self) -> None:
         with private_tempdir() as tmp:
             low = _record(vmid=150, digest="11" * 32)
@@ -128,7 +143,8 @@ class EnrollmentTests(unittest.TestCase):
                 replace(good, vmid=vmid)
         _record(vmid=100)
         _record(vmid=999_999_999)
-        for schedule in ("daily", "Weekly", "weekly ", ""):
+        _record(schedule="none")
+        for schedule in ("daily", "Weekly", "weekly ", "", "yearly"):
             with self.assertRaises(EnrollmentError):
                 replace(good, schedule=schedule)
         for distro in ("", "deb ian", "a/b", "a..b", "foo/../bar"):
@@ -182,6 +198,24 @@ class EnrollmentTests(unittest.TestCase):
                 load_enrollment(99, directory=tmp)
             with self.assertRaises(EnrollmentError):
                 enrollments_for("daily", directory=Path(tmp) / "missing")
+
+    def test_pin_mismatch_reason_matches_storage_and_fingerprint(self) -> None:
+        record = _record()
+        self.assertIsNone(
+            pin_mismatch_reason(record, record.storage, record.disk_digest)
+        )
+        self.assertEqual(
+            pin_mismatch_reason(record, "other-nfs", record.disk_digest),
+            "VM 910 is on storage other-nfs, but it was enrolled on storage nfs-templates",
+        )
+        self.assertEqual(
+            pin_mismatch_reason(record, "", record.disk_digest),
+            "VM 910 is on storage (none), but it was enrolled on storage nfs-templates",
+        )
+        self.assertEqual(
+            pin_mismatch_reason(record, record.storage, "11" * 32),
+            "VM 910 boot disk no longer matches the image recorded at enrollment",
+        )
 
     def test_replace_digest_changes_only_the_digest(self) -> None:
         with private_tempdir() as tmp:
