@@ -6,10 +6,12 @@ Before any download, selected VMIDs that already have a record are asked
 keep / change schedule / turn off. That choice is stored for the run and
 applied only to builds that succeed. After the builds, templates that had
 no prior record get the weekly / monthly / none prompt. Standalone image
-jobs skip both asks. Each enrollment keeps its own schedule. weekly and
-monthly cron wrappers can both exist; each refreshes only records on that
-cadence. none keeps the JSON for interactive Update without a cron refresh.
-When the last weekly or monthly record is gone, that cron wrapper is removed.
+jobs skip both asks. Each enrollment keeps its own schedule preference.
+Only /etc/cron.weekly is installed; that run refreshes weekly records every
+time and monthly records on days 1 through 7. none keeps the JSON for
+interactive Update without a cron refresh. When no weekly or monthly
+enrollment remains, the weekly wrapper is removed, and any leftover monthly
+wrapper this tool wrote is cleared.
 """
 
 from __future__ import annotations
@@ -25,7 +27,8 @@ from pve_prep.cronscript import (
     remove_cron_script,
 )
 from pve_prep.enroll import (
-    CRON_SCHEDULES,
+    AUTO_UPDATE_SCHEDULES,
+    HOST_CRON_SCHEDULE,
     Enrollment,
     EnrollmentError,
     enrollments_for,
@@ -110,6 +113,41 @@ def plan_prior_enrollments(
     )
 
 
+def _auto_update_enrollments_remain(*, directory) -> bool | None:
+    """True when any weekly/monthly enrollment remains. None when unreadable."""
+    try:
+        for schedule in AUTO_UPDATE_SCHEDULES:
+            if enrollments_for(schedule, directory=directory):
+                return True
+    except EnrollmentError:
+        return None
+    return False
+
+
+def _drop_cron(
+    write,
+    *,
+    program: str,
+    schedule: str,
+    cron_directory,
+    dry_run: bool,
+    reason: str,
+) -> None:
+    if dry_run:
+        write(
+            f"Dry run: /etc/cron.{schedule}/pve-template-prep would be removed "
+            f"if it is still ours ({reason}).\n"
+        )
+        return
+    try:
+        removed = remove_cron_script(program, schedule, directory=cron_directory)
+    except CronScriptError as exc:
+        write(f"{exc}\n")
+        return
+    if removed:
+        write(f"Removed the {schedule} automated-update cron script; {reason}.\n")
+
+
 def reconcile_cron_scripts(
     write,
     *,
@@ -118,31 +156,27 @@ def reconcile_cron_scripts(
     cron_directory,
     dry_run: bool = False,
 ) -> None:
-    """Drop our cron wrapper for every cadence that has no enrollments left."""
-    for schedule in CRON_SCHEDULES:
-        try:
-            remaining = enrollments_for(schedule, directory=directory)
-        except EnrollmentError as exc:
-            write(f"Could not check automated update records for {schedule}: {exc}\n")
-            continue
-        if remaining:
-            continue
-        if dry_run:
-            write(
-                f"Dry run: /etc/cron.{schedule}/pve-template-prep would be removed "
-                "if it is still ours and no templates remain on that schedule.\n"
-            )
-            continue
-        try:
-            removed = remove_cron_script(program, schedule, directory=cron_directory)
-        except CronScriptError as exc:
-            write(f"{exc}\n")
-            continue
-        if removed:
-            write(
-                f"Removed the {schedule} automated-update cron script; "
-                "no templates remain on that schedule.\n"
-            )
+    """Keep one weekly wrapper while auto-updates remain; clear a leftover monthly."""
+    remaining = _auto_update_enrollments_remain(directory=directory)
+    if remaining is None:
+        write("Could not check automated update records for cron cleanup.\n")
+    elif not remaining:
+        _drop_cron(
+            write,
+            program=program,
+            schedule=HOST_CRON_SCHEDULE,
+            cron_directory=cron_directory,
+            dry_run=dry_run,
+            reason="no templates remain on weekly or monthly",
+        )
+    _drop_cron(
+        write,
+        program=program,
+        schedule="monthly",
+        cron_directory=cron_directory,
+        dry_run=dry_run,
+        reason="weekly cron covers monthly enrollments in the first week of the month",
+    )
 
 
 def _install_schedule(
@@ -153,18 +187,31 @@ def _install_schedule(
     cron_directory,
     dry_run: bool,
 ) -> None:
-    if schedule not in CRON_SCHEDULES:
+    """Install the single weekly host cron when this enrollment uses auto-updates."""
+    if schedule not in AUTO_UPDATE_SCHEDULES:
         return
     if dry_run:
         try:
-            write(cron_script(program, schedule))
+            write(cron_script(program, HOST_CRON_SCHEDULE))
         except CronScriptError as exc:
             write(f"{exc}\n")
+        write(
+            "Dry run: /etc/cron.monthly/pve-template-prep would be removed "
+            "if it is still ours (weekly cron covers monthly enrollments).\n"
+        )
         return
     try:
-        install_cron_script(program, schedule, directory=cron_directory)
+        install_cron_script(program, HOST_CRON_SCHEDULE, directory=cron_directory)
     except CronScriptError as exc:
         write(f"{exc}\n")
+    _drop_cron(
+        write,
+        program=program,
+        schedule="monthly",
+        cron_directory=cron_directory,
+        dry_run=False,
+        reason="weekly cron covers monthly enrollments in the first week of the month",
+    )
 
 
 def _set_all_schedules_none(write, *, directory, dry_run: bool) -> None:

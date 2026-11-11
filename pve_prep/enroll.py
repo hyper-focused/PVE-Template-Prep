@@ -22,7 +22,10 @@ from .safedir import UnsafeDirError, prepare_private_dir, verify_private_dir
 ENROLL_DIR = "/var/lib/pve-template-prep"
 # none keeps the record for interactive Update without a cron refresh.
 SCHEDULES = ("weekly", "monthly", "none")
-CRON_SCHEDULES = ("weekly", "monthly")
+# Enrollment cadences that use the host cron wrapper.
+AUTO_UPDATE_SCHEDULES = ("weekly", "monthly")
+# Only /etc/cron.weekly is installed; it also covers monthly in the first week.
+HOST_CRON_SCHEDULE = "weekly"
 
 _MIN_VMID = 100
 _MAX_VMID = 999_999_999

@@ -113,7 +113,9 @@ class AskUnattendedScheduleTests(unittest.TestCase):
             self.assertEqual(ask_unattended_schedule(lines.read_line, lines.write), "none")
             self.assertIn("Automated updates", lines.text)
             self.assertIn("file-based storage", lines.text)
-            self.assertIn("Each template keeps its own schedule", lines.text)
+            self.assertIn("Each template keeps its own schedule preference", lines.text)
+            self.assertIn("/etc/cron.weekly", lines.text)
+            self.assertIn("1st through the 7th", lines.text)
             self.assertIn("No automated updates.", lines.text)
 
     def test_weekly_and_monthly(self) -> None:
@@ -276,7 +278,8 @@ class ApplyPriorEnrollmentTests(unittest.TestCase):
             self.assertEqual(load_enrollment(9001, directory=enroll_dir).schedule, "weekly")
             self.assertEqual(load_enrollment(9002, directory=enroll_dir).schedule, "monthly")
             self.assertTrue(_cron_path(cron_dir, "weekly").exists())
-            self.assertTrue(_cron_path(cron_dir, "monthly").exists())
+            self.assertFalse(_cron_path(cron_dir, "monthly").exists())
+            self.assertIn("weekly cron covers monthly enrollments", lines.text)
 
     def test_off_keeps_json_with_none_and_drops_empty_cron(self) -> None:
         lines = _Lines([])
@@ -378,14 +381,20 @@ class OfferCreatedTests(unittest.TestCase):
             self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
             self.assertEqual(after.st_ino, before.st_ino)
 
-    def test_monthly_schedule(self) -> None:
+    def test_monthly_schedule_installs_weekly_cron(self) -> None:
         lines = _Lines(["3"])
         with private_tempdir() as enroll_dir, private_tempdir() as cron_dir:
             result = _offer(lines, enroll_dir, cron_dir, [("24.04", 9001)])
             self.assertEqual(result, "monthly")
             self.assertEqual(load_enrollment(9001, directory=enroll_dir).schedule, "monthly")
+            self.assertTrue(_cron_path(cron_dir, "weekly").exists())
+            self.assertFalse(_cron_path(cron_dir, "monthly").exists())
+            self.assertEqual(
+                _cron_path(cron_dir, "weekly").read_text(encoding="utf-8"),
+                cron_script(_PROGRAM, "weekly"),
+            )
 
-    def test_new_weekly_leaves_existing_monthly_and_both_crons(self) -> None:
+    def test_new_weekly_leaves_existing_monthly_and_uses_one_cron(self) -> None:
         lines = _Lines(["2"])
         with private_tempdir() as enroll_dir, private_tempdir() as cron_dir:
             _existing(enroll_dir, 9001, schedule="monthly")
@@ -397,7 +406,7 @@ class OfferCreatedTests(unittest.TestCase):
             self.assertEqual(load_enrollment(9001, directory=enroll_dir).schedule, "monthly")
             self.assertEqual(load_enrollment(9002, directory=enroll_dir).schedule, "weekly")
             self.assertTrue(_cron_path(cron_dir, "weekly").exists())
-            self.assertTrue(_cron_path(cron_dir, "monthly").exists())
+            self.assertFalse(_cron_path(cron_dir, "monthly").exists())
 
     def test_none_writes_enrollment_without_cron(self) -> None:
         lines = _Lines(["no"])

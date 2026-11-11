@@ -643,7 +643,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--unattended",
         choices=("weekly", "monthly"),
-        help="refresh enrolled templates for this schedule without prompting",
+        help=(
+            "refresh enrolled templates without prompting; weekly (cron) also "
+            "refreshes monthly enrollments on days 1-7, monthly forces monthly only"
+        ),
     )
     args = parser.parse_args(argv)
     print(f"{parser.prog} {__version__}")

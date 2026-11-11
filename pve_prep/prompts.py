@@ -1306,9 +1306,11 @@ _UPDATE_ROWS = (
 _UPDATE_NOTE = (
     "These templates get an enrollment record so a later Update can find them "
     "by distro and release.\n"
-    "Weekly or monthly also installs a cron script that replaces the boot disk "
-    "when the upstream image checksum changes. Each template keeps its own "
-    "schedule; picking weekly here does not move earlier monthly enrollments.\n"
+    "Weekly or monthly also installs one /etc/cron.weekly script. That run "
+    "refreshes weekly templates every week, and monthly templates when the "
+    "calendar day is the 1st through the 7th. Each template keeps its own "
+    "schedule preference; picking weekly here does not move earlier monthly "
+    "enrollments.\n"
     "Automated updates work only with file-based storage (directory, NFS, CIFS, "
     "and similar). They will not run on block storage such as ZFS, LVM, or RBD.\n"
     "Leave the template's disk image and storage alone after enrollment. "
@@ -1483,7 +1485,7 @@ def ask_turn_off_updates(read_line, write, *, count: int) -> bool:
         "This run did not finish a template that needed a new enrollment.\n"
         "Turn off automated updates for all of them? Enrollment files stay "
         "(schedule none) so interactive Update can still find those VMIDs. "
-        "Cron scripts are removed when nothing remains on weekly or monthly.",
+        "The weekly cron script is removed when nothing remains on weekly or monthly.",
         "note",
     )
     return _ask_bool(read_line, write, "Turn off automated updates?\n", False)
