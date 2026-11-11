@@ -368,7 +368,7 @@ Build templates for one distribution, accepting every default (one distribution 
 pve-template-prep
 ```
 
-Refresh a template's boot disk: choose job `2`, enter the template's VMID, and keep the backup default.
+Refresh a template's boot disk: choose job `2` for an enrolled template (or create and type that VMID to overwrite without the checksum gate), then keep the backup default.
 
 Make a template on ZFS. Run the program with job `3` and choose an import storage and format. The file lands in `<path>/import/`, for example `/var/lib/vz/import/debian-13-pve.qcow2`. Then import it with ZFS as the target. In the web UI use **Hardware, Add, Import Hard Disk**. On the CLI:
 
