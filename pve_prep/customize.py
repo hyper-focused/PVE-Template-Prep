@@ -35,6 +35,27 @@ _APT_WRITES = (
     '/etc/apt/apt.conf.d/99-pve-prep-https-timeout:Acquire::https::Timeout "30";',
 )
 
+# EL guests hit the same AAAA black-hole on Alma/Fedora mirrors inside the
+# appliance; the prep bar freezes near the end of "Installing packages".
+# Drop-ins cover DNF5 and any dnf that reads conf.d; the run-commands append
+# ip_resolve=4 under [main] without replacing the distro's dnf.conf/yum.conf.
+_EL_IPV4_DIRS = (
+    "/etc/dnf/libdnf5.conf.d",
+    "/etc/dnf/dnf.conf.d",
+)
+_EL_IPV4_WRITES = (
+    "/etc/dnf/libdnf5.conf.d/99-pve-prep-ipv4.conf:[main]\nip_resolve=4\ntimeout=30\n",
+    "/etc/dnf/dnf.conf.d/99-pve-prep-ipv4.conf:[main]\nip_resolve=4\ntimeout=30\n",
+)
+_EL_IPV4_SETUP = (
+    "if [ -f /etc/dnf/dnf.conf ]; then "
+    "grep -qE '^[[:space:]]*ip_resolve=' /etc/dnf/dnf.conf || "
+    "echo 'ip_resolve=4' >> /etc/dnf/dnf.conf; fi",
+    "if [ -f /etc/yum.conf ]; then "
+    "grep -qE '^[[:space:]]*ip_resolve=' /etc/yum.conf || "
+    "echo 'ip_resolve=4' >> /etc/yum.conf; fi",
+)
+
 # No virt-customize output for this long after "Installing packages" → kill it
 # and surface the captured log. Package installs normally print apt lines.
 _INSTALL_STALL_SECS = 420.0
@@ -318,7 +339,7 @@ def _run_with_bar(
                 captured.append(
                     f"pve-template-prep: no virt-customize output for "
                     f"{int(install_stall_secs)}s during package install; "
-                    f"stopping hung apt\n"
+                    f"stopping hung package install\n"
                 )
                 proc.terminate()
                 try:
@@ -364,6 +385,8 @@ def argv(
     Neither writes no file.
     disk_format raw or qcow2 is passed as --format, so libguestfs does not probe the file.
     deb guests get apt ForceIPv4 and acquire timeouts written before --install.
+    el guests get dnf/yum ip_resolve=4 (and drop-ins) before --install for the
+    same IPv6 hang on Alma/Fedora mirrors.
     """
     packages, commands = _plan(family)
     ssh = _ssh_command(password_auth=password_auth, permit_root=permit_root)
@@ -378,6 +401,13 @@ def argv(
     if family == "deb":
         for snippet in _APT_WRITES:
             command.extend(("--write", snippet))
+    elif family == "el":
+        for directory in _EL_IPV4_DIRS:
+            command.extend(("--mkdir", directory))
+        for snippet in _EL_IPV4_WRITES:
+            command.extend(("--write", snippet))
+        for guest_cmd in _EL_IPV4_SETUP:
+            command.extend(("--run-command", guest_cmd))
     command.extend(("--install", packages))
     for guest_cmd in commands:
         command.extend(("--run-command", guest_cmd))
