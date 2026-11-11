@@ -1243,10 +1243,17 @@ def _is_template_base_name(path: Path) -> bool:
 
 
 def _chattr(run: Run, flag: str, path: Path) -> None:
-    """Best-effort immutable bit. Unsupported FS or missing chattr is fine."""
+    """Best-effort immutable bit. NFS/CIFS and missing chattr are fine.
+
+    Proxmox sets +i on local template base images; network file storages
+    reject chattr with "Operation not supported", so failures are ignored.
+    """
     try:
-        run(["chattr", flag, "--", str(path)])
+        result = run(["chattr", flag, "--", str(path)])
     except Exception:
+        return
+    # Nonzero is expected on NFS; callers must not surface it.
+    if getattr(result, "returncode", 1) != 0:
         return
 
 
