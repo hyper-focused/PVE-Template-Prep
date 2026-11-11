@@ -9,6 +9,9 @@ An installed copy offers a new release when the version string on `main` changes
 ### Added
 - **Install-time and per-run detail logging policy.** `install.sh --logs=auto` (default) keeps interactive runs quiet and still writes `/var/log/pve-template-prep/<vmid>.log` for unattended VMIDs that changed or failed. `--logs=on` logs every VMID touched on interactive runs too. `--logs=off` turns interactive file logs off. `pve-template-prep --logs=on` forces file logs for that session; `--logs=off` only suppresses when install used `--logs=on`. Unattended refreshes always log changed or failed VMIDs. The choice is stored in `/etc/pve-template-prep/logging`.
 
+### Changed
+- **Boot-disk finish lines name the volume and say whether a backup was kept.** Every distro/release now reports `{label} VM disk image {name} created and installed at {storage:volid}.` plus either `Backup of prior disk image saved in …` or `No backup of prior disk image was retained.` The old `created and imported` / `Template kept` / `Old disk saved` wording is gone.
+
 ## 1.4.1 - 2026-11-11
 
 ### Changed
