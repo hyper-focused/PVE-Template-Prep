@@ -80,22 +80,32 @@ def _finish_file(label: str, dest: Path, result) -> str:
     place = str(dest)
     if result.status == "skipped":
         return f"{label} disk image left unchanged at {place}"
-    sentence = f"{label} disk image created at {place}"
+    sentence = f"{label} disk image created at {place}."
     if result.backup:
-        return f"{sentence}. Backup of prior disk image saved in {result.backup}."
+        return (
+            f"{sentence}\n"
+            f"Backup of prior disk image saved in {result.backup}."
+        )
     if result.replaced:
-        return f"{sentence}. No backup of prior disk image was retained."
-    return sentence
+        return f"{sentence}\nNo backup of prior disk image was retained."
+    return sentence.rstrip(".")
+
+
+def _finish_lines(*parts: str) -> str:
+    """Join finish sentences with real newlines (no soft wrap)."""
+    return "\n".join(part for part in parts if part)
 
 
 def _finish_insert(label: str, vmid: int, policy: str, result) -> str:
     del vmid  # named in the volid; kept for call-site stability
-    sentence = _installed_disk_sentence(label, result)
-    backup = _backup_sentence(policy, result)
+    parts = [
+        _installed_disk_sentence(label, result),
+        _backup_sentence(policy, result),
+    ]
     cleanup = str(getattr(result, "cleanup_error", "") or "")
     if cleanup:
-        return f"{sentence} {backup} Old disk cleanup failed: {cleanup}."
-    return f"{sentence} {backup}"
+        parts.append(f"Old disk cleanup failed: {cleanup}.")
+    return _finish_lines(*parts)
 
 
 def _finish_template(label: str, job, vmid: int) -> str:
@@ -105,7 +115,7 @@ def _finish_template(label: str, job, vmid: int) -> str:
 
 def _finish_replace(label: str, vmid: int, result, settings_error: str) -> str:
     del vmid
-    policy = "backup" if str(getattr(result, "backup_dir", "") or "") else "overwrite"
+    policy = "backup" if _result_backup_dir(result) else "overwrite"
     parts = [
         _installed_disk_sentence(label, result),
         _backup_sentence(policy, result),
@@ -117,7 +127,7 @@ def _finish_replace(label: str, vmid: int, result, settings_error: str) -> str:
         parts.append(
             f"Name, memory, cores, and bridge were not updated: {settings_error}."
         )
-    return " ".join(parts)
+    return _finish_lines(*parts)
 
 
 def _stage_replace(job, vmid: int, tools, *, backup: bool) -> None:

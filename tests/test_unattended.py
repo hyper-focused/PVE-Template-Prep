@@ -530,8 +530,9 @@ class UnattendedTests(unittest.TestCase):
     def test_cleanup_failure_is_still_a_successful_update(self) -> None:
         detail = (
             "ubuntu 24.04 VM disk image vm-910-disk-1 created and installed at "
-            "local:vm-910-disk-1. Backup of prior disk image saved in "
-            "/var/backups/pve-template-prep. Old disk cleanup failed: volume is locked."
+            "local:vm-910-disk-1.\n"
+            "Backup of prior disk image saved in /var/backups/pve-template-prep.\n"
+            "Old disk cleanup failed: volume is locked."
         )
 
         def perform(_job: Job, _release: str, _vmid: int) -> str:

@@ -326,7 +326,8 @@ class OrchestratorTest(unittest.TestCase):
             MOD.run_one(job, "12", 910)
         self.assertIn(
             "Debian 12 VM disk image vm-910-disk-1 created and installed at "
-            "dir-templates:vm-910-disk-1. No backup of prior disk image was retained. "
+            "dir-templates:vm-910-disk-1.\n"
+            "No backup of prior disk image was retained.\n"
             "Name, memory, cores, and bridge were not updated: VM 910 failed at qm set.",
             buf.getvalue(),
         )
@@ -482,8 +483,8 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIn("\nCreating Debian 12 VM template\n\n", text)
         self.assertIn(
             f"\n\nDebian 12 VM disk image vm-910-disk-1 created and installed at "
-            f"dir-templates:vm-910-disk-1. Backup of prior disk image saved in "
-            f"{DEFAULT_BACKUPS}.\n",
+            f"dir-templates:vm-910-disk-1.\n"
+            f"Backup of prior disk image saved in {DEFAULT_BACKUPS}.\n",
             text,
         )
         self.assertNotIn("Previous VM deleted", text)
@@ -504,8 +505,8 @@ class OrchestratorTest(unittest.TestCase):
             MOD.run_one(kept, "12", 910)
         self.assertIn(
             "\n\nDebian 12 VM disk image vm-910-disk-0 created and installed at "
-            "dir-templates:vm-910-disk-0. Backup of prior disk image saved in "
-            "the backup directory.\n",
+            "dir-templates:vm-910-disk-0.\n"
+            "Backup of prior disk image saved in the backup directory.\n",
             buf.getvalue(),
         )
         replaced = replace(kept, backup_vmids=frozenset())
@@ -514,7 +515,8 @@ class OrchestratorTest(unittest.TestCase):
             MOD.run_one(replaced, "12", 910)
         self.assertIn(
             "\n\nDebian 12 VM disk image vm-910-disk-0 created and installed at "
-            "dir-templates:vm-910-disk-0. No backup of prior disk image was retained.\n",
+            "dir-templates:vm-910-disk-0.\n"
+            "No backup of prior disk image was retained.\n",
             buf.getvalue(),
         )
         kept_template = SimpleNamespace(
@@ -528,7 +530,8 @@ class OrchestratorTest(unittest.TestCase):
             MOD.run_one(replaced, "12", 910)
         self.assertIn(
             "Debian 12 VM disk image vm-910-disk-1 created and installed at "
-            "dir-templates:vm-910-disk-1. No backup of prior disk image was retained.",
+            "dir-templates:vm-910-disk-1.\n"
+            "No backup of prior disk image was retained.",
             buf.getvalue(),
         )
         self.assertNotIn("Template 910 kept", buf.getvalue())
@@ -544,8 +547,9 @@ class OrchestratorTest(unittest.TestCase):
             MOD.run_one(replaced, "12", 910)
         self.assertIn(
             "Debian 12 VM disk image vm-910-disk-1 created and installed at "
-            "dir-templates:vm-910-disk-1. Backup of prior disk image saved in "
-            "/var/backups/pve-template-prep. Old disk cleanup failed: volume is locked.",
+            "dir-templates:vm-910-disk-1.\n"
+            "Backup of prior disk image saved in /var/backups/pve-template-prep.\n"
+            "Old disk cleanup failed: volume is locked.",
             buf.getvalue(),
         )
         self.assertNotIn("Previous disk deleted.", buf.getvalue())
