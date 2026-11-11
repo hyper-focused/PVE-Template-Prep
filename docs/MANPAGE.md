@@ -86,7 +86,7 @@ Section **PVE Template and Disk Image Builder**, question `Highlight desired tem
 Section **Template VMID(s)**, one field per release. Standalone images skip this step.
 
 - **Create:** `Debian 13 VM Template ID [9002]:`. Enter takes the bracket, the next free ID from 9001 (see [VMIDS](#vmids-and-replacement)). A typed ID that is in use must be a template; it is replaced. Two releases that both take the default receive consecutive free IDs.
-- **Update:** `Ubuntu 24.04 VM Template ID:`, no default. The ID must be an existing template.
+- **Update:** When exactly one enrollment file under `/var/lib/pve-template-prep/` matches the chosen distro and release, that VMID is used with a note and no free-form prompt. Several matches are listed and one of those VMIDs must be typed. With no match, `Ubuntu 24.04 VM Template ID:` has no default and any existing template ID may be typed.
 
 A list or range is rejected. A refused ID is asked again and the next prompt states why.
 
@@ -140,7 +140,7 @@ Section **Confirm Selections** states the consequence in one line and asks for o
 | Existing templates' disks are replaced, no backup | `DELETE` |
 | Existing boot disks are deleted, no backup | `DELETE` |
 
-`X` exits with no change. On a terminal, `YES` is the success color and `DELETE` is red. The quotes stay with the question. Under `--dry-run` the screen says nothing has been built.
+`X` exits with no change. On a terminal, `YES` is bright green (the success role) and `DELETE` is red. The quotes stay with the question. A yes/no field's `(y/n) [Yes]` hint uses that same green; VMID defaults stay highlight blue. Under `--dry-run` the screen says nothing has been built.
 
 ### After the builds
 

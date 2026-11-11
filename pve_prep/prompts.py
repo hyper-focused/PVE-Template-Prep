@@ -908,6 +908,83 @@ def _keep_insert(
     return None
 
 
+def _enrolled_for_release(enrolled_vmids, distro: str, release: str) -> list[int]:
+    """VMIDs enrolled for this distro/release. Empty when lookup is absent or fails."""
+    if enrolled_vmids is None or not distro:
+        return []
+    try:
+        found = enrolled_vmids(distro, release)
+    except Exception:
+        return []
+    if found is None:
+        return []
+    out: list[int] = []
+    for item in found:
+        try:
+            vmid = int(item)
+        except (TypeError, ValueError):
+            continue
+        if vmid not in out:
+            out.append(vmid)
+    return out
+
+
+def _accept_update_vmid(
+    read_line,
+    write,
+    *,
+    vmid: int,
+    label: str,
+    names: dict[int, str],
+    chosen: list[int],
+    placed: list[tuple[int, str]],
+    formats: list[tuple[int, str]],
+    known_kinds: dict[str, str],
+    vmids_in_use,
+    guest_role,
+    disk_storage,
+    disk_format_of,
+) -> str | None:
+    """Validate and keep one update VMID. None means accepted; else the refusal."""
+    duplicate = _duplicate_reason(names, vmid)
+    if duplicate:
+        return duplicate
+    occupied = _occupied((vmid,), vmids_in_use)
+    if occupied is None:
+        role = _guest_role(guest_role, vmid, default="template")
+        refused = _replace_reason(vmid, role) if guest_role is not None else None
+        if refused:
+            return refused
+        problem = _keep_insert(
+            disk_storage, disk_format_of, vmid, placed, formats, known_kinds
+        )
+        if problem:
+            return problem
+        _say(
+            read_line,
+            write,
+            "Could not check that VMID. The run inserts the disk if the VM exists.",
+            "warning",
+        )
+        names[vmid] = label
+        chosen.append(vmid)
+        return None
+    if vmid not in occupied:
+        return f"VMID {vmid} is not in use. Type a template VMID."
+    role = _guest_role(guest_role, vmid, default="template")
+    refused = _replace_reason(vmid, role)
+    if refused:
+        return refused
+    problem = _keep_insert(
+        disk_storage, disk_format_of, vmid, placed, formats, known_kinds
+    )
+    if problem:
+        return problem
+    names[vmid] = label
+    chosen.append(vmid)
+    return None
+
+
 def _ask_image_vmids(
     read_line,
     write,
@@ -917,9 +994,15 @@ def _ask_image_vmids(
     disk_storage=None,
     disk_format_of=None,
     kinds: dict[str, str] | None = None,
+    *,
+    distro: str = "",
+    enrolled_vmids=None,
 ):
     """One existing template VMID per release.
 
+    When enrolled_vmids(distro, release) returns exactly one VMID, that record
+    is used without a free-form prompt. Several matches are listed and one must
+    be typed. None means type any in-use template VMID.
     A free VMID is refused. Enter does not publish a file.
     Returns (vmids, template VMID set, kept storage, kept format).
     The template set stays empty. A new template is the other build choice.
@@ -930,57 +1013,74 @@ def _ask_image_vmids(
     formats: list[tuple[int, str]] = []
     known_kinds = dict(kinds or {})
     _section(read_line, write, "Template VMID(s)")
-    for _release, label in named:
-        base = f"{label} VM Template ID: "
-        reason = ""
+    for release, label in named:
+        enrolled = _enrolled_for_release(enrolled_vmids, distro, release)
+        if len(enrolled) == 1:
+            vmid = enrolled[0]
+            problem = _accept_update_vmid(
+                read_line,
+                write,
+                vmid=vmid,
+                label=label,
+                names=names,
+                chosen=chosen,
+                placed=placed,
+                formats=formats,
+                known_kinds=known_kinds,
+                vmids_in_use=vmids_in_use,
+                guest_role=guest_role,
+                disk_storage=disk_storage,
+                disk_format_of=disk_format_of,
+            )
+            if problem is None:
+                _say(
+                    read_line,
+                    write,
+                    f"Using enrolled VMID {vmid} for {label}.",
+                    "note",
+                )
+                continue
+            _say(
+                read_line,
+                write,
+                f"Enrolled VMID {vmid} for {label} cannot be used: {problem}",
+                "warning",
+            )
+        if len(enrolled) > 1:
+            listed = ", ".join(str(vmid) for vmid in enrolled)
+            base = f"{label} VM Template ID: "
+            reason = f"Enrolled VMIDs for {label}: {listed}. Type one."
+        else:
+            base = f"{label} VM Template ID: "
+            reason = ""
         while True:
             vmid = _read_one_vmid(read_line, write, base, reason=reason)
             reason = ""
             if vmid is None:
                 reason = "A VMID is required."
                 continue
-            duplicate = _duplicate_reason(names, vmid)
-            if duplicate:
-                reason = duplicate
+            if len(enrolled) > 1 and vmid not in enrolled:
+                listed = ", ".join(str(item) for item in enrolled)
+                reason = f"VMID {vmid} is not enrolled for {label}. Type one of: {listed}."
                 continue
-            occupied = _occupied((vmid,), vmids_in_use)
-            if occupied is None:
-                role = _guest_role(guest_role, vmid, default="template")
-                refused = _replace_reason(vmid, role) if guest_role is not None else None
-                if refused:
-                    reason = refused
-                    continue
-                problem = _keep_insert(
-                    disk_storage, disk_format_of, vmid, placed, formats, known_kinds
-                )
-                if problem:
-                    reason = problem
-                    continue
-                _say(
-                    read_line,
-                    write,
-                    "Could not check that VMID. The run inserts the disk if the VM exists.",
-                    "warning",
-                )
-                names[vmid] = label
-                chosen.append(vmid)
-                break
-            if vmid not in occupied:
-                reason = f"VMID {vmid} is not in use. Type a template VMID."
-                continue
-            role = _guest_role(guest_role, vmid, default="template")
-            refused = _replace_reason(vmid, role)
-            if refused:
-                reason = refused
-                continue
-            problem = _keep_insert(
-                    disk_storage, disk_format_of, vmid, placed, formats, known_kinds
-                )
+            problem = _accept_update_vmid(
+                read_line,
+                write,
+                vmid=vmid,
+                label=label,
+                names=names,
+                chosen=chosen,
+                placed=placed,
+                formats=formats,
+                known_kinds=known_kinds,
+                vmids_in_use=vmids_in_use,
+                guest_role=guest_role,
+                disk_storage=disk_storage,
+                disk_format_of=disk_format_of,
+            )
             if problem:
                 reason = problem
                 continue
-            names[vmid] = label
-            chosen.append(vmid)
             break
     return tuple(chosen), frozenset(), tuple(placed), tuple(formats)
 
@@ -1594,12 +1694,15 @@ def interview(
     disk_storage=None,
     disk_format_of=None,
     import_storages=None,
+    enrolled_vmids=None,
 ) -> Job:
     """Walk the operator through one job.
 
     read_line() -> str, and raises EOFError on EOF. None is also EOF.
     Empty answers accept the default shown in that question, when it has one.
     A bad answer asks the same question again. YES starts the run. X exits.
+    enrolled_vmids(distro, release) -> list[int] supplies enrolled VMIDs on
+    the update path so a unique match skips the free-form prompt.
     """
     write = _Output(write, paint=ui.enabled(read_line))
     build = _ask_build(read_line, write)
@@ -1653,6 +1756,8 @@ def interview(
             disk_storage,
             disk_format_of,
             kinds,
+            distro=distro,
+            enrolled_vmids=enrolled_vmids,
         )
         destroy_vmids = frozenset()
         dest_dir = ""

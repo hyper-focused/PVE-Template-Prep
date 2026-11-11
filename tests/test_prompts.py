@@ -97,6 +97,7 @@ class _Script:
         formats: dict[int, str] | None = None,
         disk_format_of=None,
         imports: list[tuple[str, str]] | None = None,
+        enrolled: dict[tuple[str, str], list[int]] | None = None,
     ) -> Job:
         def list_storages() -> list[str]:
             if storages is None:
@@ -135,6 +136,11 @@ class _Script:
                     return None
                 return formats[vmid]
 
+        def enrolled_vmids(distro: str, release: str) -> list[int]:
+            if enrolled is None:
+                return []
+            return list(enrolled.get((distro, release), []))
+
         return interview(
             self.read_line,
             self.write,
@@ -149,6 +155,7 @@ class _Script:
             disk_storage=callback,
             disk_format_of=format_cb,
             import_storages=lambda: list(imports or []),
+            enrolled_vmids=enrolled_vmids if enrolled is not None else None,
         )
 
 
@@ -636,6 +643,47 @@ class InterviewTest(unittest.TestCase):
         )
         self.assertNotIn("Replace VMID", blob)
         self.assertNotIn("Hardware defaults:", blob)
+
+    def test_update_uses_unique_enrolled_vmid_without_prompt(self) -> None:
+        # build, distro, release, guest defaults, backup, YES — no VMID typed
+        script = _Script(["2", "1", "1", "", "", "", "yes"])
+        job = script.run(
+            dry_run=False,
+            in_use={910},
+            disks={910},
+            placed={910: "nfs-templates"},
+            formats={910: "raw"},
+            kinds={"nfs-templates": "nfs"},
+            enrolled={("debian", "12"): [910]},
+        )
+        self.assertEqual(job.vmids, (910,))
+        blob = "".join(script.written)
+        self.assertIn("Using enrolled VMID 910 for bookworm.", blob)
+        self.assertNotIn("bookworm VM Template ID: ", blob)
+
+    def test_update_lists_multiple_enrolled_vmids(self) -> None:
+        script = _Script(["2", "1", "1", "911", "", "", "", "yes"])
+        job = script.run(
+            dry_run=False,
+            in_use={910, 911},
+            disks={910, 911},
+            placed={910: "nfs-templates", 911: "nfs-templates"},
+            formats={910: "raw", 911: "raw"},
+            kinds={"nfs-templates": "nfs"},
+            enrolled={("debian", "12"): [910, 911]},
+        )
+        self.assertEqual(job.vmids, (911,))
+        blob = "".join(script.written)
+        self.assertIn("Enrolled VMIDs for bookworm: 910, 911. Type one.", blob)
+        self.assertIn("bookworm VM Template ID: ", blob)
+        self.assertEqual(job.backup_vmids, frozenset({911}))
+        self.assertEqual(
+            _summary(blob),
+            [
+                ("Release", "VMID", "Storage", "Format", "Existing disk"),
+                ("bookworm", "911", "nfs-templates", "raw", "back up, replace"),
+            ],
+        )
 
     def test_unreadable_disk_format_reasks_the_vmid(self) -> None:
         calls = {"n": 0}

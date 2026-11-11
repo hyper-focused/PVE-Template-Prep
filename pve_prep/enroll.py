@@ -387,6 +387,22 @@ def load_enrollments(*, directory: str | Path = ENROLL_DIR) -> list[Enrollment]:
     return records
 
 
+def enrollments_matching(
+    distro: str,
+    release: str,
+    *,
+    directory: str | Path = ENROLL_DIR,
+) -> list[Enrollment]:
+    """Enrollments for one distro/release, sorted by VMID. Absent dir is empty."""
+    _check_token(distro, "distro")
+    _check_token(release, "release")
+    return [
+        record
+        for record in load_enrollments(directory=directory)
+        if record.distro == distro and record.release == release
+    ]
+
+
 def load_enrollment_path(path: Path, vmid: int) -> Enrollment:
     """Read one enrollment file. path must be the {vmid}.json for that VMID."""
     return _read_record(Path(path), _check_vmid(vmid))

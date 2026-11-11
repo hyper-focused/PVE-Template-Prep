@@ -53,7 +53,7 @@ The cache is under `/var/tmp`; an import directory is often NFS or another mount
 
 The first question is what to build, because the VMID, storage, and format questions all depend on it.
 
-`Job.mode` stays `template` or `image`. A standalone image is image mode with an empty VMID list, so the file is published. An update is image mode with a required template VMID, so the boot disk is replaced. There is no third mode and no `mode="existing"`. The interview does not fill `template_vmids` for an update; they are separate fields.
+`Job.mode` stays `template` or `image`. A standalone image is image mode with an empty VMID list, so the file is published. An update is image mode with a required template VMID, so the boot disk is replaced. There is no third mode and no `mode="existing"`. The interview does not fill `template_vmids` for an update; they are separate fields. On the update path, enrollment JSON is consulted first: a unique distro/release match supplies the VMID without a free-form prompt; several matches must be chosen from that list; none falls back to typing any existing template VMID.
 
 An earlier version prepped a disk in place, applying the family you picked to a disk the tool never downloaded. That was removed. Templates this tool built already carry guest prep, and the family now comes only from the catalog row; the tool does not read `/etc/os-release` off a disk it did not build.
 

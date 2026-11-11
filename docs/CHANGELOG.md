@@ -4,6 +4,12 @@ All notable changes to pve-template-prep. Newest first. The format follows [Keep
 
 An installed copy offers a new release when the version string on `main` changes. Changes merged without a version bump are listed under **Unreleased** and arrive only through a freshly downloaded `install.sh`, which upgrades in place.
 
+## 1.4.2 - 2026-11-11
+
+### Changed
+- **Success green is green.** The `success` palette role was cyan (xterm 37 / ANSI 36), so the confirm-gate `YES` and typed `y`/`yes` looked teal. Dark theme success is now xterm 78 / bright green; light theme is xterm 28 / green. A yes/no field's `(y/n) [Yes]` hint uses that same success color; VMID defaults like `[9001]` stay highlight blue.
+- **Update disk images uses enrollment JSON for VMIDs.** After distro and release are chosen, a unique `/var/lib/pve-template-prep/<vmid>.json` for that pair is taken without a free-form VMID prompt (`Using enrolled VMID …`). Several matches are listed and one of those VMIDs must be typed. No matching enrollment keeps the free-form template VMID field.
+
 ## 1.4.1 - 2026-11-09
 
 ### Changed

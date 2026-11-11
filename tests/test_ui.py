@@ -152,7 +152,7 @@ class VendorTest(unittest.TestCase):
         self.assertEqual(rules["text"], "fg:#d0d0d0")
         self.assertEqual(rules["pointer"], "fg:#00afff bold")
         self.assertEqual(rules["highlighted"], "fg:#00afff bold noreverse")
-        self.assertEqual(rules["selected"], "fg:#00afaf noreverse")
+        self.assertEqual(rules["selected"], "fg:#5fd787 noreverse")
         self.assertEqual(rules["separator"], "fg:#949494")
         self.assertEqual(rules["danger"], "fg:#ff0000 bold")
         self.assertNotIn("bg:", "".join(rules.values()))
@@ -280,6 +280,12 @@ class VendorTest(unittest.TestCase):
             "".join(text for _style, text in tokens).strip(), "Use this VM template config? (y/n) [Yes]:"
         )
         self.assertFalse([token for token in tokens if token[0] == "class:danger"])
+        with mock.patch.object(ui, "_theme", "dark"), mock.patch.object(ui, "_depth", "256"):
+            yes_hint = dict(ui.widget_style(instruction="success").style_rules)["instruction"]
+            vmid_hint = dict(ui.widget_style(instruction="highlight").style_rules)["instruction"]
+        self.assertEqual(yes_hint, "fg:#5fd787")
+        self.assertEqual(vmid_hint, "fg:#00afff bold")
+        self.assertNotEqual(yes_hint, vmid_hint)
 
         gate = "Type 'DELETE' to continue or 'X' to exit now without changes:"
         tokens = ui.prompt_tokens(gate, danger_word="DELETE")

@@ -267,7 +267,8 @@ def widget_style(*, instruction: str = "note"):
     """prompt_toolkit style for the menus, in the current theme.
 
     instruction is the role for the hint after the question: key help on a
-    menu stays note grey; a text field's (y/n) [Yes] or [9001] is highlight.
+    menu stays note grey; a yes/no field's (y/n) [Yes] is success green; a
+    VMID default like [9001] is highlight.
     """
     from prompt_toolkit.styles import Style
 
@@ -541,9 +542,11 @@ def text(
     from prompt_toolkit.styles import merge_styles
     from questionary.constants import DEFAULT_STYLE
 
+    # (y/n) [Yes] is the affirmative default: success green. [9001] stays highlight.
+    hint_role = "success" if hint and "(y/n)" in hint else "highlight"
     session = PromptSession(
         prompt_tokens(message, hint=hint, danger_word=danger_word, success_word=success_word),
-        style=merge_styles([DEFAULT_STYLE, widget_style(instruction="highlight")]),
+        style=merge_styles([DEFAULT_STYLE, widget_style(instruction=hint_role)]),
         lexer=_input_lexer(danger_word=danger_word, yes_green=yes_green),
         **_app_kwargs(),
         **kwargs,

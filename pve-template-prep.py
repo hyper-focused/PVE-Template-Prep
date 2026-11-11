@@ -25,7 +25,7 @@ from pve_prep.catalog import normalize_release, releases_for
 from pve_prep.customize import apply as customize_apply
 from pve_prep.customize import argv as customize_argv
 from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, file_digest, publish
-from pve_prep.enroll import ENROLL_DIR
+from pve_prep.enroll import ENROLL_DIR, enrollments_matching
 from pve_prep.job import DEFAULT_CACHE, Job, action_for, converts_to_template
 from pve_prep.offer import apply_prior_enrollment, offer_created, plan_prior_enrollments
 from pve_prep.prompts import PromptAbort, ask_cache_cleanup, interview
@@ -252,6 +252,14 @@ def disk_format(vmid: int) -> str | None:
     if proc.returncode != 0:
         return None
     return os_disk_format(proc.stdout or "")
+
+
+def enrolled_vmids_for(distro: str, release: str) -> list[int]:
+    """VMIDs enrolled for this distro/release. Empty when none or unreadable."""
+    try:
+        return [record.vmid for record in enrollments_matching(distro, release)]
+    except Exception:
+        return []
 
 
 # Packages that ship no command to look for.
@@ -645,6 +653,7 @@ def main(argv: list[str] | None = None) -> int:
                 disk_storage=disk_storage,
                 disk_format_of=disk_format,
                 import_storages=import_storages,
+                enrolled_vmids=enrolled_vmids_for,
             )
     except PromptAbort:
         print("aborted")

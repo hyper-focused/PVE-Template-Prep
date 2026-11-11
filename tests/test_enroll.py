@@ -21,6 +21,7 @@ from pve_prep.enroll import (  # noqa: E402
     Enrollment,
     EnrollmentError,
     enrollments_for,
+    enrollments_matching,
     load_enrollment,
     remove_enrollment,
     replace_digest,
@@ -87,6 +88,19 @@ class EnrollmentTests(unittest.TestCase):
             self.assertEqual(load_enrollment(910, directory=Path(tmp)), record)
             names = sorted(entry.name for entry in Path(tmp).iterdir())
             self.assertEqual(names, ["910.json"])
+
+    def test_enrollments_matching_filters_by_distro_and_release(self) -> None:
+        with private_tempdir() as tmp:
+            save_enrollment(_record(vmid=910, distro="debian", release="12"), directory=tmp)
+            save_enrollment(_record(vmid=911, distro="debian", release="13"), directory=tmp)
+            save_enrollment(_record(vmid=912, distro="ubuntu", release="12"), directory=tmp)
+            save_enrollment(
+                _record(vmid=913, distro="debian", release="12", digest="ef" * 32),
+                directory=tmp,
+            )
+            matched = enrollments_matching("debian", "12", directory=tmp)
+            self.assertEqual([record.vmid for record in matched], [910, 913])
+            self.assertEqual(enrollments_matching("fedora", "45", directory=tmp), [])
 
     def test_enrollments_for_returns_one_schedule_sorted_by_vmid(self) -> None:
         with private_tempdir() as tmp:
