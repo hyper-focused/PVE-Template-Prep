@@ -3,15 +3,18 @@
 """Enrollment offers for create and disk-image upgrade runs.
 
 Before any download, selected VMIDs that already have a record are asked
-keep / change schedule / turn off. That choice is stored for the run and
+keep / change schedule / unenroll. That choice is stored for the run and
 applied only to builds that succeed. After the builds, templates that had
 no prior record get the weekly / monthly / none prompt. Standalone image
-jobs skip both asks. Each enrollment keeps its own schedule preference.
-Only /etc/cron.weekly is installed; that run refreshes weekly records every
-time and monthly records on days 1 through 7. none keeps the JSON for
-interactive Update without a cron refresh. When no weekly or monthly
-enrollment remains, the weekly wrapper is removed, and any leftover monthly
-wrapper this tool wrote is cleared.
+jobs skip both asks. Every finished template gets an enrollment JSON;
+schedule none keeps Update identity without a cron refresh.
+
+Only /etc/cron.weekly is installed. That run refreshes weekly records every
+time and monthly records on days 1 through 7. Choosing none runs an
+invisible cleanup: if our weekly cron is present and no weekly/monthly
+enrollments remain (after demoting this run's auto-update records when
+needed), the wrapper is removed. Leftover monthly wrappers this tool wrote
+are cleared quietly when installing or reconciling.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from typing import Literal
 from pve_prep.cronscript import (
     CronScriptError,
     cron_script,
+    has_cron_script,
     install_cron_script,
     remove_cron_script,
 )
@@ -97,7 +101,7 @@ def plan_prior_enrollments(
     *,
     directory,
 ) -> PriorEnrollmentPlan | None:
-    """Ask keep/change/off when any selected VMID is already enrolled.
+    """Ask keep/change/unenroll when any selected VMID is already enrolled.
 
     None means none of the VMIDs had a record. Standalone callers must not
     call this. PromptAbort propagates unchanged.
@@ -113,39 +117,40 @@ def plan_prior_enrollments(
     )
 
 
-def _auto_update_enrollments_remain(*, directory) -> bool | None:
-    """True when any weekly/monthly enrollment remains. None when unreadable."""
+def _auto_update_enrollments(*, directory) -> list[Enrollment] | None:
+    """Every weekly/monthly enrollment, or None when the directory is unreadable."""
     try:
+        records: list[Enrollment] = []
         for schedule in AUTO_UPDATE_SCHEDULES:
-            if enrollments_for(schedule, directory=directory):
-                return True
+            records.extend(enrollments_for(schedule, directory=directory))
     except EnrollmentError:
         return None
-    return False
+    records.sort(key=lambda item: item.vmid)
+    return records
 
 
-def _drop_cron(
-    write,
+def _host_cron_present(program: str, cron_directory) -> bool | None:
+    """True/False for our weekly wrapper. None when the path cannot be judged."""
+    try:
+        return has_cron_script(program, HOST_CRON_SCHEDULE, directory=cron_directory)
+    except CronScriptError:
+        return None
+
+
+def _drop_cron_quiet(
     *,
     program: str,
     schedule: str,
     cron_directory,
     dry_run: bool,
-    reason: str,
 ) -> None:
+    """Remove our wrapper when present. No operator narration."""
     if dry_run:
-        write(
-            f"Dry run: /etc/cron.{schedule}/pve-template-prep would be removed "
-            f"if it is still ours ({reason}).\n"
-        )
         return
     try:
-        removed = remove_cron_script(program, schedule, directory=cron_directory)
-    except CronScriptError as exc:
-        write(f"{exc}\n")
+        remove_cron_script(program, schedule, directory=cron_directory)
+    except CronScriptError:
         return
-    if removed:
-        write(f"Removed the {schedule} automated-update cron script; {reason}.\n")
 
 
 def reconcile_cron_scripts(
@@ -156,26 +161,98 @@ def reconcile_cron_scripts(
     cron_directory,
     dry_run: bool = False,
 ) -> None:
-    """Keep one weekly wrapper while auto-updates remain; clear a leftover monthly."""
-    remaining = _auto_update_enrollments_remain(directory=directory)
-    if remaining is None:
-        write("Could not check automated update records for cron cleanup.\n")
-    elif not remaining:
-        _drop_cron(
-            write,
+    """Drop the weekly wrapper when no auto-updates remain; clear leftover monthly.
+
+    write is unused: cleanup is invisible. Kept for call-site compatibility.
+    """
+    del write
+    remaining = _auto_update_enrollments(directory=directory)
+    if remaining is not None and not remaining:
+        _drop_cron_quiet(
             program=program,
             schedule=HOST_CRON_SCHEDULE,
             cron_directory=cron_directory,
             dry_run=dry_run,
-            reason="no templates remain on weekly or monthly",
         )
-    _drop_cron(
-        write,
+    _drop_cron_quiet(
         program=program,
         schedule="monthly",
         cron_directory=cron_directory,
         dry_run=dry_run,
-        reason="weekly cron covers monthly enrollments in the first week of the month",
+    )
+
+
+def _apply_none_cleanup(
+    *,
+    program: str,
+    directory,
+    cron_directory,
+    run_vmids: frozenset[int],
+    dry_run: bool,
+) -> None:
+    """Invisible cleanup after schedule none for this run's templates.
+
+    1. No weekly cron → done.
+    2. No weekly/monthly enrollments on the host → remove cron → done.
+    3. None of this run's VMIDs currently have weekly/monthly → done.
+    4. Demote this run's auto-update records to none; remove cron only when
+       nothing on the host still has weekly/monthly.
+    """
+    present = _host_cron_present(program, cron_directory)
+    if present is not True:
+        _drop_cron_quiet(
+            program=program,
+            schedule="monthly",
+            cron_directory=cron_directory,
+            dry_run=dry_run,
+        )
+        return
+    auto = _auto_update_enrollments(directory=directory)
+    if auto is None:
+        return
+    if not auto:
+        _drop_cron_quiet(
+            program=program,
+            schedule=HOST_CRON_SCHEDULE,
+            cron_directory=cron_directory,
+            dry_run=dry_run,
+        )
+        _drop_cron_quiet(
+            program=program,
+            schedule="monthly",
+            cron_directory=cron_directory,
+            dry_run=dry_run,
+        )
+        return
+    run_auto = [record for record in auto if record.vmid in run_vmids]
+    if not run_auto:
+        _drop_cron_quiet(
+            program=program,
+            schedule="monthly",
+            cron_directory=cron_directory,
+            dry_run=dry_run,
+        )
+        return
+    for record in run_auto:
+        if dry_run:
+            continue
+        try:
+            save_enrollment(replace(record, schedule="none"), directory=directory)
+        except EnrollmentError:
+            continue
+    remaining = _auto_update_enrollments(directory=directory)
+    if remaining is not None and not remaining:
+        _drop_cron_quiet(
+            program=program,
+            schedule=HOST_CRON_SCHEDULE,
+            cron_directory=cron_directory,
+            dry_run=dry_run,
+        )
+    _drop_cron_quiet(
+        program=program,
+        schedule="monthly",
+        cron_directory=cron_directory,
+        dry_run=dry_run,
     )
 
 
@@ -195,53 +272,18 @@ def _install_schedule(
             write(cron_script(program, HOST_CRON_SCHEDULE))
         except CronScriptError as exc:
             write(f"{exc}\n")
-        write(
-            "Dry run: /etc/cron.monthly/pve-template-prep would be removed "
-            "if it is still ours (weekly cron covers monthly enrollments).\n"
-        )
         return
     try:
         install_cron_script(program, HOST_CRON_SCHEDULE, directory=cron_directory)
     except CronScriptError as exc:
         write(f"{exc}\n")
-    _drop_cron(
-        write,
+        return
+    _drop_cron_quiet(
         program=program,
         schedule="monthly",
         cron_directory=cron_directory,
         dry_run=False,
-        reason="weekly cron covers monthly enrollments in the first week of the month",
     )
-
-
-def _set_all_schedules_none(write, *, directory, dry_run: bool) -> None:
-    """Keep every enrollment file; set schedule to none."""
-    try:
-        records = load_enrollments(directory=directory)
-    except EnrollmentError as exc:
-        write(f"Automated update records could not be read: {exc}\n")
-        return
-    for record in records:
-        if record.schedule == "none":
-            continue
-        if dry_run:
-            write(
-                f"Dry run: VMID {record.vmid} would keep its enrollment with "
-                "schedule none (no automated updates).\n"
-            )
-            continue
-        try:
-            save_enrollment(replace(record, schedule="none"), directory=directory)
-        except EnrollmentError as exc:
-            write(
-                f"Automated updates for VMID {record.vmid} could not be turned off: "
-                f"{exc}\n"
-            )
-            continue
-        write(
-            f"Automated updates for VMID {record.vmid} were turned off; "
-            "the enrollment record was kept for interactive updates.\n"
-        )
 
 
 def _schedule_for_prior(plan: PriorEnrollmentPlan, vmid: int) -> str:
@@ -293,11 +335,6 @@ def _rewrite_enrollment(
         return False
     if dry_run:
         write(_record_json(record))
-    elif schedule == "none":
-        write(
-            f"Enrollment for VMID {vmid} saved with no automated updates "
-            "(interactive Update can still find it).\n"
-        )
     return True
 
 
@@ -319,12 +356,33 @@ def apply_prior_enrollment(
     """Apply a pre-download plan to successful builds for those VMIDs.
 
     keep or change rewrites digest, storage, disk_digest, and schedule.
-    Turning updates off sets schedule to none and keeps the JSON. Only this
-    run's VMIDs change schedule; other enrollments are left alone. Cron
-    wrappers with nothing left on weekly/monthly are removed. created must
-    already be filtered to successful prior VMIDs.
+    Unenroll writes schedule none and runs invisible cron cleanup for this
+    run's VMIDs. created must already be filtered to successful prior VMIDs.
     """
     if not created:
+        return
+    if plan.action == "none":
+        for release, vmid in created:
+            _rewrite_enrollment(
+                write,
+                release=release,
+                vmid=vmid,
+                distro=distro,
+                password_auth=password_auth,
+                permit_root=permit_root,
+                schedule="none",
+                digest_for=digest_for,
+                pin_for=pin_for,
+                directory=directory,
+                dry_run=dry_run,
+            )
+        _apply_none_cleanup(
+            program=program,
+            directory=directory,
+            cron_directory=cron_directory,
+            run_vmids=frozenset(vmid for _release, vmid in created),
+            dry_run=dry_run,
+        )
         return
     saved_schedules: set[str] = set()
     for release, vmid in created:
@@ -382,12 +440,12 @@ def _offer_turn_off_existing(
         return
     if not ask_turn_off_updates(read_line, write, count=len(existing)):
         return
-    _set_all_schedules_none(write, directory=directory, dry_run=dry_run)
-    reconcile_cron_scripts(
-        write,
+    run_vmids = frozenset(record.vmid for record in existing)
+    _apply_none_cleanup(
         program=program,
         directory=directory,
         cron_directory=cron_directory,
+        run_vmids=run_vmids,
         dry_run=dry_run,
     )
 
@@ -422,6 +480,15 @@ def _apply_new_schedule(
             directory=directory,
             dry_run=dry_run,
         )
+    if schedule == "none":
+        _apply_none_cleanup(
+            program=program,
+            directory=directory,
+            cron_directory=cron_directory,
+            run_vmids=frozenset(vmid for _release, vmid in created),
+            dry_run=dry_run,
+        )
+        return schedule
     _install_schedule(
         write,
         program=program,
@@ -459,11 +526,10 @@ def offer_created(
     created is (release, vmid) pairs with no enrollment before this run.
     pin_for(vmid) returns (storage, disk_digest) for the boot disk this run
     left in place. When created is empty but enrollments already exist, the
-    operator can turn automated updates off (schedule none) on every record.
-    Returns the schedule written for this run (weekly, monthly, or none), or
-    None when nothing was offered. Each template keeps its own schedule;
-    earlier enrollments are not moved. PromptAbort propagates and changes no
-    record.
+    operator can unenroll every template from automated updates. Returns the
+    schedule written for this run (weekly, monthly, or none), or None when
+    nothing was offered. Every finished template gets a JSON file. PromptAbort
+    propagates and changes no record.
     """
     if not created:
         _offer_turn_off_existing(

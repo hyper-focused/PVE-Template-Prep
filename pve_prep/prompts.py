@@ -1323,7 +1323,7 @@ _UPDATE_NOTE = (
 _PRIOR_ROWS = (
     ("Keep current schedule", "keep"),
     ("Change schedule", "change"),
-    ("Turn off automated updates", "none"),
+    ("Unenroll from automated updates", "none"),
 )
 _CHANGE_ROWS = (
     ("No automated updates", "none"),
@@ -1333,24 +1333,28 @@ _CHANGE_ROWS = (
 
 
 def _prior_enrollment_note(records) -> str:
-    """List already-enrolled VMIDs and their schedules for the pre-download ask."""
+    """List already-enrolled templates and their schedules for the pre-download ask."""
+    if len(records) == 1:
+        head = "This Template is enrolled for automated updates:\n"
+    else:
+        head = "These Templates are enrolled for automated updates:\n"
     lines = [
         f"VMID {record.vmid} ({record.distro} {record.release}): {record.schedule}"
         for record in records
     ]
     return (
-        "Already enrolled:\n"
+        head
         + "\n".join(lines)
         + "\n"
-        "Keep the current schedule, change it, or turn automated updates off "
-        "for these VMIDs. Turning updates off keeps the enrollment file so "
-        "interactive Update can still find the VMID. The choice is applied "
-        "after this run finishes the builds that succeed."
+        "Keep the current schedule, change it, or unenroll from automated "
+        "updates. Unenrolling keeps the enrollment file so interactive Update "
+        "can still find them. The choice is applied after this run finishes "
+        "the builds that succeed."
     )
 
 
 def ask_prior_enrollment(read_line, write, records) -> str:
-    """Pre-download choice for VMIDs that already have enrollment files.
+    """Pre-download choice for templates that already have enrollment files.
 
     Returns keep, weekly, monthly, or none. weekly/monthly/none mean change to
     that schedule. records must be non-empty. Default is keep.
@@ -1363,7 +1367,7 @@ def ask_prior_enrollment(read_line, write, records) -> str:
         picked = _pick(
             read_line,
             write,
-            "Already enrolled. Keep, change schedule, or turn off?",
+            "These Templates are enrolled. Keep, change, or unenroll?",
             list(_PRIOR_ROWS),
             default="keep",
         )
@@ -1471,24 +1475,28 @@ def ask_unattended_schedule(read_line, write) -> str:
 
 
 def ask_turn_off_updates(read_line, write, *, count: int) -> bool:
-    """True when the operator turns off automated updates on every enrollment.
+    """True when the operator unenrolls every template from automated updates.
 
     Used when this run finished no new template to enroll but enrollments are
     already on disk. Records stay with schedule none so Update can find them.
     """
-    noun = "template" if count == 1 else "templates"
+    if count == 1:
+        head = "This Template is enrolled for automated updates. "
+        ask = "Unenroll this Template from automated updates?\n"
+    else:
+        head = "These Templates are enrolled for automated updates. "
+        ask = "Unenroll these Templates from automated updates?\n"
     _section(read_line, write, "Automated updates")
     _say(
         read_line,
         write,
-        f"{count} {noun} already enrolled. "
-        "This run did not finish a template that needed a new enrollment.\n"
-        "Turn off automated updates for all of them? Enrollment files stay "
-        "(schedule none) so interactive Update can still find those VMIDs. "
-        "The weekly cron script is removed when nothing remains on weekly or monthly.",
+        head
+        + "This run did not finish a template that needed a new enrollment.\n"
+        "Unenroll from automated updates? Enrollment files stay so interactive "
+        "Update can still find them.",
         "note",
     )
-    return _ask_bool(read_line, write, "Turn off automated updates?\n", False)
+    return _ask_bool(read_line, write, ask, False)
 
 
 def ask_cache_cleanup(read_line, write, *, cache: str, failed: bool) -> bool:

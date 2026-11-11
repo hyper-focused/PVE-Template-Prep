@@ -150,7 +150,7 @@ class AskPriorEnrollmentTests(unittest.TestCase):
                 ask_prior_enrollment(lines.read_line, lines.write, [record]),
                 "keep",
             )
-            self.assertIn("Already enrolled:", lines.text)
+            self.assertIn("This Template is enrolled for automated updates:", lines.text)
             self.assertIn("VMID 9001 (ubuntu 22.04): weekly", lines.text)
             self.assertIn("Keep current schedule.", lines.text)
 
@@ -190,7 +190,7 @@ class AskPriorEnrollmentTests(unittest.TestCase):
         )
         lines = _Lines(["3"])
         self.assertEqual(ask_prior_enrollment(lines.read_line, lines.write, [record]), "none")
-        self.assertIn("Turn off automated updates.", lines.text)
+        self.assertIn("Unenroll from automated updates.", lines.text)
 
 
 class PlanPriorEnrollmentTests(unittest.TestCase):
@@ -279,7 +279,6 @@ class ApplyPriorEnrollmentTests(unittest.TestCase):
             self.assertEqual(load_enrollment(9002, directory=enroll_dir).schedule, "monthly")
             self.assertTrue(_cron_path(cron_dir, "weekly").exists())
             self.assertFalse(_cron_path(cron_dir, "monthly").exists())
-            self.assertIn("weekly cron covers monthly enrollments", lines.text)
 
     def test_off_keeps_json_with_none_and_drops_empty_cron(self) -> None:
         lines = _Lines([])
@@ -312,10 +311,8 @@ class ApplyPriorEnrollmentTests(unittest.TestCase):
             self.assertEqual(record.release, "24.04")
             self.assertEqual(record.digest, _DIGEST)
             self.assertFalse(_cron_path(cron_dir, "weekly").exists())
-            self.assertIn(
-                "Enrollment for VMID 9001 saved with no automated updates",
-                lines.text,
-            )
+            self.assertNotIn("Removed the weekly", lines.text)
+            self.assertNotIn("saved with no automated updates", lines.text)
 
 
 class OfferCreatedTests(unittest.TestCase):
@@ -337,7 +334,9 @@ class OfferCreatedTests(unittest.TestCase):
             self.assertIsNotNone(record)
             self.assertEqual(record.schedule, "none")
             self.assertFalse(_cron_path(cron_dir, "weekly").exists())
-            self.assertIn("enrollment record was kept", lines.text)
+            self.assertIn("This Template is enrolled for automated updates.", lines.text)
+            self.assertIn("Unenroll this Template from automated updates?", lines.text)
+            self.assertNotIn("Removed the weekly", lines.text)
 
     def test_weekly_writes_enrollment_and_exact_cron_script(self) -> None:
         lines = _Lines(["2"])
@@ -418,7 +417,20 @@ class OfferCreatedTests(unittest.TestCase):
             self.assertEqual(record.schedule, "none")
             self.assertEqual(record.release, "24.04")
             self.assertEqual(_names(cron_dir), [])
-            self.assertIn("no automated updates", lines.text)
+            self.assertIn("No automated updates.", lines.text)
+            self.assertNotIn("Removed the", lines.text)
+
+    def test_none_leaves_cron_when_other_auto_enrollments_remain(self) -> None:
+        lines = _Lines(["no"])
+        with private_tempdir() as enroll_dir, private_tempdir() as cron_dir:
+            _existing(enroll_dir, 9001, schedule="weekly")
+            install_cron_script(_PROGRAM, "weekly", directory=cron_dir)
+            result = _offer(lines, enroll_dir, cron_dir, [("24.04", 9002)])
+            self.assertEqual(result, "none")
+            self.assertEqual(load_enrollment(9001, directory=enroll_dir).schedule, "weekly")
+            self.assertEqual(load_enrollment(9002, directory=enroll_dir).schedule, "none")
+            self.assertTrue(_cron_path(cron_dir, "weekly").exists())
+            self.assertNotIn("Removed the weekly", lines.text)
 
     def test_dry_run_prints_script_and_json_and_writes_no_files(self) -> None:
         lines = _Lines(["2"])

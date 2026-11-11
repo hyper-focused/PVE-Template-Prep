@@ -89,6 +89,71 @@ def install_cron_script(
     return dest
 
 
+def _our_cron_fd(
+    program: str,
+    schedule: str,
+    *,
+    directory: str | Path | None = None,
+) -> tuple[int, Path] | None:
+    """Open the cron dir for our wrapper, or None when the script is absent.
+
+    Raises CronScriptError for a symlink, non-file, or text we did not write.
+    On success the caller must close the returned dir fd.
+    """
+    text = cron_script(program, schedule)
+    cron_dir = _cron_dir(schedule, directory)
+    if cron_dir.is_symlink():
+        raise CronScriptError(f"{cron_dir} is a symlink")
+    dest = cron_dir / _NAME
+    try:
+        dir_fd = os.open(cron_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise CronScriptError(f"{cron_dir}: {exc}") from exc
+    try:
+        info = os.lstat(_NAME, dir_fd=dir_fd)
+    except FileNotFoundError:
+        os.close(dir_fd)
+        return None
+    except OSError as exc:
+        os.close(dir_fd)
+        raise CronScriptError(f"{dest}: {exc}") from exc
+    if stat.S_ISLNK(info.st_mode):
+        os.close(dir_fd)
+        raise CronScriptError(f"{dest} is a symlink")
+    if not stat.S_ISREG(info.st_mode):
+        os.close(dir_fd)
+        raise CronScriptError(f"{dest} is not a regular file and was left unchanged")
+    try:
+        current = _read_nofollow(dir_fd, len(text.encode("utf-8")) + 1)
+    except OSError as exc:
+        os.close(dir_fd)
+        raise CronScriptError(f"{dest}: {exc}") from exc
+    if current != text.encode("utf-8"):
+        os.close(dir_fd)
+        raise CronScriptError(f"{dest} differs and was left unchanged")
+    return dir_fd, dest
+
+
+def has_cron_script(
+    program: str,
+    schedule: str,
+    *,
+    directory: str | Path | None = None,
+) -> bool:
+    """True when our cron wrapper is present. Absent is False.
+
+    A symlink, a non-file, or different text raises CronScriptError.
+    """
+    opened = _our_cron_fd(program, schedule, directory=directory)
+    if opened is None:
+        return False
+    dir_fd, _dest = opened
+    os.close(dir_fd)
+    return True
+
+
 def remove_cron_script(
     program: str,
     schedule: str,
@@ -100,34 +165,11 @@ def remove_cron_script(
     Absent is False. A symlink, a non-file, or different text is left unchanged
     and raises CronScriptError: this tool only deletes a wrapper it wrote.
     """
-    text = cron_script(program, schedule)
-    cron_dir = _cron_dir(schedule, directory)
-    if cron_dir.is_symlink():
-        raise CronScriptError(f"{cron_dir} is a symlink")
-    dest = cron_dir / _NAME
-    try:
-        dir_fd = os.open(cron_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except FileNotFoundError:
+    opened = _our_cron_fd(program, schedule, directory=directory)
+    if opened is None:
         return False
-    except OSError as exc:
-        raise CronScriptError(f"{cron_dir}: {exc}") from exc
+    dir_fd, dest = opened
     try:
-        try:
-            info = os.lstat(_NAME, dir_fd=dir_fd)
-        except FileNotFoundError:
-            return False
-        except OSError as exc:
-            raise CronScriptError(f"{dest}: {exc}") from exc
-        if stat.S_ISLNK(info.st_mode):
-            raise CronScriptError(f"{dest} is a symlink")
-        if not stat.S_ISREG(info.st_mode):
-            raise CronScriptError(f"{dest} is not a regular file and was left unchanged")
-        try:
-            current = _read_nofollow(dir_fd, len(text.encode("utf-8")) + 1)
-        except OSError as exc:
-            raise CronScriptError(f"{dest}: {exc}") from exc
-        if current != text.encode("utf-8"):
-            raise CronScriptError(f"{dest} differs and was left unchanged")
         try:
             os.unlink(_NAME, dir_fd=dir_fd)
         except FileNotFoundError:
