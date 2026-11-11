@@ -23,6 +23,7 @@ from pve_prep.enroll import (  # noqa: E402
     enrollments_for,
     enrollments_matching,
     load_enrollment,
+    pin_mismatch_reason,
     remove_enrollment,
     replace_digest,
     save_enrollment,
@@ -197,6 +198,24 @@ class EnrollmentTests(unittest.TestCase):
                 load_enrollment(99, directory=tmp)
             with self.assertRaises(EnrollmentError):
                 enrollments_for("daily", directory=Path(tmp) / "missing")
+
+    def test_pin_mismatch_reason_matches_storage_and_fingerprint(self) -> None:
+        record = _record()
+        self.assertIsNone(
+            pin_mismatch_reason(record, record.storage, record.disk_digest)
+        )
+        self.assertEqual(
+            pin_mismatch_reason(record, "other-nfs", record.disk_digest),
+            "VM 910 is on storage other-nfs, but it was enrolled on storage nfs-templates",
+        )
+        self.assertEqual(
+            pin_mismatch_reason(record, "", record.disk_digest),
+            "VM 910 is on storage (none), but it was enrolled on storage nfs-templates",
+        )
+        self.assertEqual(
+            pin_mismatch_reason(record, record.storage, "11" * 32),
+            "VM 910 boot disk no longer matches the image recorded at enrollment",
+        )
 
     def test_replace_digest_changes_only_the_digest(self) -> None:
         with private_tempdir() as tmp:

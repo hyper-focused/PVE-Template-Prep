@@ -27,6 +27,7 @@ from .enroll import (
     enrollments_for,
     is_incomplete_enrollment,
     load_enrollment_path,
+    pin_mismatch_reason,
     remove_enrollment,
     replace_digest,
 )
@@ -419,11 +420,6 @@ def _swap_one(
         live_storage, _volid, disk_path = boot_disk_location(run, config)
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
-    if live_storage != record.storage:
-        raise RuntimeError(
-            f"VM {vmid} is on storage {live_storage or '(none)'}, "
-            f"but it was enrolled on storage {record.storage}"
-        )
     storage = record.storage
     fmt = os_disk_format(config)
     if fmt not in {"raw", "qcow2"}:
@@ -440,10 +436,9 @@ def _swap_one(
         live_disk = file_digest(Path(disk_path), "256")
     except (OSError, DownloadError) as exc:
         raise RuntimeError(f"VM {vmid} boot disk could not be fingerprinted: {exc}") from exc
-    if live_disk != record.disk_digest:
-        raise RuntimeError(
-            f"VM {vmid} boot disk no longer matches the image recorded at enrollment"
-        )
+    pin_problem = pin_mismatch_reason(record, live_storage, live_disk)
+    if pin_problem:
+        raise RuntimeError(pin_problem)
 
     digest, alg = digest_for(record.distro, record.release)
     if digest == record.digest and alg == record.checksum_alg:

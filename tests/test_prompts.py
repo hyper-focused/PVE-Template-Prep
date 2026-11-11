@@ -100,6 +100,7 @@ class _Script:
         enrolled: dict[tuple[str, str], list[int]] | None = None,
         enrollment_digests: dict[int, str] | None = None,
         published_digests: dict[tuple[str, str], str] | None = None,
+        enrollment_pins: dict[int, str | None] | None = None,
     ) -> Job:
         def list_storages() -> list[str]:
             if storages is None:
@@ -153,6 +154,11 @@ class _Script:
                 return None
             return published_digests.get((distro, release))
 
+        def enrollment_pin(vmid: int) -> str | None:
+            if enrollment_pins is None:
+                return None
+            return enrollment_pins.get(vmid)
+
         return interview(
             self.read_line,
             self.write,
@@ -170,6 +176,7 @@ class _Script:
             enrolled_vmids=enrolled_vmids if enrolled is not None else None,
             enrollment_digest=enrollment_digest if enrollment_digests is not None else None,
             published_digest=published_digest if published_digests is not None else None,
+            enrollment_pin=enrollment_pin if enrollment_pins is not None else None,
         )
 
 
@@ -759,6 +766,87 @@ class InterviewTest(unittest.TestCase):
         blob = "".join(script.written)
         self.assertIn("Using enrolled VMID 910 for bookworm.", blob)
         self.assertNotIn("bookworm VM Template ID: ", blob)
+
+    def test_update_pin_match_accepts_unique_enrolled_vmid(self) -> None:
+        script = _Script(["2", "1", "1", "", "", "", "yes"])
+        job = script.run(
+            dry_run=False,
+            in_use={910},
+            disks={910},
+            placed={910: "nfs-templates"},
+            formats={910: "raw"},
+            kinds={"nfs-templates": "nfs"},
+            enrolled={("debian", "12"): [910]},
+            enrollment_pins={910: None},
+        )
+        self.assertEqual(job.vmids, (910,))
+        self.assertIn("Using enrolled VMID 910 for bookworm.", "".join(script.written))
+
+    def test_update_pin_mismatch_aborts_unique_enrolled_vmid(self) -> None:
+        script = _Script(["2", "1", "1"])
+        with self.assertRaises(PromptAbort):
+            script.run(
+                dry_run=False,
+                in_use={910},
+                disks={910},
+                placed={910: "nfs-templates"},
+                formats={910: "raw"},
+                kinds={"nfs-templates": "nfs"},
+                enrolled={("debian", "12"): [910]},
+                enrollment_pins={
+                    910: (
+                        "VM 910 boot disk no longer matches the image "
+                        "recorded at enrollment"
+                    )
+                },
+            )
+        blob = "".join(script.written)
+        self.assertIn("Enrolled VMID 910 for bookworm cannot be updated:", blob)
+        self.assertIn("boot disk no longer matches the image recorded at enrollment", blob)
+
+    def test_update_storage_pin_mismatch_aborts_unique_enrolled_vmid(self) -> None:
+        script = _Script(["2", "1", "1"])
+        with self.assertRaises(PromptAbort):
+            script.run(
+                dry_run=False,
+                in_use={910},
+                disks={910},
+                placed={910: "other-nfs"},
+                formats={910: "raw"},
+                kinds={"other-nfs": "nfs"},
+                enrolled={("debian", "12"): [910]},
+                enrollment_pins={
+                    910: (
+                        "VM 910 is on storage other-nfs, "
+                        "but it was enrolled on storage nfs-templates"
+                    )
+                },
+            )
+        blob = "".join(script.written)
+        self.assertIn("cannot be updated:", blob)
+        self.assertIn("enrolled on storage nfs-templates", blob)
+
+    def test_update_pin_mismatch_reasks_among_multiple_enrolled(self) -> None:
+        script = _Script(["2", "1", "1", "910", "911", "", "", "", "yes"])
+        job = script.run(
+            dry_run=False,
+            in_use={910, 911},
+            disks={910, 911},
+            placed={910: "nfs-templates", 911: "nfs-templates"},
+            formats={910: "raw", 911: "raw"},
+            kinds={"nfs-templates": "nfs"},
+            enrolled={("debian", "12"): [910, 911]},
+            enrollment_pins={
+                910: (
+                    "VM 910 boot disk no longer matches the image "
+                    "recorded at enrollment"
+                ),
+                911: None,
+            },
+        )
+        self.assertEqual(job.vmids, (911,))
+        blob = "".join(script.written)
+        self.assertIn("boot disk no longer matches the image recorded at enrollment", blob)
 
     def test_update_lists_multiple_enrolled_vmids(self) -> None:
         script = _Script(["2", "1", "1", "911", "", "", "", "yes"])

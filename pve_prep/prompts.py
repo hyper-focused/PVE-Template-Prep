@@ -929,6 +929,28 @@ def _enrolled_for_release(enrolled_vmids, distro: str, release: str) -> list[int
     return out
 
 
+def _enrollment_pin_problem(enrollment_pin, vmid: int) -> str | None:
+    """Refusal from the enrollment storage/fingerprint pin. None accepts."""
+    if enrollment_pin is None:
+        return None
+    try:
+        problem = enrollment_pin(vmid)
+    except Exception:
+        return f"VMID {vmid} enrollment pin could not be checked."
+    if problem is None:
+        return None
+    text = str(problem).strip()
+    return text or None
+
+
+def _pin_refusal(problem: str) -> bool:
+    """True when the refusal is a storage or disk-fingerprint pin mismatch."""
+    return (
+        "but it was enrolled on storage" in problem
+        or "boot disk no longer matches the image recorded at enrollment" in problem
+    )
+
+
 def _accept_update_vmid(
     read_line,
     write,
@@ -944,6 +966,7 @@ def _accept_update_vmid(
     guest_role,
     disk_storage,
     disk_format_of,
+    enrollment_pin=None,
 ) -> str | None:
     """Validate and keep one update VMID. None means accepted; else the refusal."""
     duplicate = _duplicate_reason(names, vmid)
@@ -960,6 +983,9 @@ def _accept_update_vmid(
         )
         if problem:
             return problem
+        pin_problem = _enrollment_pin_problem(enrollment_pin, vmid)
+        if pin_problem:
+            return pin_problem
         _say(
             read_line,
             write,
@@ -980,6 +1006,9 @@ def _accept_update_vmid(
     )
     if problem:
         return problem
+    pin_problem = _enrollment_pin_problem(enrollment_pin, vmid)
+    if pin_problem:
+        return pin_problem
     names[vmid] = label
     chosen.append(vmid)
     return None
@@ -997,6 +1026,7 @@ def _ask_image_vmids(
     *,
     distro: str = "",
     enrolled_vmids=None,
+    enrollment_pin=None,
 ):
     """One enrolled template VMID per release.
 
@@ -1004,6 +1034,8 @@ def _ask_image_vmids(
     A unique match for the distro/release is used without a free-form prompt.
     Several matches are listed and one of those VMIDs must be typed. No match
     aborts: a template this tool did not create cannot be updated here.
+    enrollment_pin(vmid) returns a refusal when the live storage or disk
+    fingerprint no longer matches the enrollment; a pin mismatch aborts.
     Returns (vmids, template VMID set, kept storage, kept format).
     The template set stays empty. A new template is the other build choice.
     """
@@ -1040,6 +1072,7 @@ def _ask_image_vmids(
                 guest_role=guest_role,
                 disk_storage=disk_storage,
                 disk_format_of=disk_format_of,
+                enrollment_pin=enrollment_pin,
             )
             if problem is None:
                 _say(
@@ -1049,6 +1082,14 @@ def _ask_image_vmids(
                     "note",
                 )
                 continue
+            if _pin_refusal(problem):
+                _say(
+                    read_line,
+                    write,
+                    f"Enrolled VMID {vmid} for {label} cannot be updated: {problem}",
+                    "danger",
+                )
+                raise PromptAbort("enrollment pin")
             # Transient read failures can clear on a retry; stay on this enrolled VMID.
             _say(
                 read_line,
@@ -1082,6 +1123,7 @@ def _ask_image_vmids(
                 guest_role=guest_role,
                 disk_storage=disk_storage,
                 disk_format_of=disk_format_of,
+                enrollment_pin=enrollment_pin,
             )
             if problem:
                 reason = problem
@@ -1781,6 +1823,7 @@ def interview(
     enrolled_vmids=None,
     enrollment_digest=None,
     published_digest=None,
+    enrollment_pin=None,
 ) -> Job:
     """Walk the operator through one job.
 
@@ -1788,9 +1831,11 @@ def interview(
     Empty answers accept the default shown in that question, when it has one.
     A bad answer asks the same question again. YES starts the run. X exits.
     enrolled_vmids(distro, release) -> list[int] supplies enrolled VMIDs on
-    the update path; only those VMIDs can be updated. enrollment_digest(vmid)
-    and published_digest(distro, release) compare checksums so an unchanged
-    upstream image asks before rebuilding (default no).
+    the update path; only those VMIDs can be updated. enrollment_pin(vmid)
+    refuses when the live storage or disk fingerprint no longer matches the
+    enrollment. enrollment_digest(vmid) and published_digest(distro, release)
+    compare checksums so an unchanged upstream image asks before rebuilding
+    (default no).
     """
     write = _Output(write, paint=ui.enabled(read_line))
     build = _ask_build(read_line, write)
@@ -1846,6 +1891,7 @@ def interview(
             kinds,
             distro=distro,
             enrolled_vmids=enrolled_vmids,
+            enrollment_pin=enrollment_pin,
         )
         labels = dict(named)
         filtered = _filter_unchanged_updates(

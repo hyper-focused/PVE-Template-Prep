@@ -59,8 +59,9 @@ class Enrollment:
 
     digest is the upstream published checksum. disk_digest is a SHA-256 of the
     boot-disk file this tool left on storage. storage is the file-storage id
-    that held that disk. An unattended run refuses the guest when either the
-    live storage or the live disk fingerprint no longer matches.
+    that held that disk. Interactive Update and an unattended run both refuse
+    the guest when either the live storage or the live disk fingerprint no
+    longer matches (see pin_mismatch_reason).
     """
 
     vmid: int
@@ -411,6 +412,33 @@ def enrollments_matching(
 def load_enrollment_path(path: Path, vmid: int) -> Enrollment:
     """Read one enrollment file. path must be the {vmid}.json for that VMID."""
     return _read_record(Path(path), _check_vmid(vmid))
+
+
+def pin_mismatch_reason(
+    record: Enrollment,
+    live_storage: str,
+    live_disk_digest: str,
+) -> str | None:
+    """Why the live boot disk no longer matches enrollment. None when it matches.
+
+    Interactive Update and unattended refresh both use this before a swap so a
+    moved disk or a disk someone else replaced is not overwritten.
+    """
+    if not isinstance(record, Enrollment):
+        raise EnrollmentError("enrollment record is required")
+    storage = (live_storage or "").strip()
+    if storage != record.storage:
+        return (
+            f"VM {record.vmid} is on storage {storage or '(none)'}, "
+            f"but it was enrolled on storage {record.storage}"
+        )
+    digest = (live_disk_digest or "").strip()
+    if digest != record.disk_digest:
+        return (
+            f"VM {record.vmid} boot disk no longer matches the image "
+            f"recorded at enrollment"
+        )
+    return None
 
 
 def replace_digest(
