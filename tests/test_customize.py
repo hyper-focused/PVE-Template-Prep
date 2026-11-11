@@ -8,7 +8,15 @@ import unittest
 from contextlib import contextmanager, redirect_stdout
 from unittest import mock
 
-from pve_prep.customize import CustomizeError, _PrepMeter, _format_bar, _phase_of, apply, argv
+from pve_prep.customize import (
+    CustomizeError,
+    _PrepMeter,
+    _format_bar,
+    _phase_of,
+    _run_with_bar,
+    apply,
+    argv,
+)
 
 
 def _commands(args: list[str]) -> list[str]:
@@ -32,16 +40,38 @@ class ArgvTests(unittest.TestCase):
     def test_deb_shape_and_family_commands(self) -> None:
         args = argv("disk.img", "deb")
         self.assertEqual(args[:3], ["virt-customize", "-a", "disk.img"])
-        self.assertEqual(args[3], "--install")
-        install = args[4]
+        self.assertEqual(
+            args[3:11],
+            [
+                "--write",
+                '/etc/apt/apt.conf.d/99-pve-prep-ipv4:Acquire::ForceIPv4 "true";',
+                "--write",
+                '/etc/apt/apt.conf.d/99-pve-prep-retries:Acquire::Retries "3";',
+                "--write",
+                '/etc/apt/apt.conf.d/99-pve-prep-http-timeout:Acquire::http::Timeout "30";',
+                "--write",
+                '/etc/apt/apt.conf.d/99-pve-prep-https-timeout:Acquire::https::Timeout "30";',
+            ],
+        )
+        self.assertEqual(args[11], "--install")
+        install = args[12]
         self.assertIn("cloud-guest-utils", install)
         self.assertNotIn("cloud-utils-growpart", install)
+        self.assertLess(args.index("--write"), args.index("--install"))
+        self.assertEqual(args.count("--write"), 4)
         text = "\n".join(_commands(args))
         self.assertIn("99-serial.cfg", text)
         self.assertIn("apparmor", text)
         self.assertIn("snapd", text)
         self.assertNotIn("SELINUX", text)
         self.assertNotIn("firewalld", text)
+
+    def test_el_skips_apt_force_ipv4_writes(self) -> None:
+        args = argv("disk.img", "el")
+        self.assertEqual(args[:3], ["virt-customize", "-a", "disk.img"])
+        self.assertEqual(args[3], "--install")
+        self.assertNotIn("--write", args)
+        self.assertNotIn("ForceIPv4", " ".join(args))
 
     def test_format_is_passed_before_the_disk(self) -> None:
         args = argv("disk.raw", "deb", disk_format="raw")
@@ -241,6 +271,48 @@ class ApplyTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()) as out:
                 apply("disk.img", "deb", quiet=True)
         self.assertEqual(out.getvalue(), "")
+
+    def test_install_stall_terminates_and_returns_log(self) -> None:
+        class FakeProc:
+            def __init__(self) -> None:
+                self.stdout = io.StringIO(
+                    "[   0.0] Examining the guest ...\n"
+                    "[   1.0] Installing packages: qemu-guest-agent\n"
+                )
+                self.returncode: int | None = None
+                self._alive = True
+
+            def poll(self) -> int | None:
+                return None if self._alive else self.returncode
+
+            def terminate(self) -> None:
+                self._alive = False
+                self.returncode = -15
+
+            def kill(self) -> None:
+                self._alive = False
+                self.returncode = -9
+
+            def wait(self, timeout: float | None = None) -> int:
+                self._alive = False
+                if self.returncode is None:
+                    self.returncode = -15
+                return self.returncode
+
+        fake = FakeProc()
+        with mock.patch("pve_prep.customize.subprocess.Popen", return_value=fake):
+            with redirect_stdout(io.StringIO()):
+                code, log = _run_with_bar(
+                    ["virt-customize", "-a", "disk.img"],
+                    {},
+                    1,
+                    show=False,
+                    install_stall_secs=0.3,
+                )
+        self.assertEqual(code, -15)
+        self.assertIn("Installing packages", log)
+        self.assertIn("no virt-customize output", log)
+        self.assertIn("stopping hung apt", log)
 
 
 if __name__ == "__main__":

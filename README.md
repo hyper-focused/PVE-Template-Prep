@@ -21,7 +21,7 @@ It asks you a handful of questions, then does the clicking for you. It downloads
 ## What you need
 
 - A working **Proxmox VE 9** node (x86_64) and root access to it. If your node can already run a VM and reach the internet, you're 95% there.
-- **`guestfs-tools`** and **`libguestfs-xfs`** (XFS support, for RHEL-family guests). These are the only things a stock PVE install doesn't ship. The install steps below take care of them.
+- **`guestfs-tools`**, **`libguestfs-xfs`** (XFS support, for RHEL-family guests), and **`dhcpcd-base`** (so `virt-customize --install` can get DHCP/DNS inside the appliance on PVE 9). These are the only things a stock PVE install doesn't ship. The install steps below take care of them.
 - Working **apt** sources. Without a subscription, that means the no-subscription repo, not the enterprise one that answers `401`.
 - Outbound **HTTPS** to GitHub and the distro mirrors.
 - **File-based storage** (directory, NFS, CIFS, btrfs, CephFS, or GlusterFS) for anything the tool writes. ZFS, LVM, RBD, and iSCSI are not supported as a destination, but there is an easy way around it (see [When things go sideways](#when-things-go-sideways)).
@@ -34,13 +34,13 @@ Already on the node: Python 3, `qm`, `pvesm`, and `qemu-img`. Nothing to pip, no
 Become root (`sudo -i` works), then:
 
 ```sh
-apt update && apt -y install --no-install-recommends guestfs-tools libguestfs-xfs
+apt update && apt -y install --no-install-recommends guestfs-tools libguestfs-xfs dhcpcd-base
 curl -fsSLO https://raw.githubusercontent.com/hyper-focused/PVE-Template-Prep/main/install.sh
 bash install.sh
 pve-template-prep
 ```
 
-**What to expect:** the installer takes a few seconds. It downloads the tool from GitHub into `/opt/pve-template-prep`, makes sure the files are root-owned and locked down, and links the command at `/usr/local/sbin/pve-template-prep`. It installs both packages itself if you skipped that line. It touches nothing else on the host. Run it again later and it upgrades in place.
+**What to expect:** the installer takes a few seconds. It downloads the tool from GitHub into `/opt/pve-template-prep`, makes sure the files are root-owned and locked down, and links the command at `/usr/local/sbin/pve-template-prep`. It installs those packages itself if you skipped that line. It touches nothing else on the host. Run it again later and it upgrades in place.
 
 Want a look first? `pve-template-prep --dry-run` asks the same questions and prints what it *would* do. No root, no downloads, no changes.
 
@@ -78,7 +78,9 @@ Then it downloads, verifies, converts, preps, and imports each release. At the e
 
 | What you see | What's going on | What to do |
 | --- | --- | --- |
-| `missing virt-customize`, `missing libguestfs-xfs`, or `could not check libguestfs-xfs` | `guestfs-tools` or its XFS support isn't installed, or `dpkg-query` could not say | `apt update && apt -y install --no-install-recommends guestfs-tools libguestfs-xfs` |
+| `missing virt-customize`, `missing libguestfs-xfs`, `missing dhcpcd-base`, or `could not check … with dpkg-query` | `guestfs-tools`, XFS support, or `dhcpcd-base` isn't installed, or `dpkg-query` could not say | `apt update && apt -y install --no-install-recommends guestfs-tools libguestfs-xfs dhcpcd-base` |
+| Progress stuck at `Installing packages` (all distros) | On PVE 9 the libguestfs appliance needs `dhcpcd-base` for DHCP/DNS. Installing the package alone is not enough if an old appliance is still cached under `/var/tmp/.guestfs-*` | `apt install -y dhcpcd-base && rm -rf /var/tmp/.guestfs-*`, then run again |
+| Debian finishes guest prep, Ubuntu hangs on `Installing packages` | Ubuntu mirrors publish AAAA records that black-hole in the appliance; apt waits on IPv6 forever while Debian's mirrors still work | 1.4.1 writes `Acquire::ForceIPv4` before `--install`. Update to that build, or verify with: `LIBGUESTFS_BACKEND=direct virt-customize -v -a /var/tmp/pve-template-prep/cache/ubuntu-22.04-server-cloudimg-amd64.img --write '/etc/apt/apt.conf.d/99force-ipv4:Acquire::ForceIPv4 "true";' --install qemu-guest-agent` |
 | `unsafe cache dir ... owned by uid N` | Someone other than root created `/var/tmp/pve-template-prep`, so they could swap your image mid-download | Check who and why, then `rm -rf /var/tmp/pve-template-prep` and run again |
 | `its disk update did not finish` | An earlier update couldn't put the template flag back. The VM carries the tag `pve-prep-swap-<vmid>` to say so, and the tool won't touch it while it's a normal VM | Run `qm template <vmid>`, then run the update again |
 | `Old disk cleanup failed` | The new image is already the boot disk and the guest is a template again. Deleting the previous unused volume failed | Delete that unused disk in the GUI, or `qm set <vmid> --delete unusedN`. The message names the key |

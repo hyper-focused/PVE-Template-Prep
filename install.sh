@@ -330,10 +330,15 @@ if list((vendor / "wcwidth").glob("_wcwidth_c.*")):
 PY
 
 # qemu-img ships with pve-qemu-kvm. Do not ask apt for qemu-utils on PVE.
-# Checked per package, not by virt-customize alone: libguestfs-xfs is only a
-# Recommends of libguestfs0, so a host with virt-customize can still lack it,
-# and EL-family XFS guests then fail to mount.
-GUESTFS_PACKAGES=(guestfs-tools libguestfs-xfs)
+# Checked per package, not by virt-customize alone:
+# - libguestfs-xfs is only a Recommends of libguestfs0, so a host with
+#   virt-customize can still lack it, and EL-family XFS guests then fail to mount.
+# - dhcpcd-base is not a Depends of guestfs-tools/libguestfs on Debian trixie /
+#   PVE 9 yet (upstream fixed in 1:1.54.1-2+deb13u1, still in proposed-updates).
+#   Without it the appliance has no DHCP client, --install hangs on DNS/apt,
+#   and the progress bar freezes at "Installing packages". Prefer dhcpcd-base
+#   over dhcpcd so the host does not get a DHCP client service.
+GUESTFS_PACKAGES=(guestfs-tools libguestfs-xfs dhcpcd-base)
 
 package_installed() {
   dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q '^install ok installed$'
@@ -354,6 +359,15 @@ if (( ${#missing_packages[@]} > 0 )); then
   apt-get update
   # Skip Recommends: they pull in libguestfs-tools, guestfish, guestmount, virt-p2v.
   apt-get install -y --no-install-recommends "${missing_packages[@]}"
+fi
+
+# libguestfs caches a built appliance under /var/tmp/.guestfs-<uid>. An
+# appliance built before dhcpcd-base was installed still has no DHCP client,
+# so --install keeps hanging until that cache is dropped. Clear on every
+# install when dhcpcd-base is present, including when apt already had it.
+if command -v dpkg-query >/dev/null 2>&1 && package_installed dhcpcd-base; then
+  echo "Clearing libguestfs appliance cache so dhcpcd is picked up"
+  rm -rf /var/tmp/.guestfs-*
 fi
 
 install -d -o root -g root -m 0755 "$(dirname "$BIN_LINK")"

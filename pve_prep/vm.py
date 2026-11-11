@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import stat
 from collections.abc import Callable
@@ -1219,7 +1220,115 @@ def _discard_import(run: Run, *, vmid: int, volid: str) -> str:
     return ""
 
 
-def _replace_template_disk(
+def _unlink_quiet(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
+def _stage_image_beside(
+    run: Run,
+    *,
+    image_path: str,
+    live_path: Path,
+    volume_format: str,
+) -> Path:
+    """Write the new image next to the live volume as a temp file."""
+    staged = live_path.with_name(f"{live_path.name}.pve-prep-new.{os.getpid()}")
+    _unlink_quiet(staged)
+    converted = run(qemu_img_convert_argv(image_path, str(staged), volume_format))
+    if getattr(converted, "returncode", 1) != 0:
+        _unlink_quiet(staged)
+        raise VmError(f"image convert failed: {_detail(converted)}")
+    try:
+        info = staged.lstat()
+    except OSError as exc:
+        _unlink_quiet(staged)
+        raise VmError(f"{staged}: staged image missing after convert") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
+        _unlink_quiet(staged)
+        raise VmError(f"{staged}: staged image is missing or empty")
+    return staged
+
+
+def _file_swap_boot_disk(
+    run: Run,
+    *,
+    vmid: int,
+    volid: str,
+    live_path: Path,
+    image_path: str,
+    disk_policy: str,
+    config_text: str,
+    backup_dir: str,
+    volume_format: str,
+    copies_done: bool = False,
+) -> InsertResult:
+    """Replace the boot-disk file in place. Config and template flag stay put.
+
+    Stages the new image beside the live file, backs up when asked, renames
+    the live file aside, renames the staged file onto the live name, then
+    deletes the aside copy. A failure before the final rename puts the old
+    file back when it was moved. No qm importdisk and no template-flag churn.
+    """
+    saved = ""
+    staged = _stage_image_beside(
+        run,
+        image_path=image_path,
+        live_path=live_path,
+        volume_format=volume_format,
+    )
+    aside = live_path.with_name(f"{live_path.name}.pve-prep-old.{os.getpid()}")
+    try:
+        if disk_policy == "backup" and (copies_done or list_os_disks(config_text)):
+            if not backup_dir:
+                raise VmError(f"VM {vmid} disk backup needs a backup directory")
+            if not copies_done:
+                _backup_os_disks(
+                    run,
+                    vmid=vmid,
+                    config_text=config_text,
+                    backup_dir=backup_dir,
+                )
+            saved = backup_dir
+        _unlink_quiet(aside)
+        try:
+            os.replace(live_path, aside)
+        except OSError as exc:
+            raise VmError(f"VM {vmid} could not move aside {live_path}: {exc}") from exc
+        try:
+            os.replace(staged, live_path)
+        except OSError as exc:
+            try:
+                os.replace(aside, live_path)
+            except OSError as restore:
+                raise VmError(
+                    f"VM {vmid} could not install the new disk at {live_path}: {exc}; "
+                    f"and the previous disk could not be restored: {restore}"
+                ) from exc
+            raise VmError(f"VM {vmid} could not install the new disk at {live_path}: {exc}") from exc
+    except VmError:
+        _unlink_quiet(staged)
+        raise
+    cleanup_error = ""
+    try:
+        aside.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        cleanup_error = f"previous disk left at {aside}: {exc}"
+    return InsertResult(
+        volid,
+        kept_template=True,
+        backup_dir=saved,
+        cleanup_error=cleanup_error,
+    )
+
+
+def _import_swap_boot_disk(
     run: Run,
     *,
     vmid: int,
@@ -1231,22 +1340,11 @@ def _replace_template_disk(
     volume_format: str,
     copies_done: bool = False,
 ) -> InsertResult:
-    """Swap the boot disk and leave the guest a template.
+    """Import a new volume, attach it, then delete the old unused boot disk.
 
-    The template flag is cleared only for the disk edit, then qm template
-    puts it back and turns the new disk into a base volume. Name, network,
-    firewall, and the other options are not rewritten.
-
-    The same qm set that clears the flag adds the swap marker tag, so the
-    guest is never a plain VM without it. If the flag cannot be put back,
-    the marker stays to say why, and the guest is refused until someone
-    runs qm template. The guest's own tags are restored once it is a
-    template again, which also clears a marker an earlier run left.
-
-    Deleting the previous volume happens after the new disk is attached.
-    A failure there is cleanup: the template is updated, and the error is
-    returned on InsertResult. A failure before the attach still rolls the
-    flag back.
+    Used when the replacement targets a different storage than the live boot
+    disk, so the config volid must change. Same-storage updates use the file
+    swap path instead.
     """
     saved = ""
     if disk_policy == "backup" and (copies_done or list_os_disks(config_text)):
@@ -1313,6 +1411,72 @@ def _replace_template_disk(
     )
 
 
+def _replace_template_disk(
+    run: Run,
+    *,
+    vmid: int,
+    storage: str,
+    image_path: str,
+    disk_policy: str,
+    config_text: str,
+    backup_dir: str,
+    volume_format: str,
+    copies_done: bool = False,
+) -> InsertResult:
+    """Swap the boot disk and leave the guest a template.
+
+    Same-storage file volumes are replaced in place: stage beside the live
+    file, rename into place, delete the previous file. The VM config volid
+    and template flag are unchanged. A replacement onto another storage
+    still uses qm importdisk, attach, and qm template.
+    """
+    try:
+        live_storage, volid, host_path = boot_disk_location(run, config_text)
+    except VmError:
+        live_storage, volid, host_path = "", "", ""
+    live = Path(host_path) if host_path else None
+    if (
+        live is not None
+        and storage == live_storage
+        and live.is_file()
+        and not live.is_symlink()
+    ):
+        # Prefer the live filename suffix: Proxmox volids often omit it and
+        # volume_format_of then reports raw for a .qcow2 file on disk.
+        lower = live.name.casefold()
+        if lower.endswith(".qcow2"):
+            fmt = "qcow2"
+        elif lower.endswith(".raw"):
+            fmt = "raw"
+        else:
+            fmt = os_disk_format(config_text)
+            if fmt not in {"raw", "qcow2"}:
+                fmt = volume_format if volume_format in {"raw", "qcow2"} else "qcow2"
+        return _file_swap_boot_disk(
+            run,
+            vmid=vmid,
+            volid=volid,
+            live_path=live,
+            image_path=image_path,
+            disk_policy=disk_policy,
+            config_text=config_text,
+            backup_dir=backup_dir,
+            volume_format=fmt,
+            copies_done=copies_done,
+        )
+    return _import_swap_boot_disk(
+        run,
+        vmid=vmid,
+        storage=storage,
+        image_path=image_path,
+        disk_policy=disk_policy,
+        config_text=config_text,
+        backup_dir=backup_dir,
+        volume_format=volume_format,
+        copies_done=copies_done,
+    )
+
+
 def insert_disk(
     *,
     vmid: int,
@@ -1336,22 +1500,19 @@ def insert_disk(
         raise VmError(f"unknown disk policy {disk_policy}")
     guessed = f"{storage}:vm-{vmid}-disk-0"
     if dry_run:
-        print(" ".join(importdisk_command(vmid, image_path, storage, volume_format)))
-        if disk_policy == "backup":
-            print(
-                f"# old disk copied into the backup directory; "
-                f"qm set {vmid} --<boot-disk> {guessed},discard=on,ssd=1"
-            )
-        else:
-            print(
-                f"# qm set {vmid} --<boot-disk> {guessed},discard=on,ssd=1  "
-                "# previous disk is deleted"
-            )
         print(
-            f"# a template keeps its config: qm set {vmid} --template 0 "
-            f"--tags <its tags>;{swap_marker(vmid)}, replace the boot disk, "
-            "qm template, then put its tags back. "
-            "Linked clones on any cluster node leave the template unchanged."
+            f"# same-storage file volumes: stage the new image beside the live "
+            f"boot disk, rename into place, delete the previous file "
+            f"(format {volume_format})"
+        )
+        print(
+            f"# other-storage replacements still use: "
+            + " ".join(importdisk_command(vmid, image_path, storage, volume_format))
+        )
+        if disk_policy == "backup":
+            print("# old disk copied into the backup directory before the rename")
+        print(
+            "# linked clones on any cluster node leave the template unchanged."
         )
         return InsertResult(guessed)
 

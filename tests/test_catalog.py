@@ -35,7 +35,7 @@ class CatalogTests(unittest.TestCase):
         self.assertNotIn("rocky", DISTROS)
         for distro in DISTROS:
             specs = releases_for(distro)
-            expected = 2 if distro in {"debian", "fedora"} else 3
+            expected = 2 if distro == "debian" else 3
             self.assertEqual(len(specs), expected)
             self.assertEqual(len({spec.release for spec in specs}), expected)
             for spec in specs:
@@ -93,13 +93,15 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(spec.label, f"CloudLinux {spec.release}")
 
         fedora = {spec.release: spec for spec in releases_for("fedora")}
-        self.assertEqual(set(fedora), {"43", "44"})
+        self.assertEqual(set(fedora), {"43", "44", "45"})
         self.assertFalse(fedora["43"].eol)
         self.assertEqual(fedora["43"].label, "Fedora 43")
         self.assertFalse(fedora["44"].eol)
+        self.assertFalse(fedora["45"].eol)
         self.assertEqual(fedora["44"].filename, "")
         self.assertEqual(fedora["44"].checksum_url, "")
         self.assertTrue(fedora["44"].url.endswith("/"))
+        self.assertIn("/releases/45/Cloud/x86_64/images/", fedora["45"].url)
         self.assertIsNone(fedora["44"].alt_url)
 
     def test_normalize_aliases(self) -> None:

@@ -54,7 +54,10 @@ from pve_prep.vm import (
     import_directories,
 )
 
-_APT_HINT = "apt-get install --no-install-recommends guestfs-tools libguestfs-xfs"
+_APT_HINT = (
+    "apt-get install --no-install-recommends "
+    "guestfs-tools libguestfs-xfs dhcpcd-base"
+)
 
 
 def default_run(argv: list[str]) -> SimpleNamespace:
@@ -251,10 +254,13 @@ def disk_format(vmid: int) -> str | None:
     return os_disk_format(proc.stdout or "")
 
 
-# Packages that ship no command to look for. libguestfs-xfs is only a Recommends
-# of libguestfs0, so virt-customize can be present without it; XFS guests (the
-# EL family) then fail to mount after the whole download.
-_PREP_PACKAGES = ("libguestfs-xfs",)
+# Packages that ship no command to look for.
+# libguestfs-xfs is only a Recommends of libguestfs0, so virt-customize can be
+# present without it; XFS guests (the EL family) then fail to mount after the
+# whole download.
+# dhcpcd-base is not yet a Depends of guestfs-tools on Debian trixie / PVE 9;
+# without it the appliance has no DHCP client and --install hangs on apt/DNS.
+_PREP_PACKAGES = ("libguestfs-xfs", "dhcpcd-base")
 
 
 def package_installed(name: str) -> bool | None:

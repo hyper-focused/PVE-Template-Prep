@@ -24,6 +24,21 @@ _EL_PACKAGES = (
     "ca-certificates,curl,sudo,chrony"
 )
 
+# Written before --install on deb guests. Ubuntu archive AAAA records often
+# black-hole in the appliance while Debian mirrors still work; ForceIPv4 stops
+# apt from hanging on IPv6. Timeouts turn a stuck mirror into a failure instead
+# of an infinite progress bar. Each --write is one line so dry-run stays one line.
+_APT_WRITES = (
+    '/etc/apt/apt.conf.d/99-pve-prep-ipv4:Acquire::ForceIPv4 "true";',
+    '/etc/apt/apt.conf.d/99-pve-prep-retries:Acquire::Retries "3";',
+    '/etc/apt/apt.conf.d/99-pve-prep-http-timeout:Acquire::http::Timeout "30";',
+    '/etc/apt/apt.conf.d/99-pve-prep-https-timeout:Acquire::https::Timeout "30";',
+)
+
+# No virt-customize output for this long after "Installing packages" → kill it
+# and surface the captured log. Package installs normally print apt lines.
+_INSTALL_STALL_SECS = 420.0
+
 # Guest shell text, not the host script's extra quote-escaping.
 _DEB_COMMANDS = (
     "timedatectl set-timezone UTC || ln -sfn /usr/share/zoneinfo/UTC /etc/localtime",
@@ -232,11 +247,16 @@ def _run_with_bar(
     commands: int,
     *,
     show: bool = True,
+    install_stall_secs: float = _INSTALL_STALL_SECS,
 ) -> tuple[int, str]:
     """Run virt-customize. Captured log is returned, not printed.
 
     show draws one updating line. A quiet caller leaves show false and
     keeps the log for a failure file.
+
+    After the Installing packages line, silence longer than install_stall_secs
+    kills virt-customize so a hung apt does not need Ctrl-C. The captured log
+    is returned with a nonzero code for the caller to print.
     """
     proc = subprocess.Popen(
         command,
@@ -251,8 +271,12 @@ def _run_with_bar(
     meter.begin(time.monotonic())
     lock = threading.Lock()
     done = threading.Event()
+    last_output_at = time.monotonic()
+    install_started_at: float | None = None
+    stalled = False
 
     def _read() -> None:
+        nonlocal last_output_at, install_started_at
         try:
             stream = proc.stdout
             if stream is None:
@@ -260,8 +284,12 @@ def _run_with_bar(
             for line in stream:
                 captured.append(line)
                 kind = _phase_of(line)
+                now = time.monotonic()
                 with lock:
-                    meter.note(kind, time.monotonic())
+                    last_output_at = now
+                    if kind == "install" and install_started_at is None:
+                        install_started_at = now
+                    meter.note(kind, now)
         finally:
             done.set()
 
@@ -270,13 +298,36 @@ def _run_with_bar(
     last = ""
     try:
         while True:
+            now = time.monotonic()
             with lock:
-                percent, phase = meter.snapshot(time.monotonic())
+                percent, phase = meter.snapshot(now)
+                quiet_for = now - last_output_at
+                installing = install_started_at is not None and meter.kind == "install"
             rendered = _format_bar(percent, phase)
             if show and rendered != last:
                 sys.stdout.write("\r\033[K" + rendered)
                 sys.stdout.flush()
                 last = rendered
+            if (
+                installing
+                and install_stall_secs > 0
+                and quiet_for >= install_stall_secs
+                and proc.poll() is None
+            ):
+                stalled = True
+                captured.append(
+                    f"pve-template-prep: no virt-customize output for "
+                    f"{int(install_stall_secs)}s during package install; "
+                    f"stopping hung apt\n"
+                )
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                done.wait(timeout=2)
+                break
             if proc.poll() is not None and done.is_set():
                 break
             time.sleep(0.15)
@@ -287,6 +338,8 @@ def _run_with_bar(
     code = proc.returncode
     if code is None:
         code = proc.wait()
+    if stalled and code == 0:
+        code = 124
     if show:
         if code == 0:
             sys.stdout.write("\r\033[K" + _format_bar(100.0, "Finishing") + "\n")
@@ -310,6 +363,7 @@ def argv(
     password_auth and permit_root each add a line to /etc/ssh/sshd_config.d/00-enableroot.conf.
     Neither writes no file.
     disk_format raw or qcow2 is passed as --format, so libguestfs does not probe the file.
+    deb guests get apt ForceIPv4 and acquire timeouts written before --install.
     """
     packages, commands = _plan(family)
     ssh = _ssh_command(password_auth=password_auth, permit_root=permit_root)
@@ -320,7 +374,11 @@ def argv(
         if disk_format not in {"raw", "qcow2"}:
             raise ValueError(f"unknown disk format: {disk_format!r}")
         command.extend(("--format", disk_format))
-    command.extend(("-a", image, "--install", packages))
+    command.extend(("-a", image))
+    if family == "deb":
+        for snippet in _APT_WRITES:
+            command.extend(("--write", snippet))
+    command.extend(("--install", packages))
     for guest_cmd in commands:
         command.extend(("--run-command", guest_cmd))
     return command
