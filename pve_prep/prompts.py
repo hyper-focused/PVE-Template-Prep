@@ -998,12 +998,12 @@ def _ask_image_vmids(
     distro: str = "",
     enrolled_vmids=None,
 ):
-    """One existing template VMID per release.
+    """One enrolled template VMID per release.
 
-    When enrolled_vmids(distro, release) returns exactly one VMID, that record
-    is used without a free-form prompt. Several matches are listed and one must
-    be typed. None means type any in-use template VMID.
-    A free VMID is refused. Enter does not publish a file.
+    Update only touches guests with `/var/lib/pve-template-prep/<vmid>.json`.
+    A unique match for the distro/release is used without a free-form prompt.
+    Several matches are listed and one of those VMIDs must be typed. No match
+    aborts: a template this tool did not create cannot be updated here.
     Returns (vmids, template VMID set, kept storage, kept format).
     The template set stays empty. A new template is the other build choice.
     """
@@ -1015,6 +1015,15 @@ def _ask_image_vmids(
     _section(read_line, write, "Template VMID(s)")
     for release, label in named:
         enrolled = _enrolled_for_release(enrolled_vmids, distro, release)
+        if not enrolled:
+            _say(
+                read_line,
+                write,
+                f"No enrollment for {label}. Only templates this tool created "
+                f"(or enrolled) can be updated.",
+                "danger",
+            )
+            raise PromptAbort("not enrolled")
         if len(enrolled) == 1:
             vmid = enrolled[0]
             problem = _accept_update_vmid(
@@ -1040,27 +1049,23 @@ def _ask_image_vmids(
                     "note",
                 )
                 continue
+            # Transient read failures can clear on a retry; stay on this enrolled VMID.
             _say(
                 read_line,
                 write,
-                f"Enrolled VMID {vmid} for {label} cannot be used: {problem}",
+                f"Enrolled VMID {vmid} for {label} cannot be used yet: {problem}",
                 "warning",
             )
-        if len(enrolled) > 1:
-            listed = ", ".join(str(vmid) for vmid in enrolled)
-            base = f"{label} VM Template ID: "
-            reason = f"Enrolled VMIDs for {label}: {listed}. Type one."
-        else:
-            base = f"{label} VM Template ID: "
-            reason = ""
+        listed = ", ".join(str(vmid) for vmid in enrolled)
+        base = f"{label} VM Template ID: "
+        reason = f"Enrolled VMIDs for {label}: {listed}. Type one."
         while True:
             vmid = _read_one_vmid(read_line, write, base, reason=reason)
             reason = ""
             if vmid is None:
                 reason = "A VMID is required."
                 continue
-            if len(enrolled) > 1 and vmid not in enrolled:
-                listed = ", ".join(str(item) for item in enrolled)
+            if vmid not in enrolled:
                 reason = f"VMID {vmid} is not enrolled for {label}. Type one of: {listed}."
                 continue
             problem = _accept_update_vmid(
@@ -1083,6 +1088,70 @@ def _ask_image_vmids(
                 continue
             break
     return tuple(chosen), frozenset(), tuple(placed), tuple(formats)
+
+
+def _filter_unchanged_updates(
+    read_line,
+    write,
+    *,
+    distro: str,
+    paired: list[tuple[str, int]],
+    labels: dict[str, str],
+    enrollment_digest=None,
+    published_digest=None,
+) -> list[tuple[str, int]]:
+    """Drop releases whose published checksum still matches enrollment.
+
+    When both digests are available and equal, the operator is told there is
+    no newer source image and asked whether to rebuild anyway (default no).
+    A missing digest lookup skips the question for that release.
+    """
+    kept: list[tuple[str, int]] = []
+    for release, vmid in paired:
+        label = labels.get(release, release)
+        stored = None
+        current = None
+        if enrollment_digest is not None:
+            try:
+                stored = enrollment_digest(vmid)
+            except Exception:
+                stored = None
+        if published_digest is not None:
+            try:
+                current = published_digest(distro, release)
+            except Exception:
+                current = None
+        if (
+            isinstance(stored, str)
+            and stored
+            and isinstance(current, str)
+            and current
+            and stored.casefold() == current.casefold()
+        ):
+            _say(
+                read_line,
+                write,
+                f"No newer source image for {label} (VMID {vmid}). "
+                f"The published checksum matches the enrollment.",
+                "warning",
+            )
+            if not _ask_bool(
+                read_line,
+                write,
+                "Rebuild this template anyway?",
+                False,
+            ):
+                _selected(
+                    read_line,
+                    write,
+                    f"Skipping {label} (VMID {vmid}).",
+                    "note",
+                )
+                continue
+        kept.append((release, vmid))
+    if not kept:
+        raise PromptAbort("no updates selected")
+    return kept
 
 
 def _yn_prompt(body: str, default: bool) -> str:
@@ -1695,6 +1764,8 @@ def interview(
     disk_format_of=None,
     import_storages=None,
     enrolled_vmids=None,
+    enrollment_digest=None,
+    published_digest=None,
 ) -> Job:
     """Walk the operator through one job.
 
@@ -1702,7 +1773,9 @@ def interview(
     Empty answers accept the default shown in that question, when it has one.
     A bad answer asks the same question again. YES starts the run. X exits.
     enrolled_vmids(distro, release) -> list[int] supplies enrolled VMIDs on
-    the update path so a unique match skips the free-form prompt.
+    the update path; only those VMIDs can be updated. enrollment_digest(vmid)
+    and published_digest(distro, release) compare checksums so an unchanged
+    upstream image asks before rebuilding (default no).
     """
     write = _Output(write, paint=ui.enabled(read_line))
     build = _ask_build(read_line, write)
@@ -1759,6 +1832,22 @@ def interview(
             distro=distro,
             enrolled_vmids=enrolled_vmids,
         )
+        labels = dict(named)
+        filtered = _filter_unchanged_updates(
+            read_line,
+            write,
+            distro=distro,
+            paired=list(zip(releases, vmids)),
+            labels=labels,
+            enrollment_digest=enrollment_digest,
+            published_digest=published_digest,
+        )
+        releases = tuple(release for release, _vmid in filtered)
+        vmids = tuple(vmid for _release, vmid in filtered)
+        named = tuple((release, labels[release]) for release, _vmid in filtered)
+        count = len(releases)
+        kept = tuple(item for item in kept if item[0] in set(vmids))
+        kept_format = tuple(item for item in kept_format if item[0] in set(vmids))
         destroy_vmids = frozenset()
         dest_dir = ""
         storage, disk_format, kept, kept_format = _image_storage(

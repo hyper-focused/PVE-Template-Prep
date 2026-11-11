@@ -8,7 +8,8 @@ An installed copy offers a new release when the version string on `main` changes
 
 ### Changed
 - **Success green is green.** The `success` palette role was cyan (xterm 37 / ANSI 36), so the confirm-gate `YES` and typed `y`/`yes` looked teal. Dark theme success is now xterm 78 / bright green; light theme is xterm 28 / green. A yes/no field's `(y/n) [Yes]` hint uses that same success color; VMID defaults like `[9001]` stay highlight blue.
-- **Update disk images uses enrollment JSON for VMIDs.** After distro and release are chosen, a unique `/var/lib/pve-template-prep/<vmid>.json` for that pair is taken without a free-form VMID prompt (`Using enrolled VMID …`). Several matches are listed and one of those VMIDs must be typed. No matching enrollment keeps the free-form template VMID field.
+- **Update disk images uses enrollment JSON for VMIDs.** After distro and release are chosen, a unique `/var/lib/pve-template-prep/<vmid>.json` for that pair is taken without a free-form VMID prompt (`Using enrolled VMID …`). Several matches are listed and one of those VMIDs must be typed. No matching enrollment aborts: update only refreshes templates this tool created or enrolled.
+- **Update asks before rebuilding an unchanged source image.** When the published upstream checksum still matches the enrollment digest, the session warns and asks `Rebuild this template anyway?` with default No. Create a new VM template never asks: typing an existing template VMID on that path is an intentional overwrite and skips the checksum gate.
 
 ## 1.4.1 - 2026-11-09
 

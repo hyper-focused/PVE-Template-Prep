@@ -25,7 +25,7 @@ from pve_prep.catalog import normalize_release, releases_for
 from pve_prep.customize import apply as customize_apply
 from pve_prep.customize import argv as customize_argv
 from pve_prep.download import DownloadError, clear_cache, convert, fetch_verified, file_digest, publish
-from pve_prep.enroll import ENROLL_DIR, enrollments_matching
+from pve_prep.enroll import ENROLL_DIR, enrollments_matching, load_enrollment
 from pve_prep.job import DEFAULT_CACHE, Job, action_for, converts_to_template
 from pve_prep.offer import apply_prior_enrollment, offer_created, plan_prior_enrollments
 from pve_prep.prompts import PromptAbort, ask_cache_cleanup, interview
@@ -260,6 +260,26 @@ def enrolled_vmids_for(distro: str, release: str) -> list[int]:
         return [record.vmid for record in enrollments_matching(distro, release)]
     except Exception:
         return []
+
+
+def enrollment_digest_for(vmid: int) -> str | None:
+    """Upstream digest stored at enrollment. None when missing or unreadable."""
+    try:
+        record = load_enrollment(vmid)
+    except Exception:
+        return None
+    if record is None:
+        return None
+    return record.digest
+
+
+def published_digest_for(distro: str, release: str) -> str | None:
+    """Current published upstream digest. None when the lookup fails."""
+    try:
+        digest, _alg = _digest_for(distro, release)
+    except Exception:
+        return None
+    return digest
 
 
 # Packages that ship no command to look for.
@@ -654,6 +674,8 @@ def main(argv: list[str] | None = None) -> int:
                 disk_format_of=disk_format,
                 import_storages=import_storages,
                 enrolled_vmids=enrolled_vmids_for,
+                enrollment_digest=enrollment_digest_for,
+                published_digest=published_digest_for,
             )
     except PromptAbort:
         print("aborted")

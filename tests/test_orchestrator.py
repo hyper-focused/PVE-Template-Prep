@@ -711,6 +711,8 @@ class OrchestratorTest(unittest.TestCase):
             disk_format_of=None,
             import_storages=None,
             enrolled_vmids=None,
+            enrollment_digest=None,
+            published_digest=None,
         ):
             seen["dry_run"] = dry_run
             seen["storages"] = list_storages()
@@ -718,6 +720,8 @@ class OrchestratorTest(unittest.TestCase):
             seen["disk_format_of"] = disk_format_of
             seen["import_storages"] = import_storages
             seen["enrolled_vmids"] = enrolled_vmids
+            seen["enrollment_digest"] = enrollment_digest
+            seen["published_digest"] = published_digest
             return _image_job(releases=("12",), dry_run=True)
 
         MOD.fetch_verified = lambda *args, **kwargs: Path("/tmp/src.qcow2")
@@ -736,6 +740,8 @@ class OrchestratorTest(unittest.TestCase):
         self.assertIs(seen["disk_format_of"], MOD.disk_format)
         self.assertIs(seen["import_storages"], MOD.import_storages)
         self.assertIs(seen["enrolled_vmids"], MOD.enrolled_vmids_for)
+        self.assertIs(seen["enrollment_digest"], MOD.enrollment_digest_for)
+        self.assertIs(seen["published_digest"], MOD.published_digest_for)
         self.assertIn("Debian 12 disk image created at /tmp/images/debian-12-pve.raw", buf.getvalue())
         MOD.clear_cache.assert_not_called()
 

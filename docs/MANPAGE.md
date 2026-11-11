@@ -85,8 +85,8 @@ Section **PVE Template and Disk Image Builder**, question `Highlight desired tem
 
 Section **Template VMID(s)**, one field per release. Standalone images skip this step.
 
-- **Create:** `Debian 13 VM Template ID [9002]:`. Enter takes the bracket, the next free ID from 9001 (see [VMIDS](#vmids-and-replacement)). A typed ID that is in use must be a template; it is replaced. Two releases that both take the default receive consecutive free IDs.
-- **Update:** When exactly one enrollment file under `/var/lib/pve-template-prep/` matches the chosen distro and release, that VMID is used with a note and no free-form prompt. Several matches are listed and one of those VMIDs must be typed. With no match, `Ubuntu 24.04 VM Template ID:` has no default and any existing template ID may be typed.
+- **Create:** `Debian 13 VM Template ID [9002]:`. Enter takes the bracket, the next free ID from 9001 (see [VMIDS](#vmids-and-replacement)). A typed ID that is in use must be a template; it is replaced. Two releases that both take the default receive consecutive free IDs. Replacing an existing template on this path is intentional and does not ask about a matching upstream checksum.
+- **Update:** Only VMIDs with `/var/lib/pve-template-prep/<vmid>.json` for the chosen distro and release. When exactly one enrollment matches, that VMID is used with a note and no free-form prompt. Several matches are listed and one of those VMIDs must be typed. No match ends the session with `No enrollment for …`. After VMIDs are accepted, a published checksum that still matches the enrollment digest warns `No newer source image …` and asks `Rebuild this template anyway? (y/n) [No]:`. Enter skips that release; skipping every release aborts.
 
 A list or range is rejected. A refused ID is asked again and the next prompt states why.
 
