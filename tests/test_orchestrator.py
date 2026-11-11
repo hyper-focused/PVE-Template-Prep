@@ -584,7 +584,7 @@ class OrchestratorTest(unittest.TestCase):
                     MOD.main([flag])
             self.assertEqual(caught.exception.code, 0)
             self.assertEqual(buf.getvalue(), f"pve-template-prep {pve_prep.__version__}\n")
-        self.assertEqual(pve_prep.__version__, "1.4.2")
+        self.assertEqual(pve_prep.__version__, "1.4.1")
         import pve_prep.download as download
 
         self.assertEqual(download._HEADERS["User-Agent"], f"pve-prep/{pve_prep.__version__}")
