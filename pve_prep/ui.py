@@ -267,8 +267,9 @@ def widget_style(*, instruction: str = "note"):
     """prompt_toolkit style for the menus, in the current theme.
 
     instruction is the role for the hint after the question: key help on a
-    menu stays note grey; a yes/no field's (y/n) [Yes] is success green; a
-    VMID default like [9001] is highlight.
+    menu stays note grey; a yes/no [No] default stays note; a VMID default
+    like [9001] is highlight. Affirmative (y/n) [Yes] is class:success in
+    the prompt tokens, not this instruction role.
     """
     from prompt_toolkit.styles import Style
 
@@ -276,14 +277,15 @@ def widget_style(*, instruction: str = "note"):
         [
             ("qmark", _style("header")),
             ("question", _style("header")),
-            ("answer", _style("success") + " nobold"),
+            # noinherit: success must not pick up the cyan question/header color.
+            ("answer", _style("success") + " noinherit nobold"),
             ("pointer", _style("highlight")),
             # prompt_toolkit's own style reverses selected rows. The palette colors them instead.
             ("highlighted", _style("highlight") + " noreverse"),
-            ("selected", _style("success") + " noreverse"),
+            ("selected", _style("success") + " noinherit noreverse"),
             ("instruction", _style(instruction)),
             ("danger", _style("danger")),
-            ("success", _style("success")),
+            ("success", _style("success") + " noinherit"),
             ("text", _style("option")),
             ("disabled", _style("note")),
             ("separator", _style("note")),
@@ -451,6 +453,19 @@ def checkbox(message: str, choices, *, instruction: str | None = None, validate=
     return _run(question)
 
 
+def _hint_class(hint: str) -> str:
+    """Token class for a bracket hint after the question.
+
+    (y/n) [Yes] is success green from the first paint — same class as a typed
+    y — so it does not sit in cyan with the question until the operator types.
+    (y/n) [No] and VMID defaults like [9001] stay instruction (role chosen by
+    the text() caller).
+    """
+    if "(y/n)" in hint and "[Yes]" in hint:
+        return "class:success"
+    return "class:instruction"
+
+
 def prompt_tokens(
     message: str,
     *,
@@ -460,9 +475,10 @@ def prompt_tokens(
 ):
     """The text prompt line, laid out the way questionary lays out qmark, question, instruction.
 
-    hint is the (y/n) [Yes] or [9001] part, drawn as highlight. danger_word
-    is drawn red wherever it appears in the question. success_word is drawn
-    in the success color. The quotes around either word stay with the question.
+    hint is the (y/n) [Yes]/[No] or [9001] part. An affirmative [Yes] is
+    drawn as success green; other hints use instruction. danger_word is drawn
+    red wherever it appears in the question. success_word is drawn in the
+    success color. The quotes around either word stay with the question.
     """
     tokens = [("class:qmark", " "), ("class:question", " ")]
     body = indent(message)
@@ -483,7 +499,7 @@ def prompt_tokens(
         tokens.append(("class:question", body))
     if hint:
         tokens.append(("class:question", " "))
-        tokens.append(("class:instruction", hint))
+        tokens.append((_hint_class(hint), hint))
         tokens.append(("class:question", ": "))
     else:
         tokens.append(("class:question", " "))
@@ -542,8 +558,13 @@ def text(
     from prompt_toolkit.styles import merge_styles
     from questionary.constants import DEFAULT_STYLE
 
-    # (y/n) [Yes] is the affirmative default: success green. [9001] stays highlight.
-    hint_role = "success" if hint and "(y/n)" in hint else "highlight"
+    # [Yes] is class:success in the tokens. [No] stays note; [9001] stays highlight.
+    if hint and "(y/n)" in hint and "[Yes]" not in hint:
+        hint_role = "note"
+    elif hint and "(y/n)" not in hint:
+        hint_role = "highlight"
+    else:
+        hint_role = "note"
     session = PromptSession(
         prompt_tokens(message, hint=hint, danger_word=danger_word, success_word=success_word),
         style=merge_styles([DEFAULT_STYLE, widget_style(instruction=hint_role)]),
