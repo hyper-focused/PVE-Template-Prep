@@ -77,6 +77,9 @@ class FakeRun:
 
     def __call__(self, argv: list[str]) -> _Proc:
         self.calls.append(list(argv))
+        # chattr is best-effort around in-place swaps; do not consume scripted steps.
+        if argv and argv[0] == "chattr":
+            return _Proc(0, "")
         if not self.steps:
             raise AssertionError(f"no scripted response for {argv}")
         code, out = self.steps.pop(0)
@@ -715,12 +718,17 @@ class InsertDiskTests(unittest.TestCase):
         live = Path(tmp) / "storage" / name
         live.parent.mkdir(parents=True)
         live.write_bytes(b"OLDDISK")
+        if name.startswith("base-"):
+            live.chmod(0o444)
+        else:
+            live.chmod(0o640)
         return live
 
     def test_template_boot_disk_is_replaced_and_the_template_stays(self) -> None:
         old = "NFS-SATA-SSD1:base-910-disk-0"
         with private_tempdir() as tmp:
             live = self._live_disk(tmp)
+            owner = live.stat()
             run = FakeRun(
                 [
                     (0, "status: stopped\n"),
@@ -744,14 +752,78 @@ class InsertDiskTests(unittest.TestCase):
             self.assertTrue(result.kept_template)
             self.assertEqual(result.backup_dir, "")
             self.assertEqual(live.read_bytes(), b"qcow")
+            after = live.stat()
+            self.assertEqual(after.st_mode & 0o777, 0o444)
+            self.assertEqual(after.st_uid, owner.st_uid)
+            self.assertEqual(after.st_gid, owner.st_gid)
             self.assertFalse(any(live.parent.glob("*.pve-prep-old.*")))
             self.assertFalse(any(live.parent.glob("*.pve-prep-new.*")))
+            self.assertTrue(any(call[:2] == ["chattr", "-i"] for call in run.calls))
+            self.assertTrue(any(call[:2] == ["chattr", "+i"] for call in run.calls))
         self.assertEqual(run.calls[3], ["pvesm", "path", old])
-        self.assertEqual(run.calls[4][:4], ["qemu-img", "convert", "-O", "qcow2"])
+        converts = [call for call in run.calls if call[:2] == ["qemu-img", "convert"]]
+        self.assertEqual(converts[0][:4], ["qemu-img", "convert", "-O", "qcow2"])
         self.assertFalse(any(call[:2] == ["qm", "importdisk"] for call in run.calls))
         self.assertNotIn(["qm", "set", "910", "--template", "0", "--tags", "pve-prep-swap-910"], run.calls)
         self.assertNotIn(["qm", "template", "910"], run.calls)
         self.assertNotIn(["qm", "destroy", "910"], run.calls)
+
+    def test_vm_disk_keeps_prior_mode_and_refuses_foreign_parent(self) -> None:
+        old = "NFS-SATA-SSD1:vm-910-disk-0.qcow2"
+        with private_tempdir() as tmp:
+            live = self._live_disk(tmp, "vm-910-disk-0.qcow2")
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, f"template: 1\nscsi0: {old}\n"),
+                    (0, "[]"),
+                    (0, f"{live}\n"),
+                    (0, ""),
+                ],
+                touch_convert=True,
+            )
+            result = insert_disk(
+                vmid=910,
+                storage=STORAGE,
+                image_path=IMAGE,
+                disk_policy="overwrite",
+                dry_run=False,
+                run=run,
+                nodes_root=self._nodes(tmp),
+            )
+            self.assertEqual(result.volid, old)
+            self.assertEqual(live.stat().st_mode & 0o777, 0o640)
+            self.assertFalse(any(call[:2] == ["chattr", "+i"] for call in run.calls))
+        with private_tempdir() as tmp:
+            foreign = Path(tmp) / "foreign"
+            foreign.mkdir()
+            live = foreign / "base-910-disk-0.qcow2"
+            live.write_bytes(b"OLDDISK")
+            # Simulate a directory another uid owns when we are root in CI; when
+            # we are not root, skip the ownership refusal (cannot forge uids).
+            if os.geteuid() != 0:
+                return
+            os.chown(foreign, 1, 1)
+            run = FakeRun(
+                [
+                    (0, "status: stopped\n"),
+                    (0, f"template: 1\nscsi0: {old}\n"),
+                    (0, "[]"),
+                    (0, f"{live}\n"),
+                ],
+                touch_convert=True,
+            )
+            with self.assertRaises(VmError) as caught:
+                insert_disk(
+                    vmid=910,
+                    storage=STORAGE,
+                    image_path=IMAGE,
+                    disk_policy="overwrite",
+                    dry_run=False,
+                    run=run,
+                    nodes_root=self._nodes(tmp),
+                )
+            self.assertIn("owned by uid 1", str(caught.exception))
 
     def test_pvesm_usage_line_still_lists_and_a_plain_disk_is_replaced(self) -> None:
         old = "NFS-SATA-SSD1:base-910-disk-0"
@@ -791,7 +863,8 @@ class InsertDiskTests(unittest.TestCase):
             self.assertEqual(live.read_bytes(), b"qcow")
         self.assertEqual(run.calls[2], ["pvesm", "list", STORAGE, "--output-format", "json"])
         self.assertEqual(run.calls[3], ["pvesm", "list", STORAGE])
-        self.assertEqual(run.calls[5][:4], ["qemu-img", "convert", "-O", "raw"])
+        converts = [call for call in run.calls if call[:2] == ["qemu-img", "convert"]]
+        self.assertEqual(converts[0][:4], ["qemu-img", "convert", "-O", "raw"])
         self.assertFalse(any(call[:2] == ["qm", "importdisk"] for call in run.calls))
 
     def test_template_backup_copies_then_replaces_the_boot_disk(self) -> None:
@@ -827,9 +900,12 @@ class InsertDiskTests(unittest.TestCase):
             self.assertEqual(len(backups), 1)
         self.assertTrue(result.kept_template)
         self.assertEqual(run.calls[3], ["pvesm", "path", old])
-        self.assertEqual(run.calls[4][:4], ["qemu-img", "convert", "-O", "qcow2"])
-        self.assertEqual(run.calls[5], ["pvesm", "path", old])
-        self.assertEqual(run.calls[6][:4], ["qemu-img", "convert", "-O", "qcow2"])
+        converts = [call for call in run.calls if call[:2] == ["qemu-img", "convert"]]
+        self.assertEqual(len(converts), 2)
+        self.assertEqual(converts[0][:4], ["qemu-img", "convert", "-O", "qcow2"])
+        self.assertEqual(converts[1][:4], ["qemu-img", "convert", "-O", "qcow2"])
+        path_calls = [call for call in run.calls if call[:2] == ["pvesm", "path"]]
+        self.assertEqual(len(path_calls), 2)
         self.assertFalse(any(call[:2] == ["qm", "importdisk"] for call in run.calls))
 
     def test_copies_done_skips_backup_convert_but_still_stages(self) -> None:

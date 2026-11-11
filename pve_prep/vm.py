@@ -1229,6 +1229,78 @@ def _unlink_quiet(path: Path) -> None:
         return
 
 
+def _read_owner_mode(path: Path) -> tuple[int, int, int]:
+    """uid, gid, and permission bits of path (lstat; no symlink follow)."""
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise VmError(f"{path} is not a regular file")
+    return info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)
+
+
+def _is_template_base_name(path: Path) -> bool:
+    """Proxmox renames template disks to base-<vmid>-*.* and marks them 0444."""
+    return path.name.startswith("base-")
+
+
+def _chattr(run: Run, flag: str, path: Path) -> None:
+    """Best-effort immutable bit. Unsupported FS or missing chattr is fine."""
+    try:
+        run(["chattr", flag, "--", str(path)])
+    except Exception:
+        return
+
+
+def _apply_owner_mode(path: Path, uid: int, gid: int, mode: int) -> None:
+    """Set ownership and mode without following symlinks."""
+    if path.is_symlink():
+        raise VmError(f"{path} is a symlink")
+    if os.geteuid() == 0:
+        os.chown(path, uid, gid, follow_symlinks=False)
+    os.chmod(path, mode)
+
+
+def _finalize_boot_file(
+    run: Run,
+    path: Path,
+    *,
+    uid: int,
+    gid: int,
+    mode: int,
+) -> None:
+    """Restore owner/mode after an in-place replace.
+
+    Template base images (base-*) are 0444 and immutable when the storage
+    supports chattr, matching what Proxmox sets on qm template.
+    """
+    final_mode = 0o444 if _is_template_base_name(path) else mode
+    _apply_owner_mode(path, uid, gid, final_mode)
+    if _is_template_base_name(path):
+        _chattr(run, "+i", path)
+
+
+def _check_parent_dir(path: Path) -> None:
+    """Refuse a parent directory another user could redirect."""
+    parent = path.parent
+    try:
+        info = parent.lstat()
+    except OSError as exc:
+        raise VmError(f"{parent}: {exc}") from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise VmError(f"{parent} is a symlink")
+    if not stat.S_ISDIR(info.st_mode):
+        raise VmError(f"{parent} is not a directory")
+    if info.st_uid not in {0, os.geteuid()}:
+        raise VmError(
+            f"{parent} is owned by uid {info.st_uid}; "
+            "expected root (or this process) to own the disk directory"
+        )
+    others_write = info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    if others_write and not info.st_mode & stat.S_ISVTX:
+        raise VmError(
+            f"{parent} is writable by other users and not sticky"
+        )
+
+
 def _stage_image_beside(
     run: Run,
     *,
@@ -1271,9 +1343,17 @@ def _file_swap_boot_disk(
 
     Stages the new image beside the live file, backs up when asked, renames
     the live file aside, renames the staged file onto the live name, then
-    deletes the aside copy. A failure before the final rename puts the old
-    file back when it was moved. No qm importdisk and no template-flag churn.
+    deletes the aside copy. Ownership and mode of the previous file are
+    restored on the new one (template base-* images get 0444 and chattr +i).
+    A failure before the final rename puts the old file back when it was
+    moved. No qm importdisk and no template-flag churn.
     """
+    _check_parent_dir(live_path)
+    try:
+        uid, gid, mode = _read_owner_mode(live_path)
+    except OSError as exc:
+        raise VmError(f"VM {vmid} could not read {live_path}: {exc}") from exc
+    _chattr(run, "-i", live_path)
     saved = ""
     staged = _stage_image_beside(
         run,
@@ -1315,11 +1395,17 @@ def _file_swap_boot_disk(
         raise
     cleanup_error = ""
     try:
+        _finalize_boot_file(run, live_path, uid=uid, gid=gid, mode=mode)
+    except OSError as exc:
+        cleanup_error = f"ownership/mode not restored on {live_path}: {exc}"
+    _chattr(run, "-i", aside)
+    try:
         aside.unlink()
     except FileNotFoundError:
         pass
     except OSError as exc:
-        cleanup_error = f"previous disk left at {aside}: {exc}"
+        note = f"previous disk left at {aside}: {exc}"
+        cleanup_error = f"{cleanup_error}; {note}" if cleanup_error else note
     return InsertResult(
         volid,
         kept_template=True,
