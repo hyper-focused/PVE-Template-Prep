@@ -9,6 +9,10 @@ An installed copy offers a new release when the version string on `main` changes
 ### Added
 - **Install-time and per-run detail logging policy.** `install.sh --logs=auto` (default) keeps interactive runs quiet and still writes `/var/log/pve-template-prep/<vmid>.log` for unattended VMIDs that changed or failed. `--logs=on` logs every VMID touched on interactive runs too. `--logs=off` turns interactive file logs off. `pve-template-prep --logs=on` forces file logs for that session; `--logs=off` only suppresses when install used `--logs=on`. Unattended refreshes always log changed or failed VMIDs. The choice is stored in `/etc/pve-template-prep/logging`.
 
+### Changed
+- **Boot-disk finish lines name the file and the storage once.** Every distro/release reports `{label} VM disk image {filename} created and installed at {storage}.` on one line (storage id only, not a host path or full volid), then either `Backup of prior disk image saved in …` or `No backup of prior disk image was retained.` on the next. The old `created and imported` / `Template kept` / `Old disk saved` wording is gone.
+- **In-place template disk swaps restore ownership and mode.** Before replacing a file-storage boot disk, the parent directory must be root-owned (or owned by this process) and not group/world-writable unless sticky. After the rename, the new file gets the previous owner; `base-*` template images are set to mode `0444` with `chattr +i` when the filesystem supports it (matching `qm template`), and non-base disks keep the prior mode.
+
 ## 1.4.1 - 2026-11-11
 
 ### Changed

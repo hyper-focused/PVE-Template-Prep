@@ -325,7 +325,9 @@ class OrchestratorTest(unittest.TestCase):
         with redirect_stdout(buf):
             MOD.run_one(job, "12", 910)
         self.assertIn(
-            "Debian 12 VM template 910 replaced with the new disk. Previous disk deleted. "
+            "Debian 12 VM disk image vm-910-disk-1 created and installed at "
+            "dir-templates.\n"
+            "No backup of prior disk image was retained.\n"
             "Name, memory, cores, and bridge were not updated: VM 910 failed at qm set.",
             buf.getvalue(),
         )
@@ -480,11 +482,13 @@ class OrchestratorTest(unittest.TestCase):
         text = buf.getvalue()
         self.assertIn("\nCreating Debian 12 VM template\n\n", text)
         self.assertIn(
-            f"\n\nDebian 12 VM template 910 replaced with the new disk. "
-            f"Old disk saved in {DEFAULT_BACKUPS}.\n",
+            f"\n\nDebian 12 VM disk image vm-910-disk-1 created and installed at "
+            f"dir-templates.\n"
+            f"Backup of prior disk image saved in {DEFAULT_BACKUPS}.\n",
             text,
         )
         self.assertNotIn("Previous VM deleted", text)
+        self.assertNotIn("Template 910 kept", text)
         buf = io.StringIO()
         with redirect_stdout(buf):
             MOD.run_one(_template_job(), "13", 911)
@@ -500,8 +504,9 @@ class OrchestratorTest(unittest.TestCase):
         with redirect_stdout(buf):
             MOD.run_one(kept, "12", 910)
         self.assertIn(
-            "\n\nDebian 12 VM disk image created and imported. "
-            "Old disk saved in the backup directory.\n",
+            "\n\nDebian 12 VM disk image vm-910-disk-0 created and installed at "
+            "dir-templates.\n"
+            "Backup of prior disk image saved in the backup directory.\n",
             buf.getvalue(),
         )
         replaced = replace(kept, backup_vmids=frozenset())
@@ -509,7 +514,9 @@ class OrchestratorTest(unittest.TestCase):
         with redirect_stdout(buf):
             MOD.run_one(replaced, "12", 910)
         self.assertIn(
-            "\n\nDebian 12 VM disk image created and imported. Previous disk deleted.\n",
+            "\n\nDebian 12 VM disk image vm-910-disk-0 created and installed at "
+            "dir-templates.\n"
+            "No backup of prior disk image was retained.\n",
             buf.getvalue(),
         )
         kept_template = SimpleNamespace(
@@ -522,11 +529,14 @@ class OrchestratorTest(unittest.TestCase):
         with redirect_stdout(buf):
             MOD.run_one(replaced, "12", 910)
         self.assertIn(
-            "Template 910 kept. Previous disk deleted.",
+            "Debian 12 VM disk image vm-910-disk-1 created and installed at "
+            "dir-templates.\n"
+            "No backup of prior disk image was retained.",
             buf.getvalue(),
         )
+        self.assertNotIn("Template 910 kept", buf.getvalue())
         cleaned = SimpleNamespace(
-            volid="dir-templates:vm-910-disk-1",
+            volid="NFS-SATA-SSD1:9010/base-9010-disk-1.qcow2",
             kept_template=True,
             backup_dir="/var/backups/pve-template-prep",
             cleanup_error="volume is locked",
@@ -535,13 +545,18 @@ class OrchestratorTest(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             MOD.run_one(replaced, "12", 910)
+        text = buf.getvalue()
         self.assertIn(
-            "Debian 12 VM disk image created and imported. Template 910 updated. "
-            "Old disk saved in /var/backups/pve-template-prep. "
+            "Debian 12 VM disk image base-9010-disk-1.qcow2 created and installed at "
+            "NFS-SATA-SSD1.\n"
+            "Backup of prior disk image saved in /var/backups/pve-template-prep.\n"
             "Old disk cleanup failed: volume is locked.",
-            buf.getvalue(),
+            text,
         )
+        self.assertNotIn("NFS-SATA-SSD1:9010/", text)
+        self.assertNotIn("/images/", text)
         self.assertNotIn("Previous disk deleted.", buf.getvalue())
+        self.assertNotIn("Template 910 updated", buf.getvalue())
         self.assertNotIn("template flag was restored", buf.getvalue())
 
     def test_main_continues_after_second_release_fails(self) -> None:

@@ -32,38 +32,85 @@ def opening(action: str, label: str, job, vmid: int | None) -> str:
     raise ValueError(f"unknown action {action}")
 
 
+def _volume_parts(volid: str) -> tuple[str, str]:
+    """Return (storage id, image filename) from a Proxmox volid.
+
+    Volids look like NFS-SATA-SSD1:9010/base-9010-disk-1.qcow2. The finish
+    line names the file once and the storage once; it does not repeat the
+    path after the colon (that is not a host path).
+    """
+    text = str(volid or "").strip()
+    if not text:
+        return "", ""
+    storage, sep, name = text.partition(":")
+    if not sep:
+        return "", text.rsplit("/", 1)[-1]
+    image = name.strip("/").rsplit("/", 1)[-1]
+    return storage.strip(), image
+
+
+def _result_volid(result) -> str:
+    if isinstance(result, str):
+        return result.strip()
+    return str(getattr(result, "volid", "") or "").strip()
+
+
+def _result_backup_dir(result) -> str:
+    if isinstance(result, str):
+        return ""
+    return str(getattr(result, "backup_dir", "") or "").strip()
+
+
+def _backup_sentence(policy: str, result) -> str:
+    saved = _result_backup_dir(result)
+    if saved:
+        return f"Backup of prior disk image saved in {saved}."
+    if policy == "backup":
+        return "Backup of prior disk image saved in the backup directory."
+    return "No backup of prior disk image was retained."
+
+
+def _installed_disk_sentence(label: str, result) -> str:
+    """Boot-disk finish line for every distro/release."""
+    storage, image = _volume_parts(_result_volid(result))
+    head = f"{label} VM disk image"
+    if image:
+        head += f" {image}"
+    if storage:
+        return f"{head} created and installed at {storage}."
+    return f"{head} created and installed."
+
+
 def _finish_file(label: str, dest: Path, result) -> str:
     place = str(dest)
     if result.status == "skipped":
         return f"{label} disk image left unchanged at {place}"
-    sentence = f"{label} disk image created at {place}"
+    sentence = f"{label} disk image created at {place}."
     if result.backup:
-        return f"{sentence}. Old disk image saved at {result.backup}."
+        return (
+            f"{sentence}\n"
+            f"Backup of prior disk image saved in {result.backup}."
+        )
     if result.replaced:
-        return f"{sentence}. Old disk image deleted."
-    return sentence
+        return f"{sentence}\nNo backup of prior disk image was retained."
+    return sentence.rstrip(".")
+
+
+def _finish_lines(*parts: str) -> str:
+    """Join finish sentences with real newlines (no soft wrap)."""
+    return "\n".join(part for part in parts if part)
 
 
 def _finish_insert(label: str, vmid: int, policy: str, result) -> str:
-    sentence = f"{label} VM disk image created and imported"
-    if getattr(result, "kept_template", False):
-        saved = str(getattr(result, "backup_dir", "") or "")
-        cleanup = str(getattr(result, "cleanup_error", "") or "")
-        if cleanup:
-            sentence += f". Template {vmid} updated"
-            if saved:
-                sentence += f". Old disk saved in {saved}"
-            return f"{sentence}. Old disk cleanup failed: {cleanup}."
-        sentence += f". Template {vmid} kept"
-        if saved:
-            return f"{sentence}. Old disk saved in {saved}."
-        return f"{sentence}. Previous disk deleted."
-    if policy == "backup":
-        saved = str(getattr(result, "backup_dir", "") or "")
-        if saved:
-            return f"{sentence}. Old disk saved in {saved}."
-        return f"{sentence}. Old disk saved in the backup directory."
-    return f"{sentence}. Previous disk deleted."
+    del vmid  # named in the volid; kept for call-site stability
+    parts = [
+        _installed_disk_sentence(label, result),
+        _backup_sentence(policy, result),
+    ]
+    cleanup = str(getattr(result, "cleanup_error", "") or "")
+    if cleanup:
+        parts.append(f"Old disk cleanup failed: {cleanup}.")
+    return _finish_lines(*parts)
 
 
 def _finish_template(label: str, job, vmid: int) -> str:
@@ -72,18 +119,20 @@ def _finish_template(label: str, job, vmid: int) -> str:
 
 
 def _finish_replace(label: str, vmid: int, result, settings_error: str) -> str:
-    sentence = f"{label} VM template {vmid} replaced with the new disk"
-    saved = str(getattr(result, "backup_dir", "") or "")
+    del vmid
+    policy = "backup" if _result_backup_dir(result) else "overwrite"
+    parts = [
+        _installed_disk_sentence(label, result),
+        _backup_sentence(policy, result),
+    ]
     cleanup = str(getattr(result, "cleanup_error", "") or "")
-    if saved:
-        sentence += f". Old disk saved in {saved}"
     if cleanup:
-        sentence += f". Old disk cleanup failed: {cleanup}"
-    elif not saved:
-        sentence += ". Previous disk deleted"
+        parts.append(f"Old disk cleanup failed: {cleanup}.")
     if settings_error:
-        sentence += f". Name, memory, cores, and bridge were not updated: {settings_error}"
-    return sentence + "."
+        parts.append(
+            f"Name, memory, cores, and bridge were not updated: {settings_error}."
+        )
+    return _finish_lines(*parts)
 
 
 def _stage_replace(job, vmid: int, tools, *, backup: bool) -> None:
