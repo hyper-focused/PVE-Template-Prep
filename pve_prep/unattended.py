@@ -451,19 +451,23 @@ def _swap_one(
         return
     text = result if isinstance(result, str) else ""
     cleanup = "Old disk cleanup failed" in text
-    log_path = ""
-    log_error = ""
+    # Unattended always logs VMIDs that changed. Cron mail still names the
+    # detail file only when leftover-disk cleanup failed.
     if cleanup:
-        log_path, log_error = _write_detail(
-            record, _log_text(record, RuntimeError(text)), directory=log_directory
+        detail = _log_text(record, RuntimeError(text))
+    else:
+        detail = text.strip() or (
+            f"VMID {record.vmid} ({record.distro} {record.release}): "
+            "disk updated successfully"
         )
+    log_path, log_error = _write_detail(record, detail, directory=log_directory)
     print(
         success_line(
             record,
             backup_dir=DEFAULT_BACKUPS,
             cleanup=cleanup,
-            log_path=log_path,
-            log_error=log_error,
+            log_path=log_path if cleanup else "",
+            log_error=log_error if cleanup else "",
         )
     )
     # The new boot disk is the enrolled image for the next run.

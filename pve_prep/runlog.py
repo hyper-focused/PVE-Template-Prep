@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Robert Tyree and hyper-focused
-"""One root-only log per VMID for an unattended refresh that did not finish cleanly.
+"""Root-only per-VMID detail logs, and the install-time logging policy.
 
-The cron mail stays a single sentence. This file is where the detail goes.
+Unattended refreshes always write a log for a VMID that changed or failed.
+Interactive runs follow the policy in /etc/pve-template-prep/logging (auto
+by default) and optional --logs=on|off for that session.
 """
 
 from __future__ import annotations
@@ -13,6 +15,9 @@ from pathlib import Path
 from .safedir import UnsafeDirError, prepare_private_dir
 
 LOG_DIR = "/var/log/pve-template-prep"
+POLICY_PATH = Path("/etc/pve-template-prep/logging")
+POLICIES = ("auto", "on", "off")
+DEFAULT_POLICY = "auto"
 
 _MIN_VMID = 100
 _MAX_VMID = 999_999_999
@@ -20,6 +25,43 @@ _MAX_VMID = 999_999_999
 
 class RunLogError(OSError):
     """The detail log could not be written."""
+
+
+def read_policy(path: str | Path = POLICY_PATH) -> str:
+    """Return auto, on, or off. Missing, symlink, or junk text becomes auto."""
+    dest = Path(path)
+    if dest.is_symlink():
+        return DEFAULT_POLICY
+    try:
+        text = dest.read_text(encoding="utf-8").strip().casefold()
+    except OSError:
+        return DEFAULT_POLICY
+    if text in POLICIES:
+        return text
+    return DEFAULT_POLICY
+
+
+def should_write_logs(
+    *,
+    policy: str,
+    cli: str | None,
+    unattended: bool,
+) -> bool:
+    """Whether this run writes /var/log/pve-template-prep/<vmid>.log files.
+
+    Unattended always writes for VMIDs that changed or failed. Interactive
+    uses the install policy; --logs=on forces on; --logs=off only suppresses
+    when the install policy is on.
+    """
+    if unattended:
+        return True
+    if cli == "on":
+        return True
+    if cli == "off":
+        # Meaningful when install policy is on; otherwise interactive already
+        # writes nothing, so this is a no-op.
+        return False
+    return policy == "on"
 
 
 def write_run_log(vmid: int, text: str, *, directory: str | Path = LOG_DIR) -> Path:

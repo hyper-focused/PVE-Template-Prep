@@ -4,6 +4,7 @@
 # Install pve-template-prep into /opt and link /usr/local/sbin/pve-template-prep.
 # Fetch this file, read it, then: sudo bash install.sh
 # Overrides: DEST, REPO, REF, BIN_LINK.
+# Logging: --logs=auto (default), --logs=on, --logs=off.
 
 set -euo pipefail
 
@@ -11,6 +12,7 @@ set -euo pipefail
 # Success is a medium light green (xterm 78). Labels use the header cyan (xterm 45).
 report_installed() {
   local version="$1"
+  local logs_policy="$2"
   local green="" label="" bold="" reset=""
   if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
     bold=$'\033[1m'
@@ -28,12 +30,40 @@ report_installed() {
   echo
   printf '%s\n' "${label}To run: (as root or sudo):${reset} ${bold}pve-template-prep${reset}"
   printf '%s\n' "${label}To do a dry run:${reset} ${bold}pve-template-prep --dry-run${reset}"
+  printf '%s\n' "${label}Detail logs:${reset} ${bold}${logs_policy}${reset} (change with install.sh --logs=auto|on|off)"
 }
+
+LOGS=auto
+for arg in "$@"; do
+  case "$arg" in
+    --logs=auto | --logs=on | --logs=off)
+      LOGS="${arg#--logs=}"
+      ;;
+    --logs | --logs=*)
+      echo "use --logs=auto, --logs=on, or --logs=off" >&2
+      exit 1
+      ;;
+    -h | --help)
+      echo "Usage: bash install.sh [--logs=auto|on|off]"
+      echo "  --logs=auto  unattended detail logs only (default)"
+      echo "  --logs=on    detail log for every VMID touched on every run"
+      echo "  --logs=off   no interactive detail logs; unattended still logs changes"
+      exit 0
+      ;;
+    *)
+      echo "unknown option: $arg" >&2
+      echo "Usage: bash install.sh [--logs=auto|on|off]" >&2
+      exit 1
+      ;;
+  esac
+done
 
 DEST="${DEST:-/opt/pve-template-prep}"
 REPO="${REPO:-hyper-focused/PVE-Template-Prep}"
 REF="${REF:-main}"
 BIN_LINK="${BIN_LINK:-/usr/local/sbin/pve-template-prep}"
+LOG_POLICY_DIR="${LOG_POLICY_DIR:-/etc/pve-template-prep}"
+LOG_POLICY_FILE="${LOG_POLICY_FILE:-$LOG_POLICY_DIR/logging}"
 ARCHIVE_URL="https://github.com/${REPO}/archive/refs/heads/${REF}.tar.gz"
 
 MODULES=(
@@ -373,4 +403,16 @@ fi
 install -d -o root -g root -m 0755 "$(dirname "$BIN_LINK")"
 ln -sfn "$DEST/pve-template-prep.py" "$BIN_LINK"
 
-report_installed "$version"
+# Install-time logging policy. Read by pve-template-prep; --logs=on|off can
+# override one interactive run. Unattended refreshes always log VMIDs that
+# changed or failed.
+if [[ -L "$LOG_POLICY_DIR" || -L "$LOG_POLICY_FILE" ]]; then
+  echo "refusing to write logging policy through a symlink: $LOG_POLICY_FILE" >&2
+  exit 1
+fi
+install -d -o root -g root -m 0755 "$LOG_POLICY_DIR"
+printf '%s\n' "$LOGS" > "$LOG_POLICY_FILE"
+chown root:root "$LOG_POLICY_FILE"
+chmod 0644 "$LOG_POLICY_FILE"
+
+report_installed "$version" "$LOGS"

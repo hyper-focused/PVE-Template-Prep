@@ -359,7 +359,8 @@ class UnattendedTests(unittest.TestCase):
         self.assertIn("Update of ubuntu 24.04 VM template disk image SUCCESSFUL.", done.out)
         self.assertIn("/var/backups/pve-template-prep/", done.out)
         self.assertNotIn("FAILED", done.out)
-        self.assertEqual(done.logs, {})
+        self.assertNotIn("910.log", done.out)
+        self.assertIn("disk updated successfully", done.logs["910.log"])
 
     def test_algorithm_change_is_stored_with_the_new_digest(self) -> None:
         published = "cd" * 64

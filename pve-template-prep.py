@@ -34,6 +34,13 @@ from pve_prep.enroll import (
 from pve_prep.job import DEFAULT_CACHE, Job, action_for, converts_to_template
 from pve_prep.offer import apply_prior_enrollment, offer_created, plan_prior_enrollments
 from pve_prep.prompts import PromptAbort, ask_cache_cleanup, interview
+from pve_prep.runlog import (
+    LOG_DIR,
+    RunLogError,
+    read_policy,
+    should_write_logs,
+    write_run_log,
+)
 from pve_prep.ui import arm, quiet_echo, tone
 from pve_prep.vm import (
     VmDestroyedError,
@@ -622,6 +629,30 @@ def _unattended_job() -> Job:
     )
 
 
+def _detail_log_text(release: str, vmid: int, exc: BaseException | None = None) -> str:
+    """Body for /var/log/pve-template-prep/<vmid>.log."""
+    parts = [f"VMID {vmid} release {release}"]
+    if exc is None:
+        parts.append("finished")
+        return "\n".join(parts) + "\n"
+    parts.append(f"{type(exc).__name__}: {exc}")
+    captured = getattr(exc, "log", "") or ""
+    if str(captured).strip():
+        parts.append(str(captured).rstrip("\n"))
+    return "\n".join(parts) + "\n"
+
+
+def _write_vmid_log(vmid: int | None, text: str, *, enabled: bool) -> None:
+    if not enabled or vmid is None:
+        return
+    try:
+        path = write_run_log(vmid, text, directory=LOG_DIR)
+    except RunLogError as exc:
+        print(f"detail log could not be written: {exc}")
+        return
+    print(f"detail log: {path}")
+
+
 def _run_unattended(schedule: str, *, dry_run: bool) -> int:
     """Refresh one schedule. No interview, no update prompt, no cache question."""
     from pve_prep.unattended import run_unattended
@@ -640,6 +671,7 @@ def _run_unattended(schedule: str, *, dry_run: bool) -> int:
         except OSError as exc:
             print(f"Automated update skipped: could not take the run lock {LOCK_PATH}: {exc}. Nothing was changed.")
             return 1
+    # Unattended always writes detail logs for VMIDs that changed or failed.
     code = run_unattended(
         schedule,
         directory=ENROLL_DIR,
@@ -694,10 +726,25 @@ def main(argv: list[str] | None = None) -> int:
             "refreshes monthly enrollments on days 1-7, monthly forces monthly only"
         ),
     )
+    parser.add_argument(
+        "--logs",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "on: write /var/log/pve-template-prep/<vmid>.log for each VMID this "
+            "run touches; off: suppress that only when install used --logs=on. "
+            "Unattended refreshes always log VMIDs that changed or failed"
+        ),
+    )
     args = parser.parse_args(argv)
     print(f"{parser.prog} {__version__}")
     if args.unattended:
         return _run_unattended(args.unattended, dry_run=args.dry_run)
+    write_logs = should_write_logs(
+        policy=read_policy(),
+        cli=args.logs,
+        unattended=False,
+    )
     failed_update = _consider_update(Path(__file__).resolve())
     if failed_update:
         return failed_update
@@ -757,20 +804,33 @@ def main(argv: list[str] | None = None) -> int:
         except PromptAbort:
             print("aborted")
             return 1
+    log_this_run = write_logs and not job.dry_run
     succeeded: list[tuple[str, int | None]] = []
     for release, vmid in pairs:
         try:
-            run_one(job, release, vmid)
+            done = run_one(job, release, vmid)
         except VmDestroyedError as exc:
             print(f"FAIL {release}: {exc}")
             print("stopped: a template did not finish its update")
+            _write_vmid_log(
+                vmid, _detail_log_text(release, vmid or 0, exc), enabled=log_this_run
+            )
             failed = True
             break
         except Exception as exc:
             print(f"FAIL {release}: {exc}")
+            _write_vmid_log(
+                vmid, _detail_log_text(release, vmid or 0, exc), enabled=log_this_run
+            )
             failed = True
         else:
             succeeded.append((release, vmid))
+            note = done if isinstance(done, str) and done.strip() else None
+            _write_vmid_log(
+                vmid,
+                note or _detail_log_text(release, vmid or 0),
+                enabled=log_this_run,
+            )
     print("done")
     if not standalone:
         created = _created_templates(job, succeeded)
