@@ -1384,15 +1384,8 @@ def _prior_enrollment_note(records) -> str:
         f"VMID {record.vmid} ({record.distro} {record.release}): {record.schedule}"
         for record in records
     ]
-    return (
-        head
-        + "\n".join(lines)
-        + "\n"
-        "Keep the current schedule, change it, or unenroll from automated "
-        "updates. Unenrolling keeps the enrollment file so interactive Update "
-        "can still find them. The choice is applied after this run finishes "
-        "the builds that succeed."
-    )
+    # The select asks keep / change / unenroll; this note is only the roster.
+    return head + "\n".join(lines)
 
 
 def ask_prior_enrollment(read_line, write, records) -> str:
